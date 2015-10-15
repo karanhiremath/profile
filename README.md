@@ -8,7 +8,6 @@
 ```bash
 source  [PATH TO REPO]/myprofile.sh
 ```
-
 3. Add the following line to your `~/.vimrc`
 ```bash
 source [PATH TO REPO]/vimprofile.sh
