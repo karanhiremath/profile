@@ -23,7 +23,7 @@ function git_color {
   fi
 }
 
-function seperator {
+function git_seperator {
   local git_status="$(git status 2> /dev/null)"
   local on_branch="On branch ([^${IFS}]*)"
   local on_commit="HEAD detached at ([^${IFS}]*)"
@@ -51,7 +51,19 @@ function git_branch {
   fi
 }
 
-export PROMPT_COMMAND='PS1="\[$(tput bold)\]\[$(tput setaf 9)\]\T \[$(tput setaf 11)\]| \[$(tput setaf 12)\]\u\[$(tput setaf 9)\]@\h \[$(tput setaf 11)\]| \[$(tput setaf 9)\]\W\[$(tput setaf 11)\]$(seperator)\[\$(git_color)\]\$(git_branch) \[$(tput setaf 11)\]: \[$(tput sgr0)\]\[$(tput bold)\]"'
+function venv_seperator {
+  if [[ $VIRTUAL_ENV != "" ]]; then
+      echo " |"
+  fi
+}
+
+function venv {
+  if [[ $VIRTUAL_ENV != "" ]]; then
+    echo " (${VIRTUAL_ENV##*/})"
+  fi
+}
+
+export PROMPT_COMMAND='PS1="\[$(tput bold)\]\[$(tput setaf 9)\]\T \[$(tput setaf 11)\]| \[$(tput setaf 12)\]\u\[$(tput setaf 9)\]@\h \[$(tput setaf 11)\]| \[$(tput setaf 9)\]\W\[$(tput setaf 11)\]$(venv_seperator)\[$(tput setaf 9)\]$(venv)\[$(tput setaf 11)\]$(git_seperator)\[\$(git_color)\]\$(git_branch) \[$(tput setaf 11)\]: \[$(tput sgr0)\]\[$(tput bold)\]"'
 
 export CLICOLOR=1$Color_Off
 export LSCOLORS=ExFxCxDxBxEGEDABAGACAD
