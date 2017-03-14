@@ -1,8 +1,5 @@
 # .bash_profile
 
-if [ -f $(brew --prefix)/etc/bash_completion ]; then
-  . $(brew --prefix)/etc/bash_completion
-fi
 
 if [ -f ~/profile/git-completion.bash ]; then
   source ~/profile/git-completion.bash
