@@ -1,7 +1,16 @@
 # .bash_profile
-
-if [ -f $(brew --prefix)/etc/bash_completion ]; then
-  . $(brew --prefix)/etc/bash_completion
+unameOut="$(uname -s)"
+case "${unameOut}" in
+    Linux*)     machine=Linux;;
+    Darwin*)    machine=Mac;;
+    CYGWIN*)    machine=Cygwin;;
+    MINGW*)     machine=MinGw;;
+    *)          machine="UNKNOWN:${unameOut}"
+esac
+if [ machine == "Darwin" ]; then
+  if [ -f $(brew --prefix)/etc/bash_completion ]; then
+    . $(brew --prefix)/etc/bash_completion
+  fi
 fi
 
 if [ -f ~/profile/git-completion.bash ]; then
@@ -92,6 +101,16 @@ gacp ()
 docker-c-start ()
 {
   docker-compose -f "$@" build && docker-compose -f "$@" up;
+}
+
+activate ()
+{
+  if [ -z "$1" ] 
+    then
+      echo "No virtualenv supplied"
+  else
+    source "$@/bin/activate"
+  fi
 }
 
 alias es='ssh karan@10.0.1.90'
