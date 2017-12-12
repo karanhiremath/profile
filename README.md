@@ -1,6 +1,6 @@
-#Profile
+# Profile
 
-##Using this profile
+## Using this profile
 
 1. Clone this repository wherever you want
 2. Add the following line to your `~/.bash_profile`
