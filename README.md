@@ -13,3 +13,8 @@
   ```bash
   source [PATH TO REPO]/vimprofile.sh
   ```
+4. Add the following line to your `~/.tmux.conf`
+
+  ```bash
+  source-file [PATH TO REPO]/tmuxprofile.conf
+  ```
