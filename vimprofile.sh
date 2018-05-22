@@ -45,5 +45,3 @@ set viminfo^=%
 
 set laststatus=2
 
-execute pathogen#infect()
-
