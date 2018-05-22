@@ -87,6 +87,7 @@ export LSCOLORS=ExFxCxDxBxEGEDABAGACAD
 alias ls='ls -GFh'
 
 alias reload='source ~/.bash_profile && echo "Bash Profile Reloaded"'
+alias tmux="tmux -2"
 
 gac () 
 { 
