@@ -44,3 +44,7 @@ else
   echo "source-file $medir/.tmux.conf" >> ~/.tmux.conf
 fi
 
+if [[ ! -d ~/.tmux/plugins/tmp ]]; then
+  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+fi
+
