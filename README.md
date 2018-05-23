@@ -2,6 +2,14 @@
 
 ## Using this profile
 
+### Automated Installation
+1. Clone this repository wherever you want
+2. Navigate to this folder
+3. Run the following to start the install script
+```bash
+./install.sh
+```
+### Manual Installation
 1. Clone this repository wherever you want
 2. Add the following line to your `~/.bash_profile`
   
