@@ -82,6 +82,8 @@ function frameworkpython {
 
 export PROMPT_COMMAND='PS1="\[\$(tput bold)\]\[\$(tput setaf 9)\]\T \[\$(tput setaf 11)\]| \[\$(tput setaf 12)\]\u\[\$(tput setaf 9)\]@\h \[\$(tput setaf 11)\]| \[\$(tput setaf 9)\]\W\[\$(tput setaf 11)\]\$(venv_seperator)\[\$(tput setaf 9)\]\$(venv)\[\$(tput setaf 11)\]\$(git_seperator)\[\$(git_color)\]\$(git_branch) \[\$(tput setaf 11)\]: \[\$(tput sgr0)\]\[\$(tput bold)\]"'
 
+export MYSQL_PS1="\R:\m:\s\ \u\ [db\ \d]\ >\ "
+
 export CLICOLOR=1"$Color_Off"
 export LSCOLORS=ExFxCxDxBxEGEDABAGACAD
 alias ls='ls -GFh'
