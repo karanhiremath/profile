@@ -53,10 +53,10 @@ function git_branch {
 
   if [[ $git_status =~ $on_branch ]]; then
     local branch=${BASH_REMATCH[1]}
-    echo " ($branch)"
+    echo "($branch)"
   elif [[ $git_status =~ $on_commit ]]; then
     local commit=${BASH_REMATCH[1]}
-    echo " ($commit)"
+    echo "($commit)"
   fi
 }
 
@@ -80,7 +80,7 @@ function frameworkpython {
   fi
 }
 
-export PROMPT_COMMAND='PS1="\[\$(tput bold)\]\[\$(tput setaf 9)\]\T \[\$(tput setaf 11)\]| \[\$(tput setaf 12)\]\u\[\$(tput setaf 9)\]@\h \[\$(tput setaf 11)\]| \[\$(tput setaf 9)\]\W\[\$(tput setaf 11)\]\$(venv_seperator)\[\$(tput setaf 9)\]\$(venv)\[\$(tput setaf 11)\]\$(git_seperator)\[\$(git_color)\]\$(git_branch) \[\$(tput setaf 11)\]: \[\$(tput sgr0)\]\[\$(tput bold)\]"'
+export PROMPT_COMMAND='PS1="\[\$(tput bold)\]\[\$(tput setaf 9)\]\T \[\$(tput setaf 11)\]| \[\$(tput setaf 12)\]\u\[\$(tput setaf 9)\]@\h \[\$(tput setaf 11)\]| \[\$(tput setaf 9)\]\w\[\$(tput setaf 11)\]\$(venv_seperator)\[\$(tput setaf 9)\]\$(venv)\[\$(tput setaf 11)\]\\[\n\]\[\$(git_color)\]\$(git_branch) \[\$(tput setaf 11)\]: \[\$(tput sgr0)\]\[\$(tput bold)\]"'
 
 export MYSQL_PS1="\R:\m:\s\ \u\ [db\ \d]\ >\ "
 
