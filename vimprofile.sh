@@ -5,9 +5,9 @@ filetype indent on
 
 set autoread
 
-set tabstop=2
-set softtabstop=2
-set shiftwidth=2
+set tabstop=4
+set softtabstop=4
+set shiftwidth=4
 
 set number
 set expandtab
@@ -45,3 +45,5 @@ set viminfo^=%
 
 set laststatus=2
 
+vnoremap <silent> # :s/^/#/<cr>:noh<cr>
+vnoremap <silent> -# :s/^#//<cr>:noh<cr>
