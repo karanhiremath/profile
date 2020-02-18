@@ -122,4 +122,6 @@ alias es='ssh karan@10.0.1.90'
 
 alias npm='sudo npm'
 
+alias reload-ssh='eval $(tmux show-env -s | grep '^SSH_')'
+
 source ~/profile/iterm2_shell_integration.bash
