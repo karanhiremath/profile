@@ -122,6 +122,8 @@ alias es='ssh karan@10.0.1.90'
 
 alias npm='sudo npm'
 
+alias fileserver="ssh karan@karanhiremath.com -t -- /bin/sh -c 'exec tmux has-session -t fs && tmux attach-session -t fs || exec tmux new -s fs'"
+
 alias reload-ssh='eval $(tmux show-env -s | grep '^SSH_')'
 
 source ~/profile/iterm2_shell_integration.bash
