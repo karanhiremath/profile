@@ -74,9 +74,9 @@ function venv {
 
 function frameworkpython {
   if [[ ! -z "$VIRTUAL_ENV" ]]; then
-    PYTHONHOME=$VIRTUAL_ENV /usr/local/bin/python2.7 "$@"
+    PYTHONHOME=$VIRTUAL_ENV /usr/local/bin/python3.8 "$@"
   else
-    /usr/bin/python2.7 "$@"
+    /usr/bin/python3.8 "$@"
   fi
 }
 
@@ -106,6 +106,11 @@ gacp ()
 gd ()
 {
     git add "$1" && git commit -m "$2" && arc diff;
+}
+
+gs ()
+{
+    git status
 }
 
 docker-c-start ()
