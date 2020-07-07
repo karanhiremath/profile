@@ -9,7 +9,13 @@ set tabstop=4
 set softtabstop=4
 set shiftwidth=4
 
-set number
+set number relativenumber
+:augroup numbertoggle
+:  autocmd!
+:  autocmd BufEnter,FocusGained,InsertLeave * set relativenumber
+:  autocmd BufLeave,FocusLost,InsertEnter   * set norelativenumber
+:augroup END
+
 set expandtab
 set laststatus=2
 
@@ -31,9 +37,29 @@ set magic
 
 set showmatch
 
+set noswapfile
+set nobackup
+set undodir=~/.vim/undodir
+set undofile
+
 set ai "Auto indent
 set si "Smart indent
 set wrap "Wrap lines
+
+" ---- Minimal configuration:
+set smartindent   " Do smart autoindenting when starting a new line
+set shiftwidth=4  " Set number of spaces per auto indentation
+set expandtab     " When using <Tab>, put spaces instead of a <tab> character
+
+" ---- Good to have for consistency
+" set tabstop=4   " Number of spaces that a <Tab> in the file counts for
+" set smarttab    " At <Tab> at beginning line inserts spaces set in shiftwidth
+
+" ---- Bonus for proving the setting
+" Displays '-' for trailing space, '>-' for tabs and '_' for non breakable space
+set listchars=tab:>-,trail:-,nbsp:_
+set list
+
 
 " Return to last edit position when opening files (You want this!)
 autocmd BufReadPost *
@@ -43,7 +69,29 @@ autocmd BufReadPost *
 " Remember info about open buffers on close
 set viminfo^=%
 
-set laststatus=2
+
 
 vnoremap <silent> # :s/^/#/<cr>:noh<cr>
-vnoremap <silent> -# :s/^#//<cr>:noh<cr>
+vnoremap <silent> -# :s/^#//<cr>:noh<cr
+
+call plug#begin('~/.vim/plugged')
+
+Plug 'vim-utils/vim-man'
+Plug 'jremmen/vim-ripgrep'
+Plug 'neoclide/coc.vim', {'branch': 'release'}
+Plug 'tpope/vim-fugitive'
+Plug 'junegunn/fzf', { 'do': { -> fzf#install() } }
+Plug 'junegunn/fzf.vim'
+
+Plug 'mbbill/undotree'
+
+call plug#end()
+
+nmap <leader>gd <Plug>(coc-definition)
+nmap <leader>gr <Plug>(coc-references)
+nnoremap <C-p> :GFiles<CR>
+
+set laststatus=2
+set viminfo='20,<1000,s1000
+
+

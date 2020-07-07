@@ -103,6 +103,11 @@ gacp ()
 	git add . && git commit -m "$@" && git push;
 }
 
+gd ()
+{
+    git add "$1" && git commit -m "$2" && arc diff;
+}
+
 docker-c-start ()
 {
   docker-compose -f "$@" build && docker-compose -f "$@" up;
@@ -118,12 +123,10 @@ activate ()
   fi
 }
 
-alias es='ssh karan@10.0.1.90'
-
-alias npm='sudo npm'
-
 alias fileserver="ssh karan@karanhiremath.com -t -- /bin/sh -c 'exec tmux has-session -t fs && tmux attach-session -t fs || exec tmux new -s fs'"
 
 alias reload-ssh='eval $(tmux show-env -s | grep '^SSH_')'
 
 source ~/profile/iterm2_shell_integration.bash
+
+alias cl='clear'
