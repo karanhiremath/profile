@@ -135,3 +135,17 @@ alias reload-ssh='eval $(tmux show-env -s | grep '^SSH_')'
 source ~/profile/iterm2_shell_integration.bash
 
 alias cl='clear'
+
+# export FZF_TMUX=1
+
+# Using highlight (http://www.andre-simon.de/doku/highlight/en/highlight.html)
+# export FZF_CTRL_T_OPTS="--preview '(highlight -O ansi -l {} 2> /dev/null || cat {} || tree -C {}) 2> /dev/null | head -200'"
+
+# bind "$(bind -s | grep '^"\\C-r"' | sed 's/"/"\\C-x/' | sed 's/"$/\\C-m"/')"
+
+# Search a file with fzf inside a Tmux pane and then open it in an editor
+
+fvi ()
+{
+    vi "$(fzf-tmux)"
+}
