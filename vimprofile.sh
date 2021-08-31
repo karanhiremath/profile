@@ -60,6 +60,8 @@ set expandtab     " When using <Tab>, put spaces instead of a <tab> character
 set listchars=tab:>-,trail:-,nbsp:_
 set list
 
+nnoremap <esc> :noh<return><esc>
+nnoremap <esc>^[ <esc>^[
 
 " Return to last edit position when opening files (You want this!)
 autocmd BufReadPost *
@@ -72,7 +74,7 @@ set viminfo^=%
 
 
 vnoremap <silent> # :s/^/#/<cr>:noh<cr>
-vnoremap <silent> -# :s/^#//<cr>:noh<cr
+vnoremap <silent> -# :s/^#//<cr>:noh<cr>
 
 call plug#begin('~/.vim/plugged')
 
@@ -93,5 +95,3 @@ nnoremap <C-p> :GFiles<CR>
 
 set laststatus=2
 set viminfo='20,<1000,s1000
-
-
