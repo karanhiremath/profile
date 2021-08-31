@@ -78,14 +78,6 @@ vnoremap <silent> -# :s/^#//<cr>:noh<cr>
 
 call plug#begin('~/.vim/plugged')
 
-Plug 'vim-utils/vim-man'
-Plug 'jremmen/vim-ripgrep'
-Plug 'neoclide/coc.vim', {'branch': 'release'}
-Plug 'tpope/vim-fugitive'
-Plug 'junegunn/fzf', { 'do': { -> fzf#install() } }
-Plug 'junegunn/fzf.vim'
-
-Plug 'mbbill/undotree'
 
 call plug#end()
 
