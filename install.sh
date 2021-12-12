@@ -35,7 +35,7 @@ fi
 
 if [[ ! -e ~/.vim/undodir ]]; then
     # if ~/.vim/undodir not present, create ~/.vim/undodir
-    mkdir ~/.vim/undodir -p
+    mkdir -p ~/.vim/undodir
 else
     echo "~/.vim/undodir already exists"
 fi
