@@ -25,6 +25,7 @@ if [ $machine == "Mac" ]; then
         # install Homebrew
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     else
+        echo "Running brew update..."
         brew update
     fi
 fi
@@ -55,18 +56,19 @@ else
     echo "Bash Profile found at ~/.bash_profile"
 fi
 
-if grep -q "$medir/zsh_profile.sh" ~/.zprofile; then
-    echo "zsh_profile.sh already sourced in ~/.zprofile"
+# confirm .zprofile and .zshrc are setup appropriately
+if grep -q "$medir/zsh_profile.sh" ~/.zshrc; then
+    echo "zsh_profile.sh already sourced in ~/.zshrc"
 else
-    echo "Sourcing $medir/zsh_profile.sh in ~/.zprofile"
-    echo "source $medir/zsh_profile.sh" >> ~/.zprofile
+    echo "Sourcing $medir/zsh_profile.sh in ~/.zshrc"
+    echo "source $medir/zsh_profile.sh" >> ~/.zshrc
 fi
 
-if grep -q "$medir/myprofile.sh" ~/.zprofile; then
-    echo "myprofile.sh already sourced in ~/.zprofile"
+if grep -q "$medir/myprofile.sh" ~/.zshrc; then
+    echo "myprofile.sh already sourced in ~/.zshrc"
 else
-    echo "Sourcing $medir/myprofile.sh in ~/.zprofile"
-    echo "source $medir/myprofile.sh" >> ~/.zprofile
+    echo "Sourcing $medir/myprofile.sh in ~/.zshrc"
+    echo "source $medir/myprofile.sh" >> ~/.zshrc
 fi
 
 if [[ ! -e ~/.vimrc ]]; then
