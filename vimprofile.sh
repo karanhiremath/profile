@@ -77,7 +77,7 @@ vnoremap <silent> # :s/^/#/<cr>:noh<cr>
 vnoremap <silent> -# :s/^#//<cr>:noh<cr>
 
 call plug#begin('~/.vim/plugged')
-
+    Plug 'vmchale/just-vim'
 
 call plug#end()
 
