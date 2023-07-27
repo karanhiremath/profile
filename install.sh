@@ -14,12 +14,12 @@ case "${unameOut}" in
     *)          machine="UNKNOWN:${unameOut}"
 esac
 
+echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
+curl -l https://iterm2.com/shell_integration/zsh \
+    -o ./.iterm2_shell_integration.zsh
+curl -l https://iterm2.com/shell_integration/bash \
+    -o ./.iterm2_shell_integration.bash
 if [ $machine == "Mac" ]; then
-    echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
-    curl -l https://iterm2.com/shell_integration/zsh \
-        -o ./.iterm2_shell_integration.zsh
-    curl -l https://iterm2.com/shell_integration/bash \
-        -o ./.iterm2_shell_integration.bash
     which -s brew
     if [[ $? != 0 ]] ; then
         # install Homebrew
