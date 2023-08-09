@@ -10,12 +10,12 @@ git config --global user.name 'Karan Hiremath'
 
 gac () 
 { 
-	git add . && git commit -m "$@";
+	git add "$1" && git commit -m "$2";
 }
 
 gacp () 
 { 
-	git add . && git commit -m "$@" && git push;
+	git add "$1" && git commit -m "$2" && git push;
 }
 
 gd ()
