@@ -5,6 +5,9 @@ alias ls='ls -GFh'
 
 alias tmux="tmux -2"
 
+git config --global user.email 'me@karanhiremath.com'
+git config --global user.name 'Karan Hiremath'
+
 gac () 
 { 
 	git add . && git commit -m "$@";
