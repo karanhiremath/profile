@@ -13,32 +13,32 @@ git config --global pull.rebase true
 git config --global user.email 'me@karanhiremath.com'
 git config --global user.name 'Karan Hiremath'
 
-gac () 
+function gac () 
 { 
 	git add "$1" && git commit -m "$2";
 }
 
-gacp () 
+function gacp () 
 { 
 	git add "$1" && git commit -m "$2" && git push;
 }
 
-gd ()
+function gd ()
 {
     git add "$1" && git commit -m "$2" && arc diff;
 }
 
-gs ()
+function gs ()
 {
     git status
 }
 
-docker-c-start ()
+function docker-c-start ()
 {
   docker-compose -f "$@" build && docker-compose -f "$@" up;
 }
 
-activate ()
+function activate ()
 {
   if [ -z "$1" ] 
     then
@@ -65,7 +65,7 @@ alias cl='clear'
 
 # Search a file with fzf inside a Tmux pane and then open it in an editor
 
-fvi ()
+function fvi ()
 {
     vi "$(fzf-tmux)"
 }
