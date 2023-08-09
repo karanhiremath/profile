@@ -6,6 +6,7 @@ alias ls='ls -GFh'
 alias tmux="tmux -2"
 
 git config --global --add --bool push.autoSetupRemote true
+git config --global pull.rebase true
 
 gac () 
 { 
