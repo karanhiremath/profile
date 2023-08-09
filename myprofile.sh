@@ -5,6 +5,8 @@ alias ls='ls -GFh'
 
 alias tmux="tmux -2"
 
+git config --global --add --bool push.autoSetupRemote true
+
 gac () 
 { 
 	git add "$1" && git commit -m "$2";
