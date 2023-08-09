@@ -10,6 +10,9 @@ git config --global user.name 'Karan Hiremath'
 git config --global --add --bool push.autoSetupRemote true
 git config --global pull.rebase true
 
+git config --global user.email 'me@karanhiremath.com'
+git config --global user.name 'Karan Hiremath'
+
 gac () 
 { 
 	git add "$1" && git commit -m "$2";
