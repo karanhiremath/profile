@@ -11,6 +11,10 @@ git config --global --add --bool push.autoSetupRemote true
 git config --global pull.rebase true
 
 
+function gb ()
+{
+    git checkout -b "$1"
+}
 function gac () 
 { 
 	git add "$1" && git commit -m "$2";

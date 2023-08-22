@@ -85,6 +85,7 @@ endif
 call plug#begin(has('nvim') ? stdpath('data') . '/plugged' : '~/.vim/plugged')
     Plug 'vmchale/just-vim'
     Plug 'tpope/vim-sensible'
+    Plug 'raghur/vim-ghost', {'do': ':GhostInstall'}
 call plug#end()
 
 nmap <leader>gd <Plug>(coc-definition)
