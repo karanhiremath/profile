@@ -73,3 +73,8 @@ function fvi ()
 alias v-"nvim"
 alias vi="nvim"
 alias vim="nvim"
+
+function profile ()
+{
+    cd ~/profile
+}
