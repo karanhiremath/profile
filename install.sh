@@ -59,7 +59,11 @@ else
 fi
 
 if [[ ! -e ~/.zshrc ]]; then
-    touch ~/.zshrc
+    # Setup Oh My ZSH and any plugins:
+#    git clone https://github.com/ohmyzsh/ohmyzsh.git ~/.dotfiles/.oh-my-zsh
+#    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+#    git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+    echo "No oh-my-zsh"
 else
     echo "ZSH Profile found at ~/.zshrc"
 fi
@@ -82,10 +86,6 @@ else
     echo "source $medir/zsh_profile.sh" >> ~/.zshrc
 fi
 
-# Setup Oh My ZSH and any plugins:
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
-
 if grep -q "$medir/myprofile.sh" ~/.zshrc; then
     echo "myprofile.sh already sourced in ~/.zshrc"
 else
@@ -93,11 +93,11 @@ else
     echo "source $medir/myprofile.sh" >> ~/.zshrc
 fi
 
-ln -sbi "$medir/vimprofile.sh" ~/.vimrc
+ln -si "$medir/vimprofile.sh" ~/.vimrc
 if [[ ! -e ~/.config/nvim ]]; then
     mkdir -p ~/.config/nvim
 fi
-ln -sbi "$medir/vimprofile.sh" ~/.config/nvim/init.vim
+ln -si "$medir/vimprofile.sh" ~/.config/nvim/init.vim
 echo "Symlinking $medir/vimprofile.sh in ~/.vimrc"
 
 if [[ ! -e ~/.vim/undodir ]]; then
@@ -111,6 +111,8 @@ if [[ ! -e ~/.vim/autoload/plug.vim ]]; then
     # install plug.vim
     curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
         https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
+    curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
+       https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
 else
     echo "~/.vim/autoload/plug.vim already exists"
 fi
@@ -146,6 +148,5 @@ if [[ $machine == "Mac" ]]; then
     brew install --cask ./alfred.rb
     brew install --cask warp
     curl -s -N 'https://warp-themes.com/d/NENn0wey1fDhRxHumFZP' | zsh
+    brew install neovim
 fi
-
-
