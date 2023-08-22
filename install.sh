@@ -59,7 +59,11 @@ else
 fi
 
 if [[ ! -e ~/.zshrc ]]; then
-    touch ~/.zshrc
+    # Setup Oh My ZSH and any plugins:
+#    git clone https://github.com/ohmyzsh/ohmyzsh.git ~/.dotfiles/.oh-my-zsh
+#    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+#    git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+    echo "No oh-my-zsh"
 else
     echo "ZSH Profile found at ~/.zshrc"
 fi
@@ -81,10 +85,6 @@ else
     echo "Sourcing $medir/zsh_profile.sh in ~/.zshrc"
     echo "source $medir/zsh_profile.sh" >> ~/.zshrc
 fi
-
-# Setup Oh My ZSH and any plugins:
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
 
 if grep -q "$medir/myprofile.sh" ~/.zshrc; then
     echo "myprofile.sh already sourced in ~/.zshrc"
@@ -146,6 +146,5 @@ if [[ $machine == "Mac" ]]; then
     brew install --cask ./alfred.rb
     brew install --cask warp
     curl -s -N 'https://warp-themes.com/d/NENn0wey1fDhRxHumFZP' | zsh
+    brew install neovim
 fi
-
-
