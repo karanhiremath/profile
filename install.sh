@@ -91,20 +91,12 @@ else
     echo "source $medir/myprofile.sh" >> ~/.zshrc
 fi
 
-if [[ ! -e ~/.vimrc ]]; then
-    touch ~/.vimrc
-else
-    echo "vimrc found at ~/.vimrc"
+ln -sbi "$medir/vimprofile.sh" ~/.vimrc
+if [[ ! -e ~/.config/nvim ]]; then
+    mkdir -p ~/.config/nvim
 fi
-
-if grep -q "$medir/vimprofile.sh" ~/.vimrc; then
-    echo "vimprofile.sh already sourced in ~/.vimrc"
-else
-    echo "Sourcing $medir/vimprofile.sh in ~/.vimrc"
-    echo "source $medir/vimprofile.sh" >> ~/.vimrc
-
-
-fi
+ln -sbi "$medir/vimprofile.sh" ~/.config/nvim/init.vim
+echo "Symlinking $medir/vimprofile.sh in ~/.vimrc"
 
 if [[ ! -e ~/.vim/undodir ]]; then
     # if ~/.vim/undodir not present, create ~/.vim/undodir

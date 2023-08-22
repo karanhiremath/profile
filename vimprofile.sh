@@ -76,9 +76,9 @@ set viminfo^=%
 vnoremap <silent> # :s/^/#/<cr>:noh<cr>
 vnoremap <silent> -# :s/^#//<cr>:noh<cr>
 
-call plug#begin('~/.vim/plugged')
+call plug#begin(has('nvim') ? stdpath('data') . '/plugged' : '~/.vim/plugged')
     Plug 'vmchale/just-vim'
-
+    Plug 'tpope/vim-sensible'
 call plug#end()
 
 nmap <leader>gd <Plug>(coc-definition)
