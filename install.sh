@@ -14,6 +14,8 @@ case "${unameOut}" in
     *)          machine="UNKNOWN:${unameOut}"
 esac
 
+
+
 if [[ $machine == "Mac" ]]; then
     echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
     curl -l https://iterm2.com/shell_integration/zsh \
