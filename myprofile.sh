@@ -13,6 +13,10 @@ git config --global pull.rebase true
 git config --global user.email 'me@karanhiremath.com'
 git config --global user.name 'Karan Hiremath'
 
+function gb ()
+{
+    git checkout -b "$1"
+}
 function gac () 
 { 
 	git add "$1" && git commit -m "$2";
