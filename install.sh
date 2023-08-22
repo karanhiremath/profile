@@ -93,11 +93,11 @@ else
     echo "source $medir/myprofile.sh" >> ~/.zshrc
 fi
 
-ln -sbi "$medir/vimprofile.sh" ~/.vimrc
+ln -si "$medir/vimprofile.sh" ~/.vimrc
 if [[ ! -e ~/.config/nvim ]]; then
     mkdir -p ~/.config/nvim
 fi
-ln -sbi "$medir/vimprofile.sh" ~/.config/nvim/init.vim
+ln -si "$medir/vimprofile.sh" ~/.config/nvim/init.vim
 echo "Symlinking $medir/vimprofile.sh in ~/.vimrc"
 
 if [[ ! -e ~/.vim/undodir ]]; then
@@ -111,6 +111,8 @@ if [[ ! -e ~/.vim/autoload/plug.vim ]]; then
     # install plug.vim
     curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
         https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
+    curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
+       https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
 else
     echo "~/.vim/autoload/plug.vim already exists"
 fi
