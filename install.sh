@@ -81,8 +81,8 @@ else
 fi
 
 # Setup Oh My ZSH and any plugins:
-#sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-#git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
 
 if grep -q "$medir/myprofile.sh" ~/.zshrc; then
     echo "myprofile.sh already sourced in ~/.zshrc"
@@ -91,20 +91,12 @@ else
     echo "source $medir/myprofile.sh" >> ~/.zshrc
 fi
 
-if [[ ! -e ~/.vimrc ]]; then
-    touch ~/.vimrc
-else
-    echo "vimrc found at ~/.vimrc"
+ln -sbi "$medir/vimprofile.sh" ~/.vimrc
+if [[ ! -e ~/.config/nvim ]]; then
+    mkdir -p ~/.config/nvim
 fi
-
-if grep -q "$medir/vimprofile.sh" ~/.vimrc; then
-    echo "vimprofile.sh already sourced in ~/.vimrc"
-else
-    echo "Sourcing $medir/vimprofile.sh in ~/.vimrc"
-    echo "source $medir/vimprofile.sh" >> ~/.vimrc
-
-
-fi
+ln -sbi "$medir/vimprofile.sh" ~/.config/nvim/init.vim
+echo "Symlinking $medir/vimprofile.sh in ~/.vimrc"
 
 if [[ ! -e ~/.vim/undodir ]]; then
     # if ~/.vim/undodir not present, create ~/.vim/undodir
