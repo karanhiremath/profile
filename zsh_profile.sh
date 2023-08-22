@@ -5,6 +5,10 @@ alias reload="source ~/.zshrc && echo 'ZSH Profile Reloaded'"
 autoload -U colors && colors
 autoload -Uz promptinit && promptinit
 
+# initialize completio
+autoload -Uz compinit
+compinit
+
 # Load version control information
 autoload -Uz vcs_info
 

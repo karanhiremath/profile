@@ -14,18 +14,20 @@ case "${unameOut}" in
     *)          machine="UNKNOWN:${unameOut}"
 esac
 
-echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
-curl -l https://iterm2.com/shell_integration/zsh \
-    -o ./.iterm2_shell_integration.zsh
-curl -l https://iterm2.com/shell_integration/bash \
-    -o ./.iterm2_shell_integration.bash
-if [ $machine == "Mac" ]; then
-    which -s brew
-    if [[ $? != 0 ]] ; then
+
+
+if [[ $machine == "Mac" ]]; then
+    echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
+    curl -l https://iterm2.com/shell_integration/zsh \
+        -o ./.iterm2_shell_integration.zsh
+    curl -l https://iterm2.com/shell_integration/bash \
+        -o ./.iterm2_shell_integration.bash
+    if [[ $(command -v brew) == "" ]]; then
+        echo "Installing Hombrew"
         # install Homebrew
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     else
-        echo "Running brew update..."
+        echo "Updating Homebrew"
         brew update
     fi
 fi
@@ -56,6 +58,22 @@ else
     echo "Bash Profile found at ~/.bash_profile"
 fi
 
+if [[ ! -e ~/.zshrc ]]; then
+    touch ~/.zshrc
+else
+    echo "ZSH Profile found at ~/.zshrc"
+fi
+
+# add brew to `/.zshrc
+if [[ $machine == "Mac" ]]; then
+    if grep -q "/opt/homebrew/bin" ~/.zshrc; then
+        echo "homebrew bin added to ~/.zshrc"
+    else
+        echo "adding brew to ~/.zshrc PATH"
+        echo "export PATH=/opt/homebrew/bin:$PATH" >> ~/.zshrc
+    fi
+fi
+
 # confirm .zprofile and .zshrc are setup appropriately
 if grep -q "$medir/zsh_profile.sh" ~/.zshrc; then
     echo "zsh_profile.sh already sourced in ~/.zshrc"
@@ -64,6 +82,10 @@ else
     echo "source $medir/zsh_profile.sh" >> ~/.zshrc
 fi
 
+# Setup Oh My ZSH and any plugins:
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+
 if grep -q "$medir/myprofile.sh" ~/.zshrc; then
     echo "myprofile.sh already sourced in ~/.zshrc"
 else
@@ -71,20 +93,12 @@ else
     echo "source $medir/myprofile.sh" >> ~/.zshrc
 fi
 
-if [[ ! -e ~/.vimrc ]]; then
-    touch ~/.vimrc
-else
-    echo "vimrc found at ~/.vimrc"
+ln -sbi "$medir/vimprofile.sh" ~/.vimrc
+if [[ ! -e ~/.config/nvim ]]; then
+    mkdir -p ~/.config/nvim
 fi
-
-if grep -q "$medir/vimprofile.sh" ~/.vimrc; then
-    echo "vimprofile.sh already sourced in ~/.vimrc"
-else
-    echo "Sourcing $medir/vimprofile.sh in ~/.vimrc"
-    echo "source $medir/vimprofile.sh" >> ~/.vimrc
-
-
-fi
+ln -sbi "$medir/vimprofile.sh" ~/.config/nvim/init.vim
+echo "Symlinking $medir/vimprofile.sh in ~/.vimrc"
 
 if [[ ! -e ~/.vim/undodir ]]; then
     # if ~/.vim/undodir not present, create ~/.vim/undodir
@@ -99,6 +113,11 @@ if [[ ! -e ~/.vim/autoload/plug.vim ]]; then
         https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
 else
     echo "~/.vim/autoload/plug.vim already exists"
+fi
+
+# install tmux
+if [[ $machine == "Mac" ]]; then
+    brew install tmux
 fi
 
 if [[ ! -e ~/.tmux.conf ]]; then
@@ -119,3 +138,14 @@ if [[ ! -e ~/.tmux/plugins/tpm/ ]]; then
 else
     echo "~/.tmux/plugins/tmp exists!" 
 fi
+
+# install a bunch of stuff we want to use as well
+if [[ $machine == "Mac" ]]; then
+    brew install --cask rectangle
+    curl -O https://raw.githubusercontent.com/Homebrew/homebrew-cask/645973c9681519cfd471a4352f377cdd4e3f09b2/Casks/alfred.rb
+    brew install --cask ./alfred.rb
+    brew install --cask warp
+    curl -s -N 'https://warp-themes.com/d/NENn0wey1fDhRxHumFZP' | zsh
+fi
+
+
