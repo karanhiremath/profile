@@ -146,6 +146,7 @@ fi
 # install a bunch of stuff we want to use as well
 if [[ $machine == "Mac" ]]; then
     brew install --cask rectangle
+    brew install gh
     curl -O https://raw.githubusercontent.com/Homebrew/homebrew-cask/645973c9681519cfd471a4352f377cdd4e3f09b2/Casks/alfred.rb
     brew install --cask ./alfred.rb
     brew install --cask warp
