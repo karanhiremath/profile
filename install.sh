@@ -152,4 +152,5 @@ if [[ $machine == "Mac" ]]; then
     brew install --cask warp
     curl -s -N 'https://warp-themes.com/d/NENn0wey1fDhRxHumFZP' | zsh
     brew install neovim
+    brew install --cask alacritty
 fi
