@@ -42,7 +42,6 @@ if [[ $machine == "Mac" ]]; then
     fi
 fi
 
-
 function install_app() {
     app=$1
     echo "Checking status for ${app}"
@@ -55,7 +54,6 @@ function install_app() {
 }
 install_app "cargo"
 install_app "just"
-
 
 if [[ ! -e ~/.bash_profile ]]; then
     touch ~/.bash_profile
