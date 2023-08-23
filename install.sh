@@ -42,19 +42,20 @@ if [[ $machine == "Mac" ]]; then
     fi
 fi
 
-# install cargo
-if [[ $(cmd_test_or_install "cargo") -eq 0 ]]; then
-    echo "cargo already available at $(command -v 'cargo')"
-else
-    ./bin/cargo/install.sh
-fi
 
-# install just
-if [[ $(cmd_test_or_install "just") -eq 0 ]]; then
-    echo "just already available at $(command -v 'just')"
-else
-    ./bin/just/install.sh
-fi
+function install_app() {
+    app=$1
+    echo "Checking status for ${app}"
+    if command -v "${app}" > /dev/null 2>&1; then
+        location="$(command -v $app)"
+        echo "$app already available at $location"
+    else
+        "./bin/$app/install"
+    fi
+}
+install_app "cargo"
+install_app "just"
+
 
 if [[ ! -e ~/.bash_profile ]]; then
     touch ~/.bash_profile
