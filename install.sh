@@ -1,9 +1,13 @@
 #!/bin/bash
 
-set -e
-set -u
+set -euo pipefail
+
+shopt -s failglob
 
 medir=$( pwd "$0" )
+export PROFILE_DIR=$medir
+
+. $PROFILE_DIR/bin/sh/shell_fns --source-only
 
 unameOut="$(uname -s)"
 case "${unameOut}" in
@@ -13,8 +17,14 @@ case "${unameOut}" in
     MINGW*)     machine=MinGw;;
     *)          machine="UNKNOWN:${unameOut}"
 esac
+export MACHINE=$machine
 
-
+unamemOut="$(uname -m)"
+case "${unamemOut}" in
+    aarch64)    arch=Arm64;;
+    *)          arch="UNKOWN:${unamemOut}"
+esac
+export ARCH=$arch
 
 if [[ $machine == "Mac" ]]; then
     echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
@@ -30,6 +40,20 @@ if [[ $machine == "Mac" ]]; then
         echo "Updating Homebrew"
         brew update
     fi
+fi
+
+# install cargo
+if [[ $(cmd_test_or_install "cargo") -eq 0 ]]; then
+    echo "cargo already available at $(command -v 'cargo')"
+else
+    ./bin/cargo/install.sh
+fi
+
+# install just
+if [[ $(cmd_test_or_install "just") -eq 0 ]]; then
+    echo "just already available at $(command -v 'just')"
+else
+    ./bin/just/install.sh
 fi
 
 if [[ ! -e ~/.bash_profile ]]; then
