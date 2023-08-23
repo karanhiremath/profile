@@ -1,4 +1,3 @@
-
 export MYSQL_PS1="\R:\m:\s\ \u\ [db\ \d]\ >\ "
 
 alias ls='ls -GFh'
@@ -80,3 +79,5 @@ function profile ()
 {
     cd ~/profile
 }
+
+source ~/.config/.vars

@@ -1,0 +1,23 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+function debian_install() {
+    type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && sudo apt update \
+    && sudo apt install gh -y
+}
+
+case "${MACHINE}"
+    Linux)  debian_install();;
+    Mac)    brew install gh;;
+    *)      echo "Unknown '${MACHINE=}' 
+esac
+
+case "${ARCH}"
+esac    
