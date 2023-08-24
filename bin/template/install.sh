@@ -4,7 +4,7 @@ set -euo pipefail
 
 shopt -s failglob
 
-. $PROFILE_DIR/bin/sh/shell_fns --source-only
+. "${APP_BIN}/bin/sh/shell_fns --source-only"
 
 app_name="APP NAME"
 

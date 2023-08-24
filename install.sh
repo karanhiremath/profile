@@ -9,6 +9,7 @@ export PROFILE_DIR=$medir
 
 . $PROFILE_DIR/bin/sh/shell_fns --source-only
 
+
 unameOut="$(uname -s)"
 case "${unameOut}" in
     Linux*)     machine=Linux;;
@@ -42,18 +43,11 @@ if [[ $machine == "Mac" ]]; then
     fi
 fi
 
-function install_app() {
-    app=$1
-    echo "Checking status for ${app}"
-    if command -v "${app}" > /dev/null 2>&1; then
-        location="$(command -v $app)"
-        echo "$app already available at $location"
-    else
-        "./bin/$app/install"
-    fi
-}
+# install cargo and then just so we can use Justfile to do the rest
 install_app "cargo"
 install_app "just"
+
+just all
 
 if [[ ! -e ~/.bash_profile ]]; then
     touch ~/.bash_profile

@@ -80,4 +80,6 @@ function profile ()
     cd ~/profile
 }
 
-source ~/.config/.vars
+touch ~/.config/.vars && source ~/.config/.vars
+
+source "$HOME/.cargo/env"

@@ -1,13 +1,44 @@
-syntax on
-
-filetype plugin on
-filetype indent on
 
 set autoread
+" ---- Minimal configuration:
+set smartindent   " Do smart autoindenting when starting a new line
+set shiftwidth=4  " Set number of spaces per auto indentation
+set expandtab     " When using <Tab>, put spaces instead of a <tab> character
 
-set tabstop=4
-set softtabstop=4
-set shiftwidth=4
+set ai "Auto indent
+set si "Smart indent
+set wrap "Wrap lines
+
+syntax on
+
+filetype plugin indent on
+
+set guicursor=n-v-c:block-Cursor
+set guicursor+=i:ver100-iCursor
+set guicursor+=n-v-c:blinkon0
+
+let mapleader = ','
+
+" Edit the vimrc file
+nnoremap ev  :e $MYVIMRC<CR>
+nnoremap <leader>evr :source  $MYVIMRC<CR>
+nnoremap tt  :tablast<CR>
+nnoremap te  :tabedit<Space>
+nnoremap tn  :tabnext<CR>
+nnoremap tp  :tabprev<CR>
+nnoremap tc  :tabnew<CR>
+nnoremap tm  :tabm<Space>
+nnoremap tx  :tabclose<CR>
+nnoremap t1  1gt<CR>
+nnoremap t2  2gt<CR>
+nnoremap t3  3gt<CR>
+nnoremap t4  4gt<CR>
+nnoremap t5  5gt<CR>
+nnoremap t6  6gt<CR>
+nnoremap fbk :bd!<CR>
+nnoremap fak :%bd!<bar>e#<CR>
+nnoremap <leader>bo  :bp<CR>
+nnoremap <leader>bi  :bn<CR>
 
 set number relativenumber
 :augroup numbertoggle
@@ -42,14 +73,6 @@ set nobackup
 set undodir=~/.vim/undodir
 set undofile
 
-set ai "Auto indent
-set si "Smart indent
-set wrap "Wrap lines
-
-" ---- Minimal configuration:
-set smartindent   " Do smart autoindenting when starting a new line
-set shiftwidth=4  " Set number of spaces per auto indentation
-set expandtab     " When using <Tab>, put spaces instead of a <tab> character
 
 " ---- Good to have for consistency
 " set tabstop=4   " Number of spaces that a <Tab> in the file counts for

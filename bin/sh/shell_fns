@@ -31,3 +31,14 @@ function cmd_test_or_install() {
         exit 2
     fi
 }
+
+function install_app() {
+    app=$1
+    echo "Checking status for ${app}"
+    if command -v "${app}" > /dev/null 2>&1; then
+        location="$(command -v $app)"
+        echo "$app already available at $location"
+    else
+        "./bin/$app/install"
+    fi
+}

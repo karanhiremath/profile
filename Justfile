@@ -1,6 +1,9 @@
-APPFILES := $(shell pwd)
+#!/usr/bin/env just --justfile
 
-all: install shell git fish tmux vim nvim python bash zsh starship
+APP_BIN := "$(shell pwd)/bin"
+HOME := "$(echo $HOME)"
+
+all: shell git fish tmux vim nvim python bash zsh starship
 
 install:
     ./install.sh
@@ -18,11 +21,26 @@ tmux:
     # tmux install
 
 vim:
+    #!/bin/sh
     # vim install
-    touch $(HOME)/.netrc
-    mkdir -p $(HOME)/.cache/nvim/undo
-    mkdir -p $(HOME)/.config/nvim/
+    touch "{{HOME}}/.netrc"
+    mkdir -p "{{HOME}}/.cache/nvim/undo"
+    mkdir -p "{{HOME}}/.config/nvim/"
+    ln -fs "{{APP_BIN}}/vim" "{{HOME}}/.vim"
+    ln -fs "{{APP_BIN}}/vim/.vimrc" "{{HOME}}/.vimrc"
 
+
+nvim:
+    # nvim install
+
+python:
+    # python install
+
+bash:
+    # bash install
+
+zsh:
+    #zsh install
 
 starship:
     # starship install
