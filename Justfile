@@ -29,9 +29,9 @@ vim:
     ln -fs "{{APP_BIN}}/vim" "{{HOME}}/.vim"
     ln -fs "{{APP_BIN}}/vim/.vimrc" "{{HOME}}/.vimrc"
 
-
 nvim:
     # nvim install
+    just vim
 
 python:
     # python install
