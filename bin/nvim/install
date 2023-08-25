@@ -6,7 +6,7 @@ shopt -s failglob
 
 . "${APP_BIN}/bin/sh/shell_fns --source-only"
 
-app_name="APP NAME"
+app_name="nvim"
 
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
