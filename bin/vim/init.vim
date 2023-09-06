@@ -11,10 +11,8 @@
 ---   \$$$$$$                                                                
 ---     \$$                                                                  
 
-
-vim.cmd [[
-    set autoread
-    syntax on
+set autoread
+syntax on
 
 filetype plugin on
 filetype indent on
@@ -99,8 +97,11 @@ endif
 call plug#begin(has('nvim') ? stdpath('data') . '/plugged' : '~/.vim/plugged')
     Plug 'vmchale/just-vim'
     Plug 'tpope/vim-sensible'
+    Plug 'roxma/vim-hug-neovim-rpc'
+    Plug 'SpaceVim/nvim-yarp'
     Plug 'raghur/vim-ghost', {'do': ':GhostInstall'}
     Plug 'hashivim/vim-terraform'
+
 call plug#end()
 
 nmap <leader>gd <Plug>(coc-definition)
@@ -110,15 +111,3 @@ nnoremap <C-p> :GFiles<CR>
 set laststatus=2
 set viminfo='20,<1000,s1000
 
-set secure
-]]
-
-local function prerequire(m)
-    local ok, err = pcall(require, m)
-    if not ok then return nill, err end
-    return err
-end
-
-prerequire("local")
-
-vim.cmd [[set secure]]
