@@ -5,7 +5,12 @@ set -euo pipefail
 shopt -s failglob
 
 medir=$( pwd "$0" )
-export PROFILE_DIR=$medir
+export PROFILE_DIR="${medir}"
+
+if [[ ! -e ~/.config/.vars ]]; then
+    touch "~/.config/.vars"
+fi
+grep -rq "export PROFILE_DIR=${PROFILE_DIR}" ~/.config/.vars || echo "export PROFILE_DIR=${PROFILE_DIR}" >> ~/.config/.vars
 
 . $PROFILE_DIR/bin/sh/shell_fns --source-only
 
