@@ -76,6 +76,4 @@ function profile ()
     cd ~/profile
 }
 
-touch ~/.config/.vars && source ~/.config/.vars
-
-source "$HOME/.cargo/env"
+source ~/.config/.vars
