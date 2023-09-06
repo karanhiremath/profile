@@ -7,30 +7,39 @@ shopt -s failglob
 medir=$( pwd "$0" )
 export PROFILE_DIR="${medir}"
 
-if [[ ! -e ~/.config/.vars ]]; then
-    touch "~/.config/.vars"
-fi
-grep -rq "export PROFILE_DIR=${PROFILE_DIR}" ~/.config/.vars || echo "export PROFILE_DIR=${PROFILE_DIR}" >> ~/.config/.vars
+function generate_config_vars()
+{
+
+    if [[ ! -e ~/.config/.vars ]]; then
+        touch "~/.config/.vars"
+    fi
+
+    grep -rq "export PROFILE_DIR=${PROFILE_DIR}" ~/.config/.vars || echo "export PROFILE_DIR=${PROFILE_DIR}" >> ~/.config/.vars
+    unameOut="$(uname -s)"
+    case "${unameOut}" in
+        Linux*)     machine=Linux;;
+        Darwin*)    machine=Mac;;
+        CYGWIN*)    machine=Cygwin;;
+        MINGW*)     machine=MinGw;;
+        *)          machine="UNKNOWN:${unameOut}"
+    esac
+    export MACHINE=$machine
+    grep -rq "export MACHINE=${MACHINE}" ~/.config/.vars || echo "export MACHINE=${MACHINE}" >> ~/.config/.vars
+
+    unamemOut="$(uname -m)"
+    case "${unamemOut}" in
+        aarch64)    arch=Arm64;;
+        *)          arch="UNKOWN:${unamemOut}"
+    esac
+    export ARCH=$arch
+    grep -rq "export ARCH=${ARCH}" ~/.config/.vars || echo "export ARCH=${ARCH}" >> ~/.config/.vars
+}
+
+generate_config_vars
+
+echo "${MACHINE} ${ARCH}"
 
 . $PROFILE_DIR/bin/sh/shell_fns --source-only
-
-
-unameOut="$(uname -s)"
-case "${unameOut}" in
-    Linux*)     machine=Linux;;
-    Darwin*)    machine=Mac;;
-    CYGWIN*)    machine=Cygwin;;
-    MINGW*)     machine=MinGw;;
-    *)          machine="UNKNOWN:${unameOut}"
-esac
-export MACHINE=$machine
-
-unamemOut="$(uname -m)"
-case "${unamemOut}" in
-    aarch64)    arch=Arm64;;
-    *)          arch="UNKOWN:${unamemOut}"
-esac
-export ARCH=$arch
 
 if [[ $machine == "Mac" ]]; then
     echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"

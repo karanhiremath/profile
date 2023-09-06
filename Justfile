@@ -29,6 +29,7 @@ vim:
     ln -fs "{{APP_BIN}}/vim" "{{HOME}}/.vim"
     ln -fs "{{APP_BIN}}/vim/.vimrc" "{{HOME}}/.vimrc"
 
+<<<<<<< HEAD
 python:
     # python install
 
@@ -38,6 +39,8 @@ bash:
 zsh:
     #zsh install
 
+=======
+>>>>>>> ec81ff3 (debugging ghost install)
 starship:
     # starship install
     ./bin/starship/install

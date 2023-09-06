@@ -1,7 +1,5 @@
 source ~/.config/.vars
 
-echo "${PROFILE_DIR}"
-
 source "${PROFILE_DIR}/myprofile.sh"
 
 alias reload="source ~/.zshrc && echo 'ZSH Profile Reloaded'"
