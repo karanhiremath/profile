@@ -6,19 +6,19 @@ shopt -s failglob
 
 . "${APP_BIN}/bin/sh/shell_fns --source-only"
 
-app_name="APP NAME"
+source "$HOME/.cargo/env"
+
+app_name="just"
 
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-if cmd_test_or_install $app_name -eq 0; then
-    echo "Already installed!"
-else
-    install_messages "start" "$app_name"
+install_messages "start" "$app_name"
 
+if [[ $(cargo install just) -ne 0 ]]; then
     case "${MACHINE}" in
         Linux)  echo "Linux specific install instructions here";;
-        Mac)    echo "Mac install instructions here";;
+        Mac)    brew install just;;
         *)      echo "Generic install instructions here";;
     esac
 
@@ -26,6 +26,7 @@ else
         aarch64)  echo "aarch64 architecture specific install instructions here";;
         *)      echo "Generic install instructions here";;
     esac
-
-    install_messages "end" "$app_name"
 fi
+
+install_messages "end" "$app_name"
+

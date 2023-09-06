@@ -9,6 +9,7 @@ export PROFILE_DIR=$medir
 
 . $PROFILE_DIR/bin/sh/shell_fns --source-only
 
+
 unameOut="$(uname -s)"
 case "${unameOut}" in
     Linux*)     machine=Linux;;
@@ -42,19 +43,11 @@ if [[ $machine == "Mac" ]]; then
     fi
 fi
 
-# install cargo
-if [[ $(cmd_test_or_install "cargo") -eq 0 ]]; then
-    echo "cargo already available at $(command -v 'cargo')"
-else
-    ./bin/cargo/install.sh
-fi
+# install cargo and then just so we can use Justfile to do the rest
+install_app "cargo"
+install_app "just"
 
-# install just
-if [[ $(cmd_test_or_install "just") -eq 0 ]]; then
-    echo "just already available at $(command -v 'just')"
-else
-    ./bin/just/install.sh
-fi
+just all
 
 if [[ ! -e ~/.bash_profile ]]; then
     touch ~/.bash_profile
@@ -176,4 +169,5 @@ if [[ $machine == "Mac" ]]; then
     brew install --cask warp
     curl -s -N 'https://warp-themes.com/d/NENn0wey1fDhRxHumFZP' | zsh
     brew install neovim
+    brew install --cask alacritty
 fi

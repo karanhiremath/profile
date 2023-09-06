@@ -38,4 +38,5 @@ bindkey  "^[[3~"  delete-char
 
 source ~/profile/.iterm2_shell_integration.zsh
 
-eval "$(starship init zsh)"
+# doesnt seem to have an arm64 build for mac
+# eval "$(starship init zsh)"

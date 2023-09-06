@@ -17,14 +17,21 @@ else
     install_messages "start" "$app_name"
 
     case "${MACHINE}" in
-        Linux)  echo "Linux specific install instructions here";;
-        Mac)    echo "Mac install instructions here";;
-        *)      echo "Generic install instructions here";;
+        Linux)
+		echo "Linux specific install instructions here";;
+        Mac)
+		echo "Mac install instructions here";;
+        *)
+		echo "Generic install instructions here";;
     esac
 
     case "${ARCH}" in
-        aarch64)  echo "aarch64 architecture specific install instructions here";;
-        *)      echo "Generic install instructions here";;
+        aarch64)
+		echo "aarch64 architecture specific install instructions here";;
+	arm64)
+		echo "
+        *)
+		echo "Generic install instructions here";;
     esac
 
     install_messages "end" "$app_name"

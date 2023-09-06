@@ -87,6 +87,8 @@ call plug#begin(has('nvim') ? stdpath('data') . '/plugged' : '~/.vim/plugged')
     Plug 'tpope/vim-sensible'
     Plug 'raghur/vim-ghost', {'do': ':GhostInstall'}
     Plug 'hashivim/vim-terraform'
+    Plug 'tmux-plugins/vim-tmux-focus-events'
+    Plug 'sheerun/vim-polyglot'
 call plug#end()
 
 nmap <leader>gd <Plug>(coc-definition)

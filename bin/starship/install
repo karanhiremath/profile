@@ -4,14 +4,28 @@ set -euo pipefail
 
 shopt -s failglob
 
-. $PROFILE_DIR/bin/sh/shell_fns --source-only
+. "${APP_BIN}/bin/sh/shell_fns --source-only"
 
 app_name="starship"
 
-install_messages "start" "$app_name"
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
 
-curl -sS https://starship.rs/install.sh | sh
+if cmd_test_or_install $app_name -eq 0; then
+    echo "Already installed!"
+else
+    install_messages "start" "$app_name"
 
-ln -fs ./starship.toml ~/.config/starship.toml
+    case "${MACHINE}" in
+        Linux)  echo "Linux specific install instructions here";;
+        Mac)    echo "Mac install instructions here";;
+        *)      echo "Generic install instructions here";;
+    esac
 
-install_messages "end" "$app_name"
+    case "${ARCH}" in
+        aarch64)  echo "aarch64 architecture specific install instructions here";;
+        *)      echo "Generic install instructions here";;
+    esac
+
+    install_messages "end" "$app_name"
+fi
