@@ -181,7 +181,7 @@ if [[ $machine == "Mac" ]]; then
     curl -O https://raw.githubusercontent.com/Homebrew/homebrew-cask/645973c9681519cfd471a4352f377cdd4e3f09b2/Casks/alfred.rb
     brew install --cask ./alfred.rb
     brew install --cask warp
-    curl -s -N 'https://warp-themes.com/d/NENn0wey1fDhRxHumFZP' | zsh
+#    curl -s -N 'https://warp-themes.com/d/NENn0wey1fDhRxHumFZP' | zsh
     brew install neovim
     brew install --cask alacritty
 fi

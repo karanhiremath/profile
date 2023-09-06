@@ -44,4 +44,4 @@ zsh:
 
 starship:
     # starship install
-    ./bin/starship/install
+    # ./bin/starship/install
