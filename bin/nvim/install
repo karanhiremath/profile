@@ -4,7 +4,7 @@ set -euo pipefail
 
 shopt -s failglob
 
-. "${APP_BIN}/bin/sh/shell_fns --source-only"
+. "${PROFILE_DIR}/bin/sh/shell_fns" --source-only
 
 app_name="nvim"
 
@@ -18,7 +18,7 @@ else
 
     case "${MACHINE}" in
         Linux)  echo "Linux specific install instructions here";;
-        Mac)    echo "Mac install instructions here";;
+        Mac)    brew install nvim;;
         *)      echo "Generic install instructions here";;
     esac
 
@@ -26,6 +26,9 @@ else
         aarch64)  echo "aarch64 architecture specific install instructions here";;
         *)      echo "Generic install instructions here";;
     esac
+
+    sh -c 'curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
+           https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
 
     install_messages "end" "$app_name"
 fi
