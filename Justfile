@@ -26,8 +26,8 @@ vim:
     touch "{{HOME}}/.netrc"
     mkdir -p "{{HOME}}/.cache/nvim/undo"
     mkdir -p "{{HOME}}/.config/nvim/"
-    ln -fs "{{APP_BIN}}/vim" "{{HOME}}/.vim"
-    ln -fs "{{APP_BIN}}/vim/.vimrc" "{{HOME}}/.vimrc"
+    ln -fns "{{APP_BIN}}"/vim "{{HOME}}"/.vim
+    ln -fs "{{APP_BIN}}"/vim/.vimrc "{{HOME}}"/.vimrc
     ln -fns "{{APP_BIN}}"/nvim/init.lua "{{HOME}}"/.config/nvim/init.lua
     ln -fns "{{APP_BIN}}"/nvim/lua "{{HOME}}"/.config/nvim/lua
 
