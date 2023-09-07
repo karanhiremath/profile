@@ -78,4 +78,4 @@ function profile ()
 
 alias vi="nvim"
 
-source "$HOME/.cargo/env"
+source "${HOME}"/.cargo/env
