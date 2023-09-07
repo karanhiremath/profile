@@ -99,7 +99,9 @@ endif
 call plug#begin(has('nvim') ? stdpath('data') . '/plugged' : '~/.vim/plugged')
     Plug 'vmchale/just-vim'
     Plug 'tpope/vim-sensible'
-    Plug 'raghur/vim-ghost', {'do': ':GhostInstall'}
+    Plug 'roxma/vim-hug-neovim-rpc'
+    Plug 'SpaceVim/nvim-yarp'
+    Plug 'subnut/nvim-ghost.nvim', {'do': ':GhostInstall'}
     Plug 'hashivim/vim-terraform'
 call plug#end()
 

@@ -174,7 +174,7 @@ else
     echo "~/.tmux/plugins/tmp exists!" 
 fi
 
-just install nvim
+just nvim
 
 # install a bunch of stuff we want to use as well
 if [[ $machine == "Mac" ]]; then
