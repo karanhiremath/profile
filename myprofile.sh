@@ -76,4 +76,6 @@ function profile ()
     cd ~/profile
 }
 
+alias vi="nvim"
+
 source "$HOME/.cargo/env"
