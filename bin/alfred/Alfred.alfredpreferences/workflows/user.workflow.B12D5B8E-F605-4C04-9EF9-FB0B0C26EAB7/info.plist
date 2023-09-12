@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>com.calebevans.playsong</string>
+	<key>category</key>
+	<string>Tools</string>
+	<key>connections</key>
+	<dict>
+		<key>2D3A0235-00F2-4DDD-89C1-12B188D7BE74</key>
+		<array/>
+		<key>6C68D0BB-A89A-4FDD-BB99-B5A5B460646E</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>2D3A0235-00F2-4DDD-89C1-12B188D7BE74</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>9B592379-69A5-4A02-A832-2714DFC21AB5</string>
+				<key>modifiers</key>
+				<integer>1048576</integer>
+				<key>modifiersubtext</key>
+				<string>Reveal in iTunes</string>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>72ED63B1-04F1-4184-8BA4-70A51EB3DB9B</string>
+				<key>modifiers</key>
+				<integer>524288</integer>
+				<key>modifiersubtext</key>
+				<string>Reveal in Finder</string>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>FCE80987-6882-47DD-9035-420F766AAED5</string>
+				<key>modifiers</key>
+				<integer>262144</integer>
+				<key>modifiersubtext</key>
+				<string>Search on Google</string>
+			</dict>
+		</array>
+		<key>FCE80987-6882-47DD-9035-420F766AAED5</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>34BFAA32-1758-4B5F-99EB-57900C4DB91A</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+	</dict>
+	<key>createdby</key>
+	<string>Caleb Evans</string>
+	<key>description</key>
+	<string>Plays a song in iTunes</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Play Song</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(query)		tell application "iTunes"		if query is "null" then			-- if no results were found, bring iTunes to the front			activate		else			-- otherwise, play the given song ID			set songId to query as integer			set songList to (every track whose database ID is songId)			-- play track			set song to item 1 of songList			play song		end if	end tell	end alfred_script</string>
+				<key>cachescript</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>2D3A0235-00F2-4DDD-89C1-12B188D7BE74</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>0</integer>
+				<key>escaping</key>
+				<integer>36</integer>
+				<key>keyword</key>
+				<string>play</string>
+				<key>runningsubtext</key>
+				<string>Searching...</string>
+				<key>script</key>
+				<string>-- OPTIONS ---- retrieve search queryset query to "{query}"-- limit number of songs for maximum efficiencyset songLimit to 10-- whether or not to retrieve album artwork for each resultset albumArtEnabled to true-- SCRIPT ---- cache variablesset homeFolder to (path to home folder as text)set libraryFolder to (homeFolder &amp; "Library:")set cacheFolder to (libraryFolder &amp; "Caches:")set workflowDataFolder to (cacheFolder &amp; "com.runningwithcrayons.Alfred-2:Workflow Data:")set artworkFolderName to "com.calebevans.playsong"set artworkFolderPath to (workflowDataFolder &amp; artworkFolderName &amp; ":")set songArtworkNameSep to " - "-- replace substring in string with another substringon replace(replaceThis, replaceWith, originalStr)	set AppleScript's text item delimiters to replaceThis	set strItems to text items of originalStr	set AppleScript's text item delimiters to replaceWith	return strItems as textend replace-- escape XML reserved characters in the given stringon escapeXmlChars(str)	set str to replace("&amp;", "&amp;amp;", str)	set str to replace("&lt;", "&amp;lt;", str)	set str to replace("&gt;", "&amp;gt;", str)	return strend escapeXmlChars-- create Alfred result item as XMLon createItem(uid, arg, valid, title, subtitle, icon)	global homeFolder		-- recognize file paths for the icon	if icon begins with homeFolder then		set icon to POSIX path of icon	end if		-- escape reserved XML characters	set title to escapeXmlChars(title)	set subtitle to escapeXmlChars(subtitle)	if icon is not "icon.png" then		set icon to escapeXmlChars(icon)	end if		return tab &amp; "&lt;item uid='" &amp; uid &amp; "' arg='" &amp; arg &amp; "' valid='" &amp; valid &amp; "'&gt;
+		&lt;title&gt;" &amp; title &amp; "&lt;/title&gt;
+		&lt;subtitle&gt;" &amp; subtitle &amp; "&lt;/subtitle&gt;
+		&lt;icon&gt;" &amp; icon &amp; "&lt;/icon&gt;
+	&lt;/item&gt;" &amp; return &amp; return	end createItem-- create album artwork folder if it does not existif albumArtEnabled is true then	tell application "Finder"		if not (alias artworkFolderPath exists) then			make new folder in workflowDataFolder with properties {name:artworkFolderName}		end if	end tellend if-- search iTunes library for the given querytell application "iTunes"		-- initially search songs by name	set allSongs to (search playlist 2 for query)		-- create XML string	set xml to "&lt;?xml version='1.0'?&gt;" &amp; return &amp; "&lt;items&gt;" &amp; return &amp; return		-- inform user that no results were found (prompt to switch to iTunes instead)	if length of allSongs is 0 then				set xml to xml &amp; createItem("no-songs", "null", "no", "Not Found", ("No results for '" &amp; query &amp; "'"), "icon.png") of me			else				set songIndex to 1				-- loop through the results to create the XML data		repeat with eachSong in allSongs						-- limit number of results			if songIndex is greater than songLimit then				exit repeat			end if						-- get song information			set songId to (get database ID of eachSong)			set songName to name of eachSong			set songArtist to artist of eachSong			set songAlbum to album of eachSong			set songKind to kind of eachSong						-- filter out digital booklets			if songKind is not "PDF Document" then								if albumArtEnabled is false then					set songArtworkPath to "icon.png"				else					-- generate a unique identifier for that album					set songArtworkName to (songArtist &amp; songArtworkNameSep &amp; songAlbum) as text					-- replace forbidden characters					set songArtworkName to replace(":", "", songArtworkName) of me					set songArtworkName to replace("/", "", songArtworkName) of me					set songArtworkName to replace(".", "", songArtworkName) of me					set songArtworkPath to (artworkFolderPath &amp; songArtworkName &amp; ".jpg")										tell application "Finder"						-- cache artwork if it's not already cached						if not (songArtworkPath exists) then							tell application "iTunes"								-- only save artwork if artwork exists for this song								set songArtworks to artworks of eachSong								if (length of songArtworks) is 0 then									set songArtworkPath to "icon.png"								else									-- save artwork to file									set songArtwork to data of (item 1 of songArtworks)									set fileRef to open for access songArtworkPath with write permission									write songArtwork to fileRef									close access fileRef								end if							end tell						end if					end tell				end if								-- add song information to XML				set xml to xml &amp; createItem(("track-" &amp; songId), songId, "yes", songName, songArtist, songArtworkPath) of me								set songIndex to songIndex + 1							end if					end repeat			end if		set xml to xml &amp; "&lt;/items&gt;"	end tell-- return XML datareturn xml</string>
+				<key>subtext</key>
+				<string>iTunes</string>
+				<key>title</key>
+				<string>Play a Song...</string>
+				<key>type</key>
+				<integer>6</integer>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>6C68D0BB-A89A-4FDD-BB99-B5A5B460646E</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(query)		tell application "iTunes"		if query is "null" then			-- if no results were found, bring iTunes to the front			activate		else			set songId to query as integer			-- otherwise, play the given song			set songList to (every track of playlist 2 whose database ID is songId)			-- reveal track in iTunes			set song to item 1 of songList			activate			reveal song		end if	end tell	end alfred_script</string>
+				<key>cachescript</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>9B592379-69A5-4A02-A832-2714DFC21AB5</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(query)		-- ignore null queries	if query is not "null" then		set songId to query as integer				-- get song name from the given query (which is a database ID)		tell application "iTunes"			set songList to (every track whose database ID is songId)			set song to item 1 of songList			set songPath to location of song as text		end tell				-- reveal song file in Finder		tell application "Finder"			activate			reveal alias songPath		end tell			end if	end alfred_script</string>
+				<key>cachescript</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>72ED63B1-04F1-4184-8BA4-70A51EB3DB9B</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(query)		tell application "iTunes"				-- ignore null queries		if query is "null" then			activate		else			set songId to query as integer						-- get song name from the given query (which is a database ID)			set songList to (every track whose database ID is songId)			set song to item 1 of songList			set songName to name of song			set songArtist to artist of song						return (songName &amp; " by " &amp; songArtist)		end if			end tell	end alfred_script</string>
+				<key>cachescript</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>FCE80987-6882-47DD-9035-420F766AAED5</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>escaping</key>
+				<integer>36</integer>
+				<key>script</key>
+				<string>import os
+from urllib import quote_plus
+
+query = "{query}"
+
+os.system("open 'https://www.google.com/search?q=" + quote_plus(query) + "'");</string>
+				<key>type</key>
+				<integer>3</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.script</string>
+			<key>uid</key>
+			<string>34BFAA32-1758-4B5F-99EB-57900C4DB91A</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string># "Play Song" Workflow
+*Copyright 2013 Caleb Evans*
+*Released under the MIT license*
+
+# BASIC USAGE
+
+Type the keyword, **play**, followed by a space and a song name, artist, album, or genre. Songs matching your query will automatically populate Alfred's list of results. Choosing a result from the list will play the selected song in iTunes.
+
+Additionally, more actions can be taken using modifier keys:
+
+* Holding down the **Command** key will reveal the selected song in iTunes.
+
+* Holding down the **Option** key will reveal the selected song in the Finder.
+
+* Holding down the **Control** key will search the selected song on Google.</string>
+	<key>uidata</key>
+	<dict>
+		<key>2D3A0235-00F2-4DDD-89C1-12B188D7BE74</key>
+		<dict>
+			<key>ypos</key>
+			<real>10</real>
+		</dict>
+		<key>34BFAA32-1758-4B5F-99EB-57900C4DB91A</key>
+		<dict>
+			<key>ypos</key>
+			<real>370</real>
+		</dict>
+		<key>6C68D0BB-A89A-4FDD-BB99-B5A5B460646E</key>
+		<dict>
+			<key>ypos</key>
+			<real>60</real>
+		</dict>
+		<key>72ED63B1-04F1-4184-8BA4-70A51EB3DB9B</key>
+		<dict>
+			<key>ypos</key>
+			<real>250</real>
+		</dict>
+		<key>9B592379-69A5-4A02-A832-2714DFC21AB5</key>
+		<dict>
+			<key>ypos</key>
+			<real>130</real>
+		</dict>
+		<key>FCE80987-6882-47DD-9035-420F766AAED5</key>
+		<dict>
+			<key>ypos</key>
+			<real>370</real>
+		</dict>
+	</dict>
+	<key>webaddress</key>
+	<string>calebevans.me</string>
+</dict>
+</plist>

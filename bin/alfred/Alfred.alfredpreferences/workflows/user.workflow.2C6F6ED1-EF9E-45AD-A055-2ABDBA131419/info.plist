@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string></string>
+	<key>category</key>
+	<string>Internet</string>
+	<key>connections</key>
+	<dict>
+		<key>986D4B18-2B25-44D9-AB82-59B3C350FA91</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>2DC831BE-E94F-4114-83AB-83F5D4CE9B8E</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+		<key>BE57A1DA-0301-42B6-B748-A4CD8C813547</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>2DC831BE-E94F-4114-83AB-83F5D4CE9B8E</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+	</dict>
+	<key>createdby</key>
+	<string>Alex Heyd</string>
+	<key>description</key>
+	<string>Inline YouTube result that play in VLC</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>YouTube to VLC</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>0</integer>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>keyword</key>
+				<string>youtube</string>
+				<key>script</key>
+				<string>from youtube import search_videos
+
+# Use Googles default max results and order by relevance
+print(search_videos("{query}", 0, "relevance"))</string>
+				<key>subtext</key>
+				<string>Search YouTube for '{query}'</string>
+				<key>title</key>
+				<string>YouTube</string>
+				<key>type</key>
+				<integer>3</integer>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>986D4B18-2B25-44D9-AB82-59B3C350FA91</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(q)
+set result to q
+set input to do shell script "echo " &amp; quoted form of result &amp; " | sed 's/https/http/g' "
+tell application "VLC"
+    activate
+    OpenURL input
+    play
+    # Adjust window metrics to fit your machine
+    set bounds of window 1 to {1280, 600, 1920, 1080}
+end tell
+
+end alfred_script</string>
+				<key>cachescript</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>2DC831BE-E94F-4114-83AB-83F5D4CE9B8E</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>1</integer>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>keyword</key>
+				<string>yt</string>
+				<key>script</key>
+				<string>from youtube_helper import youtube_helper
+
+print(youtube_helper("{query}"))</string>
+				<key>title</key>
+				<string>YouTube</string>
+				<key>type</key>
+				<integer>3</integer>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>BE57A1DA-0301-42B6-B748-A4CD8C813547</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string></string>
+	<key>uidata</key>
+	<dict>
+		<key>2DC831BE-E94F-4114-83AB-83F5D4CE9B8E</key>
+		<dict>
+			<key>ypos</key>
+			<real>80</real>
+		</dict>
+		<key>986D4B18-2B25-44D9-AB82-59B3C350FA91</key>
+		<dict>
+			<key>ypos</key>
+			<real>10</real>
+		</dict>
+		<key>BE57A1DA-0301-42B6-B748-A4CD8C813547</key>
+		<dict>
+			<key>ypos</key>
+			<real>150</real>
+		</dict>
+	</dict>
+	<key>webaddress</key>
+	<string></string>
+</dict>
+</plist>

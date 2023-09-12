@@ -1,0 +1,60 @@
+{
+  "alfredtheme" : {
+    "result" : {
+      "textSpacing" : 4,
+      "subtext" : {
+        "size" : 9,
+        "colorSelected" : "#8D43ACFF",
+        "font" : "Helvetica Neue Light",
+        "color" : "#7F7F7FFF"
+      },
+      "shortcut" : {
+        "size" : 10,
+        "colorSelected" : "#2ECC71FF",
+        "font" : "Helvetica Neue Light",
+        "color" : "#2ECC71FF"
+      },
+      "backgroundSelected" : "#2B3E50FF",
+      "text" : {
+        "size" : 13,
+        "colorSelected" : "#2ECC71FF",
+        "font" : "Helvetica Neue Light",
+        "color" : "#FFFFFFFF"
+      },
+      "iconPaddingHorizontal" : 5,
+      "paddingVertical" : 0,
+      "iconSize" : 25
+    },
+    "separator" : {
+      "color" : "#2B3E50FF",
+      "thickness" : 1
+    },
+    "search" : {
+      "paddingVertical" : 2,
+      "background" : "#2B3E50FF",
+      "spacing" : 10,
+      "text" : {
+        "size" : 16,
+        "colorSelected" : "#2ECC71FF",
+        "font" : "Helvetica Neue Light",
+        "color" : "#2ECC71FF"
+      },
+      "backgroundSelected" : "#2B3E50FF"
+    },
+    "scrollbar" : {
+      "color" : "#262626FF",
+      "thickness" : 2
+    },
+    "name" : "OSX Yosemite Dark Custome (v2)",
+    "window" : {
+      "color" : "#2B3E50FF",
+      "paddingHorizontal" : 10,
+      "width" : 560,
+      "borderPadding" : 10,
+      "borderColor" : "#2B3E5000",
+      "blur" : 0,
+      "roundness" : 3,
+      "paddingVertical" : 10
+    }
+  }
+}

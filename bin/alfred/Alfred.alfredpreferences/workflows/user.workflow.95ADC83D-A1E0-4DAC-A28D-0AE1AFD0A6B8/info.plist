@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>minimize.all.windows</string>
+	<key>category</key>
+	<string>Tools</string>
+	<key>connections</key>
+	<dict>
+		<key>8D0BF2B4-837F-4ADC-823F-2C26EBEEF6FD</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>55DEE4E7-5AE8-4CDA-9F77-A39B9F79A94B</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+	</dict>
+	<key>createdby</key>
+	<string>Eugeny Pavlenko</string>
+	<key>description</key>
+	<string>Minimizes all windows, like Win+D does on Windows OS</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Minimize all windows</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>leftcursor</key>
+				<false/>
+				<key>modsmode</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.hotkey</string>
+			<key>uid</key>
+			<string>8D0BF2B4-837F-4ADC-823F-2C26EBEEF6FD</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(q)
+tell application "Finder" to activate
+tell application "System Events"
+    tell application process "Finder"
+        tell menu bar 1
+            click menu item "Hide Others" of menu of menu bar item "Finder"
+            click menu item "Minimize All" of menu of menu bar item "Window"
+        end tell
+    end tell
+end tell
+end alfred_script</string>
+				<key>cachescript</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>55DEE4E7-5AE8-4CDA-9F77-A39B9F79A94B</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string>This workflow was inspired by:
+http://www.howtogeek.com/166767/how-to-create-a-minimize-all-windows-win-m-hotkey-for-mac-os-x/
+
+Just put a desirable hotkey (like Ctrl+D)
+
+************************* Some links *************************
+
+IT community in Russia:
+http://vingrad.com/
+
+My homepage:
+http://EugenyPavlenko.com</string>
+	<key>uidata</key>
+	<dict>
+		<key>55DEE4E7-5AE8-4CDA-9F77-A39B9F79A94B</key>
+		<dict>
+			<key>ypos</key>
+			<real>140</real>
+		</dict>
+		<key>8D0BF2B4-837F-4ADC-823F-2C26EBEEF6FD</key>
+		<dict>
+			<key>ypos</key>
+			<real>10</real>
+		</dict>
+	</dict>
+	<key>webaddress</key>
+	<string>http://www.vingrad.com</string>
+</dict>
+</plist>

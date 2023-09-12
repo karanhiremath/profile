@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<workflow>
+  <name>Zip Files</name>
+  <version>1.0</version>
+  <bundle>com.zip.files.rdm</bundle>
+  <updated>1408650626</updated>
+  <file>archive_files_and_folder.alfredworkflow</file>
+</workflow>
