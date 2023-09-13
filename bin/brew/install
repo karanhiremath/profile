@@ -1,0 +1,23 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${APP_BIN}/bin/sh/shell_fns --source-only"
+
+app_name="APP NAME"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if cmd_test_or_install $app_name -eq 0; then
+    echo "Updating Homebrew"
+    brew update
+else
+    install_messages "start" "$app_name"
+
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+    install_messages "end" "$app_name"
+fi

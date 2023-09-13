@@ -11,14 +11,26 @@ install:
 shell:
     # shell install
 
+alacritty:
+    # alacritty install
+alfred:
+    # alfred install
+    curl -O https://raw.githubusercontent.com/Homebrew/homebrew-cask/645973c9681519cfd471a4352f377cdd4e3f09b2/Casks/alfred.rb
+    brew install --cask ./alfred.rb
+
 git:
     # git install
+
+gh:
+    # github cli install
+    ./bin/gh/install
 
 fish:
     # fish install
 
 tmux:
     # tmux install
+    ./bin/tmux/install
 
 vim:
     #!/bin/sh
@@ -44,3 +56,22 @@ bash:
 zsh:
     #zsh install
 
+iterm:
+    # iterm install
+    brew install --cask iterm2
+    echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
+    curl -l https://iterm2.com/shell_integration/zsh \
+        -o ./.iterm2_shell_integration.zsh
+    curl -l https://iterm2.com/shell_integration/bash \
+        -o ./.iterm2_shell_integration.bash
+
+[macos]
+mac:
+    ./bin/brew/install
+    just gh
+    just tmux
+    just iterm
+    brew tap teamookla/speedtest
+    brew install speedtest --force
+    brew install --cask rectangle
+    just alfred

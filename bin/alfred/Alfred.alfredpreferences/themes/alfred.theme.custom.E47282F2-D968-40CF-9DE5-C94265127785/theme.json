@@ -1,0 +1,61 @@
+{
+  "alfredtheme" : {
+    "result" : {
+      "textSpacing" : 4,
+      "subtext" : {
+        "size" : 9,
+        "colorSelected" : "#000000FF",
+        "font" : "Helvetica",
+        "color" : "#FEFFFF00"
+      },
+      "shortcut" : {
+        "size" : 13,
+        "colorSelected" : "#FEFFFF00",
+        "font" : "Helvetica",
+        "color" : "#FEFFFF00"
+      },
+      "backgroundSelected" : "#00000077",
+      "text" : {
+        "size" : 13,
+        "colorSelected" : "#FEFFFFFF",
+        "font" : "Helvetica",
+        "color" : "#0000007F"
+      },
+      "iconPaddingHorizontal" : 5,
+      "paddingVertical" : 0,
+      "iconSize" : 40
+    },
+    "search" : {
+      "paddingVertical" : 2,
+      "background" : "#00000000",
+      "spacing" : 10,
+      "text" : {
+        "size" : 16,
+        "colorSelected" : "#FEFFFFFF",
+        "font" : "Helvetica",
+        "color" : "#000000FF"
+      },
+      "backgroundSelected" : "#D8D8DBFF"
+    },
+    "window" : {
+      "color" : "#FEFFFF00",
+      "paddingHorizontal" : 10,
+      "width" : 440,
+      "borderPadding" : 10,
+      "borderColor" : "#EAEAEAFF",
+      "blur" : 0,
+      "roundness" : 3,
+      "paddingVertical" : 10
+    },
+    "credit" : "Chris Wright",
+    "separator" : {
+      "color" : "#00000000",
+      "thickness" : 1
+    },
+    "scrollbar" : {
+      "color" : "#00000007",
+      "thickness" : 2
+    },
+    "name" : "Yosemite (v2)"
+  }
+}

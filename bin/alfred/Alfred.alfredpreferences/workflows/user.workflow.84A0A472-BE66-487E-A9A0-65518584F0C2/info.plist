@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>kudusch.NotificationControl</string>
+	<key>category</key>
+	<string>Tools</string>
+	<key>connections</key>
+	<dict>
+		<key>141125A3-519D-4362-9B9D-C064D6F17B34</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>AAF7EDC6-9FB3-46E9-82D8-BF9FAAF81CD7</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+		<key>AAF7EDC6-9FB3-46E9-82D8-BF9FAAF81CD7</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>CD8E09A5-2946-418C-AA8E-9D6E80DDBF9F</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+	</dict>
+	<key>createdby</key>
+	<string>Kudusch</string>
+	<key>description</key>
+	<string>Control Notification Center and Growl from Alfred.app</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Notification Control</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>1</integer>
+				<key>escaping</key>
+				<integer>63</integer>
+				<key>keyword</key>
+				<string>notification_control</string>
+				<key>runningsubtext</key>
+				<string>Pleas wait…</string>
+				<key>script</key>
+				<string>set q to "{query}" as stringtell application "System Events"	set vUI to UI elements enabledend tellif vUI = false then	set vUID to "ui script"	set vARG to "uiscript"	set vVALID to "yes"	set vAuto to ""	set vTitle to "This script requires the built-in Graphic User Interface Scripting."	set vSubtitle to "Enable GUI Scripting now? In the Accessibility settings, allow Alfred 2.app to control your computer."	set vIcon to "icon.png"	set vUIFeedback to mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)		return my mAddToXMLFeedBack({vUIFeedback})end ifset vUID to "Pause"set vARG to "p"set vVALID to "yes"set vAuto to ""set vTitle to "Pause both NotificationCenter and Growl"set vSubtitle to "Neither Growl nor NotificationCenter will post any notifications"set vIcon to "icon_pause.png"set vPauseFeedback to mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)set vUID to "resume"set vARG to "r"set vVALID to "yes"set vAuto to ""set vTitle to "Resume both NotificationCenter and Growl"set vSubtitle to "Growl and NotificationCenter will start to notify you again."set vIcon to "icon_play.png"set vResumeFeedback to mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)tell application "Growl"	if is paused = true then		set vToggle to "Resume"	else		set vToggle to "Pause"	end ifend tellset vUID to "growl"set vARG to "gr"set vVALID to "yes"set vAuto to ""set vTitle to vToggle &amp; " Growl"set vSubtitle to "Toggle the status of Growl.app"set vIcon to "icon_growl.png"set vGrowlFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)if mIsNotificationCenterOn() = true then	set vToggleNc to "Pause"else	set vToggleNc to "Resume"end ifset vUID to "nc"set vARG to "nc"set vVALID to "yes"set vAuto to ""set vTitle to vToggleNc &amp; " Notification Center"set vSubtitle to "Toggle the status of NotificationCenter"set vIcon to "icon_nc.png"set vNCFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)set vUID to "close"set vARG to "c"set vVALID to "yes"set vAuto to ""set vTitle to "Close all Growl notifications"set vSubtitle to ""set vIcon to "icon_growl.png"set vCloseFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)set vUID to "show"set vARG to "show"set vVALID to "yes"set vAuto to ""set vTitle to "Show Growl's rollup"set vSubtitle to ""set vIcon to "icon_growl.png"set vShowFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)set vUID to "hide"set vARG to "hide"set vVALID to "yes"set vAuto to ""set vTitle to "Hide Growl's rollup"set vSubtitle to ""set vIcon to "icon_growl.png"set vHideFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)set vUID to "nwon"set vARG to "nwon"set vVALID to "yes"set vAuto to ""set vTitle to "Enable Growl's network connection"set vSubtitle to "Growl listens to incoming notifications"set vIcon to "icon_growl.png"set vEnableFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)set vUID to "nwoff"set vARG to "nwoff"set vVALID to "yes"set vAuto to ""set vTitle to "Disable Growl's network connection"set vSubtitle to "Growl doesn't listen to incoming notifications"set vIcon to "icon_growl.png"set vDisableFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)tell application "Growl"	if is paused = true then		set vPaused to "paused"	else		set vPaused to "running"	end if	if allows incoming network = true then		set vNetW to "is allowed"	else		set vNetW to "is not allowed"	end ifend tellif my mIsNotificationCenterOn() = true then	set vNCStat to "is running"else if mIsNotificationCenterOn() = false then	set vNCStat to "is paused"end ifset vStatus to "Status: Growl is " &amp; vPaused &amp; ", " &amp; "NotificationCenter" &amp; space &amp; vNCStatset vUID to "stat"set vARG to "stat"set vVALID to "no"set vAuto to ""set vTitle to vStatusset vSubtitle to "Growl's incoming network " &amp; vNetWset vIcon to "icon.png"set vStatusFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)set vUID to "rest"set vARG to "rest"set vVALID to "yes"set vAuto to ""set vTitle to "Restart Growl.app"set vSubtitle to "Quit and launch Growl"set vIcon to "icon_growl.png"set vRestartFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)set vUID to "cnc"set vARG to "cnc"set vVALID to "yes"set vAuto to ""set vTitle to "Close all NotificationCenter notifications"set vSubtitle to "All pending items in NotificationCenter will be closed"set vIcon to "icon_nc.png"set vNCCloseFeedback to my mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)if q = "" then	return my mAddToXMLFeedBack({vStatusFeedback, vPauseFeedback, vResumeFeedback, vGrowlFeedback, vNCFeedback, vCloseFeedback, vShowFeedback, vHideFeedback, vEnableFeedback, vDisableFeedback, vRestartFeedback, vNCCloseFeedback})else if "pause" contains q and "p" contains (character 1 of q) then	return my mAddToXMLFeedBack({vPauseFeedback})else if "status" contains q and "s" contains (character 1 of q) then	return my mAddToXMLFeedBack({vStatusFeedback})else if "res" contains q and "r" contains (character 1 of q) then	return my mAddToXMLFeedBack({vResumeFeedback, vRestartFeedback})else if "resume" contains q and "r" contains (character 1 of q) then	return my mAddToXMLFeedBack({vResumeFeedback})else if "restart" contains q and "r" contains (character 1 of q) then	return my mAddToXMLFeedBack({vRestartFeedback})else if "growl" contains q and "g" contains (character 1 of q) then	return my mAddToXMLFeedBack({vGrowlFeedback})else if "notificationcenter" contains q and "n" contains (character 1 of q) then	return my mAddToXMLFeedBack({vNCFeedback})else if "close_" contains q and "c" contains (character 1 of q) then	return my mAddToXMLFeedBack({vCloseFeedback, vNCCloseFeedback})else if "close_growl" contains q and "c" contains (character 1 of q) then	return my mAddToXMLFeedBack({vCloseFeedback})else if "close_nc" contains q and "c" contains (character 1 of q) then	return my mAddToXMLFeedBack({vNCCloseFeedback})else if "show" contains q and "s" contains (character 1 of q) then	return my mAddToXMLFeedBack({vShowFeedback})else if "hide" contains q and "h" contains (character 1 of q) then	return my mAddToXMLFeedBack({vHideFeedback})else if "enable" contains q and "e" contains (character 1 of q) then	return my mAddToXMLFeedBack({vEnableFeedback})else if "disable" contains q and "d" contains (character 1 of q) then	return my mAddToXMLFeedBack({vDisableFeedback})end ifon mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)	set vXMLInput to "&lt;item uid=\"" &amp; vUID &amp; "\" arg=\"" &amp; vARG &amp; "\" valid=\"" &amp; vVALID &amp; "\" autocomplete=\"" &amp; vAuto &amp; "\"&gt;
+		&lt;title&gt;" &amp; vTitle &amp; "&lt;/title&gt;
+		&lt;subtitle&gt;" &amp; vSubtitle &amp; "&lt;/subtitle&gt;
+		&lt;icon&gt;" &amp; vIcon &amp; "&lt;/icon&gt;
+	&lt;/item&gt;"	return vXMLInputend mMakeItemon mAddToXMLFeedBack(vItemList)	set vXMLTop to "&lt;?xml version=\"1.0\"?&gt;
+&lt;items&gt;"	set vXMLEnd to "&lt;/items&gt;"		set vXMLOutput to ""		repeat with i from 1 to number of items in vItemList		set vXMLOutput to vXMLOutput &amp; (item i of vItemList) &amp; return	end repeat		return vXMLTop &amp; return &amp; vXMLOutput &amp; vXMLEndend mAddToXMLFeedBack--input: void, output: boolon mIsNotificationCenterOn()	tell application "System Events"		tell process "NotificationCenter"			set x to value of menu bar item 1 of menu bar 2		end tell	end tell	if x = missing value then		set flag to true	else		set flag to false	end if	return flagend mIsNotificationCenterOn--input: void, output: boolon enable_GUI_scripting()	try		if (system attribute "sysv") &lt; 4138 then display dialog "This script requires the installation of Mac OS X 10.3 or higher." buttons {"Cancel"} default button 1 with icon 2		tell application "System Events" to if not UI elements enabled then			tell me				activate				display dialog "This script requires the built-in Graphic User Interface Scripting architecture of Mac OS X, which is currently disabled." &amp; return &amp; return &amp; "Enable GUI Scripting now? (You may be asked to enter your password)" buttons {"Cancel", "Enable"} default button 2 with icon 2			end tell			set UI elements enabled to true			if not UI elements enabled then error number -128		end if		return true	on error		return false	end tryend enable_GUI_scripting</string>
+				<key>subtext</key>
+				<string>Enter a keyword…</string>
+				<key>title</key>
+				<string>Control Growl and NotificationCenter</string>
+				<key>type</key>
+				<integer>6</integer>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>141125A3-519D-4362-9B9D-C064D6F17B34</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(q)	--pause	if q = "p" then		tell application "Growl"			notify with name ¬				"Extension Output" title ¬				"Notification Control" description ¬				"Growl and Notification Center are now paused." application name "Alfred"		end tell		delay 2		if mIsNotificationCenterOn() = true then			tell application "System Events"				tell process "NotificationCenter"					key down option					click menu bar item 1 of menu bar 2					key up option				end tell			end tell		end if		tell application "Growl" to pause		return "Growl and NotificationCenter are paused."	else if q = "r" then		tell application "Growl" to resume		if mIsNotificationCenterOn() = false then			tell application "System Events"				tell process "NotificationCenter"					key down option					click menu bar item 1 of menu bar 2					key up option				end tell			end tell		end if		return "Growl and NotificationCenter are resumed."	else if q = "c" then		tell application "Growl" to close all notifications		--growl	else if q = "gr" then		tell application "Growl"			if is paused = true then				resume				return "Growl is running."			else				--return "Growl is now paused."				pause			end if		end tell	else if q = "show" then		tell application "Growl" to show rollup	else if q = "hide" then		tell application "Growl" to hide rollup	else if q = "nwon" then		tell application "Growl"			enable incoming network		end tell		return "Growl's Incomming network is allowed."	else if q = "nwoff" then		tell application "Growl"			disable incoming network		end tell		return "Growl's Incomming network is disabled."	else if q = "rest" then		tell application "Growl" to quit		delay 0.5		tell application "Growl" to activate	else if q = "stat" then		tell application "Growl"			if is paused = true then				set vPaused to "paused"			else				set vPaused to "running"			end if			if allows incoming network = true then				set vNetW to "is allowed."			else				set vNetW to "is not allowed."			end if		end tell		if mIsNotificationCenterOn() = true then			set vNCStat to "is running"		else if mIsNotificationCenterOn() = false then			set vNCStat to "is paused"		end if		display dialog "Growl is " &amp; vPaused &amp; space &amp; "Growl's incoming network " &amp; vNetW &amp; "NotificationCenter" &amp; space &amp; vNCStat buttons {"Ok"} default button 1		--nc			else if q = "uiscript" then		tell application "System Preferences"			activate			set current pane to pane "com.apple.preference.security"		end tell	else if q = "nc" then		tell application "System Events"			tell process "NotificationCenter"				key down option				click menu bar item 1 of menu bar 2				key up option			end tell		end tell	else if q = "cnc" then		do shell script "rm ~/Library/Application\\ Support/NotificationCenter/*.db; killall usernoted; killall NotificationCenter"	end ifend alfred_script--input: void, output: boolon mIsNotificationCenterOn()	tell application "System Events"		tell process "NotificationCenter"			set x to value of menu bar item 1 of menu bar 2		end tell	end tell	if x = missing value then		set flag to true	else		set flag to false	end if	return flagend mIsNotificationCenterOnon mMakeItem(vUID, vARG, vVALID, vAuto, vTitle, vSubtitle, vIcon)	set vXMLInput to "&lt;item uid=\"" &amp; vUID &amp; "\" arg=\"" &amp; vARG &amp; "\" valid=\"" &amp; vVALID &amp; "\" autocomplete=\"" &amp; vAuto &amp; "\"&gt;
+		&lt;title&gt;" &amp; vTitle &amp; "&lt;/title&gt;
+		&lt;subtitle&gt;" &amp; vSubtitle &amp; "&lt;/subtitle&gt;
+		&lt;icon&gt;" &amp; vIcon &amp; "&lt;/icon&gt;
+	&lt;/item&gt;"	return vXMLInputend mMakeItemon mAddToXMLFeedBack(vItemList)	set vXMLTop to "&lt;?xml version=\"1.0\"?&gt;
+&lt;items&gt;"	set vXMLEnd to "&lt;/items&gt;"		set vXMLOutput to ""		repeat with i from 1 to number of items in vItemList		set vXMLOutput to vXMLOutput &amp; (item i of vItemList) &amp; return	end repeat		return vXMLTop &amp; return &amp; vXMLOutput &amp; vXMLEndend mAddToXMLFeedBack</string>
+				<key>cachescript</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>AAF7EDC6-9FB3-46E9-82D8-BF9FAAF81CD7</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>lastpathcomponent</key>
+				<false/>
+				<key>onlyshowifquerypopulated</key>
+				<true/>
+				<key>output</key>
+				<integer>0</integer>
+				<key>removeextension</key>
+				<false/>
+				<key>sticky</key>
+				<false/>
+				<key>text</key>
+				<string>{query}</string>
+				<key>title</key>
+				<string>Notification</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.notification</string>
+			<key>uid</key>
+			<string>CD8E09A5-2946-418C-AA8E-9D6E80DDBF9F</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string>Show the current status of Growl and NotificationCenter : stat
+Pause Growl and Notification Center : pause
+Resume Growl and Notification Center : resume
+Pause or resume Growl : growl
+Pause or resume Notification Center : notificationcenter
+Close all Growl notifications : close_growl
+Close all NotificationCenter notifications : close_nc
+Show Growl’s rollup : show
+Hide Growl’s rollup : hide
+Enable Growl’s incoming network : enable
+Disable Growl’s incoming network : disable/
+Restart Growl : restart</string>
+	<key>uidata</key>
+	<dict>
+		<key>141125A3-519D-4362-9B9D-C064D6F17B34</key>
+		<dict>
+			<key>ypos</key>
+			<real>60</real>
+		</dict>
+		<key>AAF7EDC6-9FB3-46E9-82D8-BF9FAAF81CD7</key>
+		<dict>
+			<key>ypos</key>
+			<real>60</real>
+		</dict>
+		<key>CD8E09A5-2946-418C-AA8E-9D6E80DDBF9F</key>
+		<dict>
+			<key>ypos</key>
+			<real>60</real>
+		</dict>
+	</dict>
+	<key>webaddress</key>
+	<string>blog.kudusch.de</string>
+</dict>
+</plist>

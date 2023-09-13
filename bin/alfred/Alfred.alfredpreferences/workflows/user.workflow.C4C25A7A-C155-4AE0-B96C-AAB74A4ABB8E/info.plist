@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>com.victorquinn.volumeadjust</string>
+	<key>connections</key>
+	<dict>
+		<key>7B5DE408-6E58-4851-BEF4-48300756CCB9</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>D61A6993-6D0E-4785-9B18-DD5F3C82055A</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+		<key>D866DA1D-5E55-49F2-AF16-AB9C87C22355</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>7B5DE408-6E58-4851-BEF4-48300756CCB9</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+	</dict>
+	<key>createdby</key>
+	<string>Victor Quinn</string>
+	<key>description</key>
+	<string>Set the volume. Commands include "up", "up {number}", "down", "loud", "quiet", a number 1-100, etc.</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Volume Adjust</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(q)
+	set tmp to splitString(q, " ")
+	set q to item 1 of tmp
+	if length of tmp is 2 then
+		set change to item 2 of tmp
+	else
+		set change to 10
+	end if
+	
+	set current to output volume of (get volume settings)
+	set old to current
+	
+	if q is equal to "mute" or q is equal to "off" then
+		set current to 0
+	else if q is equal to "max" or q is equal to "full" then
+		set current to 100
+	else if q is equal to "quiet" or q is equal to "soft" or q is equal to "low" then
+		set current to 15
+	else if q is equal to "medium" or q is equal to "half" or q is equal to "mid" then
+		set current to 50
+	else if q is equal to "loud" or q is equal to "high" then
+		set current to 85
+	else if q is equal to "up" or q is equal to "more" or q is equal to "+" then
+		set current to current + change
+		if (current &gt; 100) then
+			set current to 100
+		end if
+	else if q is equal to "down" or q is equal to "less" or q is equal to "-" then
+		set current to current - change
+		if (current &lt; 0) then
+			set current to 0
+		end if
+	else if q is equal to "current" or q is equal to "now" or q is equal to "status" or q is equal to "level"
+		set current to current
+	else
+		if (q as integer &gt; 100) then
+			set current to 100
+		else if (q as integer &lt; 0) then
+			set current to 0
+		else
+			set current to q
+		end if
+	end if
+
+	-- tell application "Growl" to notify with name "Extension Output" title "Adjust Volume" application name "Alfred" identifier "Volume: " &amp; current description "The volume is now " &amp; current &amp; "/100" image from location "~/Library/Application Support/Alfred/extensions/applescripts/Adjust Volume/icon.png"
+
+	set volume output volume current
+
+	if (current as integer &gt; old as integer)
+		set message to "The volume has been increased to " &amp; current &amp; "/100"
+	else if current is equal to old
+		set message to "The current volume is " &amp; current &amp; "/100"
+	else 
+		set message to "The volume has been decreased to " &amp; current &amp; "/100"
+	end if
+
+	return message
+
+end alfred_script
+ 
+to splitString(aString, delimiter)
+	set retVal to {}
+	set prevDelimiter to AppleScript's text item delimiters
+	log delimiter
+	set AppleScript's text item delimiters to {delimiter}
+	set retVal to every text item of aString
+	set AppleScript's text item delimiters to prevDelimiter
+	return retVal
+end splitString</string>
+				<key>cachescript</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>7B5DE408-6E58-4851-BEF4-48300756CCB9</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>lastpathcomponent</key>
+				<false/>
+				<key>onlyshowifquerypopulated</key>
+				<false/>
+				<key>output</key>
+				<integer>0</integer>
+				<key>removeextension</key>
+				<false/>
+				<key>sticky</key>
+				<false/>
+				<key>text</key>
+				<string>{query}</string>
+				<key>title</key>
+				<string>Volume Adjust</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.notification</string>
+			<key>uid</key>
+			<string>D61A6993-6D0E-4785-9B18-DD5F3C82055A</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>0</integer>
+				<key>keyword</key>
+				<string>vol</string>
+				<key>subtext</key>
+				<string>Set the volume. Commands include "up", "up &amp;lt;number&amp;gt;", "down", "loud", "quiet", a number 1-100, etc.</string>
+				<key>text</key>
+				<string>Volume Adjust</string>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>D866DA1D-5E55-49F2-AF16-AB9C87C22355</string>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string>Command Notes
+
+* vol {number, 1-100}  [Invoked as “vol 30” or “vol 74”. Any number from 0-100 will work and the volume will be set to that percentage. So “vol 30” will set the output volume to 30%. Any number less than 0 will just set the volume to 0% and any number greater than 100 will just set it to 100%]
+
+* vol mute | vol off  [Mutes the volume. Unfortunately, since Alfred just runs the Applescript and then terminates, it is not possible at this time to mute then unmute back to the same volume you were before the mute.]
+
+* vol quiet | vol soft | vol low  [Sets volume to 15%]
+
+* vol medium | vol mid | vol half  [Sets volume to 50%]
+
+* vol loud | vol high  [Sets volume to 85%]
+
+* vol up | vol more | vol +  [Invoked as either “vol up” or “vol up {number, 1-100}”. Used as just “vol up” it will increase the volume by 10%. But invoked as “vol up 30” it will increase the volume from its current level by 30%. So if your volume were at 10%, invoking “vol up 30” will end with the volume at 40%.]
+
+* vol down | vol less | vol - [Invoked as either “vol down” or “vol down {number, 1-100}”. Used as just “vol down” it will decrease the volume by 10%. But invoked as “vol down 30” it will decrease the volume from its current level by 30%. So if your volume were at 73%, invoking “vol down 30” will end with the volume at 43%.]</string>
+	<key>uidata</key>
+	<dict>
+		<key>7B5DE408-6E58-4851-BEF4-48300756CCB9</key>
+		<dict>
+			<key>ypos</key>
+			<real>10</real>
+		</dict>
+		<key>D61A6993-6D0E-4785-9B18-DD5F3C82055A</key>
+		<dict>
+			<key>ypos</key>
+			<real>10</real>
+		</dict>
+		<key>D866DA1D-5E55-49F2-AF16-AB9C87C22355</key>
+		<dict>
+			<key>ypos</key>
+			<real>10</real>
+		</dict>
+	</dict>
+	<key>webaddress</key>
+	<string>http://victorquinn.com</string>
+</dict>
+</plist>

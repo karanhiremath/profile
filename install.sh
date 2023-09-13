@@ -7,61 +7,21 @@ shopt -s failglob
 medir=$( pwd "$0" )
 export PROFILE_DIR="${medir}"
 
-function generate_config_vars()
-{
-
-    if [[ ! -e ~/.config/.vars ]]; then
-        touch "~/.config/.vars"
-    fi
-
-    grep -rq "export PROFILE_DIR=${PROFILE_DIR}" ~/.config/.vars || echo "export PROFILE_DIR=${PROFILE_DIR}" >> ~/.config/.vars
-    unameOut="$(uname -s)"
-    case "${unameOut}" in
-        Linux*)     machine=Linux;;
-        Darwin*)    machine=Mac;;
-        CYGWIN*)    machine=Cygwin;;
-        MINGW*)     machine=MinGw;;
-        *)          machine="UNKNOWN:${unameOut}"
-    esac
-    export MACHINE=$machine
-    grep -rq "export MACHINE=${MACHINE}" ~/.config/.vars || echo "export MACHINE=${MACHINE}" >> ~/.config/.vars
-
-    unamemOut="$(uname -m)"
-    case "${unamemOut}" in
-        aarch64)    arch=Arm64;;
-        *)          arch="UNKOWN:${unamemOut}"
-    esac
-    export ARCH=$arch
-    grep -rq "export ARCH=${ARCH}" ~/.config/.vars || echo "export ARCH=${ARCH}" >> ~/.config/.vars
-}
-
-generate_config_vars
-
 echo "${MACHINE} ${ARCH}"
 
 . $PROFILE_DIR/bin/sh/shell_fns --source-only
 
-if [[ $machine == "Mac" ]]; then
-    echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
-    curl -l https://iterm2.com/shell_integration/zsh \
-        -o ./.iterm2_shell_integration.zsh
-    curl -l https://iterm2.com/shell_integration/bash \
-        -o ./.iterm2_shell_integration.bash
-    if [[ $(command -v brew) == "" ]]; then
-        echo "Installing Hombrew"
-        # install Homebrew
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    else
-        echo "Updating Homebrew"
-        brew update
-    fi
-fi
+generate_config_vars
 
 # install cargo and then just so we can use Justfile to do the rest
 install_app "cargo"
 install_app "just"
 
 just all
+
+if [[ $machine == "Mac" ]]; then
+    just mac
+fi
 
 if [[ ! -e ~/.bash_profile ]]; then
     touch ~/.bash_profile
@@ -150,11 +110,6 @@ else
     echo "~/.vim/autoload/plug.vim already exists"
 fi
 
-# install tmux
-if [[ $machine == "Mac" ]]; then
-    brew install tmux
-fi
-
 if [[ ! -e ~/.tmux.conf ]]; then
     touch ~/.tmux.conf
 else
@@ -175,15 +130,3 @@ else
 fi
 
 just nvim
-
-# install a bunch of stuff we want to use as well
-if [[ $machine == "Mac" ]]; then
-    brew install --cask rectangle
-    brew install gh
-    curl -O https://raw.githubusercontent.com/Homebrew/homebrew-cask/645973c9681519cfd471a4352f377cdd4e3f09b2/Casks/alfred.rb
-    brew install --cask ./alfred.rb
-    brew install --cask warp
-#    curl -s -N 'https://warp-themes.com/d/NENn0wey1fDhRxHumFZP' | zsh
-    brew install neovim
-    brew install --cask alacritty
-fi

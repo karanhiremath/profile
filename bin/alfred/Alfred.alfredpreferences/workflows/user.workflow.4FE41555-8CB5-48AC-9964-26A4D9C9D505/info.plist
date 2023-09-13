@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>www.github.com/justin_t_brown/alfred-mailbox</string>
+	<key>category</key>
+	<string>Productivity</string>
+	<key>connections</key>
+	<dict>
+		<key>28232803-93AF-4A2D-B42C-3F79A6079206</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>4048C841-4810-4485-85CA-0BD4C31674D1</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+		<key>9E088743-47F6-40FC-B5D7-6131E06D3442</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>BC9468A1-B109-4473-A779-8005FE0B3F3C</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+		<key>CF6A77BC-ED2A-47E1-B94F-BB6E92468DFA</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>4FF48314-FFBF-4E31-BCCA-F8AC327C7767</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+			</dict>
+		</array>
+	</dict>
+	<key>createdby</key>
+	<string>Justin Brown</string>
+	<key>description</key>
+	<string>for Mailbox app by Dropbox</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Mailbox</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(q)
+tell application "Mailbox (Beta)" to activate
+tell application "System Events"
+	keystroke "n" using {command down}
+end tell
+end alfred_script</string>
+				<key>cachescript</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>BC9468A1-B109-4473-A779-8005FE0B3F3C</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>mail compose</string>
+				<key>subtext</key>
+				<string>Compose new email</string>
+				<key>text</key>
+				<string>Mailbox compose email</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>9E088743-47F6-40FC-B5D7-6131E06D3442</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(q)
+tell application "Mailbox (Beta)" to activate
+tell application "System Events"
+	keystroke "f" using {option down, command down}
+	tell process "Mailbox" to keystroke (q as string)
+end tell
+end alfred_script</string>
+				<key>cachescript</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>4FF48314-FFBF-4E31-BCCA-F8AC327C7767</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>0</integer>
+				<key>keyword</key>
+				<string>mail search</string>
+				<key>subtext</key>
+				<string>Search mailbox for {query}</string>
+				<key>text</key>
+				<string>Mailbox search</string>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>CF6A77BC-ED2A-47E1-B94F-BB6E92468DFA</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>mail later</string>
+				<key>subtext</key>
+				<string>Open emails categorized "Later"</string>
+				<key>text</key>
+				<string>Mailbox Later</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>28232803-93AF-4A2D-B42C-3F79A6079206</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>on alfred_script(q)
+tell application "Mailbox (Beta)" to activate
+tell application "System Events"
+	keystroke "2" using {command down}
+end tell
+end alfred_script</string>
+				<key>cachescript</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>4048C841-4810-4485-85CA-0BD4C31674D1</string>
+			<key>version</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string></string>
+	<key>uidata</key>
+	<dict>
+		<key>28232803-93AF-4A2D-B42C-3F79A6079206</key>
+		<dict>
+			<key>ypos</key>
+			<real>370</real>
+		</dict>
+		<key>4048C841-4810-4485-85CA-0BD4C31674D1</key>
+		<dict>
+			<key>ypos</key>
+			<real>370</real>
+		</dict>
+		<key>4FF48314-FFBF-4E31-BCCA-F8AC327C7767</key>
+		<dict>
+			<key>ypos</key>
+			<real>250</real>
+		</dict>
+		<key>9E088743-47F6-40FC-B5D7-6131E06D3442</key>
+		<dict>
+			<key>ypos</key>
+			<real>130</real>
+		</dict>
+		<key>BC9468A1-B109-4473-A779-8005FE0B3F3C</key>
+		<dict>
+			<key>ypos</key>
+			<real>130</real>
+		</dict>
+		<key>CF6A77BC-ED2A-47E1-B94F-BB6E92468DFA</key>
+		<dict>
+			<key>ypos</key>
+			<real>250</real>
+		</dict>
+	</dict>
+	<key>webaddress</key>
+	<string>justinbrown.io</string>
+</dict>
+</plist>
