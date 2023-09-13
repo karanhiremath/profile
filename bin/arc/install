@@ -6,7 +6,7 @@ shopt -s failglob
 
 . "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
 
-app_name="APP NAME"
+app_name="arcanist"
 
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
@@ -18,7 +18,9 @@ else
 
     case "${MACHINE}" in
         Linux)  echo "Linux specific install instructions here";;
-        Mac)    echo "Mac install instructions here";;
+        Mac)
+            brew install --head arcanist
+        ;;
         *)      echo "Generic install instructions here";;
     esac
 
