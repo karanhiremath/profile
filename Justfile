@@ -1,12 +1,27 @@
 #!/usr/bin/env just --justfile
 
-APP_BIN := "$(pwd)/bin"
-HOME := "$(echo $HOME)"
+set export
+
+APP_BIN := join(justfile_directory(), "bin")
+HOME := env_var("HOME")
+os := os()
+arch := arch()
+
+# setup python binary
+python3_bin := "$(which python3)"
+python3_version := "$($(which python3) --version)"
+
+default:
+    @just --list
 
 all: shell git fish tmux vim nvim python bash zsh
 
 install:
     ./install.sh
+
+app_install app:
+    # installing {{app}} using installion script @ {{APP_BIN / app / "install"}}
+    {{APP_BIN / app / "install"}}
 
 shell:
     # shell install
@@ -37,6 +52,7 @@ nvim:
 
 python:
     # python install
+    echo "python3 available at {{python3_bin}} running version {{python3_version}}"
 
 bash:
     # bash install
@@ -44,3 +60,14 @@ bash:
 zsh:
     #zsh install
 
+
+@_app_dir app:
+    if {{path_exists(clean(APP_BIN / app))}}; then \
+        echo '{{APP_BIN / app}} directory exists!'; \
+    else \
+        echo 'Creating {{APP_BIN / app}}' && mkdir -p {{APP_BIN / app}} ; \
+    fi
+
+init app: (_app_dir app)
+    # installing {{app}} to {{APP_BIN / app}}
+    cp -R {{justfile_directory()}}/templates/app/* {{APP_BIN / app}}

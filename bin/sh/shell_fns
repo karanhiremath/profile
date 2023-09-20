@@ -1,5 +1,6 @@
-#!/bin/sh
+#!/bin/zsh
 
+set -euo pipefail
 
 function install_messages() {
     local help="""
@@ -22,10 +23,14 @@ params:
     esac
 }
 
+function is_cmd_installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
 function cmd_test_or_install() {
     local app_name="${1}"
     echo "Checking status for ${app_name}"
-    if command -v "${app_name}" > /dev/null 2>&1; then
+    if $(command -v "${app_name}") > /dev/null; then
         exit 0
     else
         exit 2
@@ -33,7 +38,7 @@ function cmd_test_or_install() {
 }
 
 function install_app() {
-    app=$1
+    app="${1}"
     echo "Checking status for ${app}"
     if command -v "${app}" > /dev/null 2>&1; then
         location="$(command -v $app)"
