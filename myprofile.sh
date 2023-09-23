@@ -26,7 +26,8 @@ function gacp ()
 
 function gacpr () 
 { 
-	git add "$1" && git commit -m "$2" && git push && gh pr create
+	git add "$1" && git commit -m "$2" && git push;
+	gh pr create;
 }
 
 function gd ()
