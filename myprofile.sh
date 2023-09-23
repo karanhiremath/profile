@@ -24,6 +24,11 @@ function gacp ()
 	git add "$1" && git commit -m "$2" && git push;
 }
 
+function gacpr () 
+{ 
+	git add "$1" && git commit -m "$2" && git push && gh pr --create
+}
+
 function gd ()
 {
     git add "$1" && git commit -m "$2" && arc diff;

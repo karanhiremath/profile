@@ -16,7 +16,13 @@ fi
 
 
 if cmd_test_or_install $app_name -eq 0; then
-    echo "Already installed!"
+    echo "Already installed; upgrading!"
+
+    case "${MACHINE}" in
+        Linux)  echo "Linux install instructions here";;
+        Mac)    brew upgrade gh;;
+        *)      echo "Unknown '${MACHINE=}'";;
+    esac
 else
     install_messages "start" "$app_name"
 
