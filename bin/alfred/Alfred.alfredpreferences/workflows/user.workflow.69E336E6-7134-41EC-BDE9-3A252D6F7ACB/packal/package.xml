@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8' ?>
-<workflow>
-  <name>gauth (Google Authenticator)</name>
-  <version>1.5.0</version>
-  <bundle>com.alfredapp.moul.gauth</bundle>
-  <updated>1395218895</updated>
-  <file>google_authenticator.alfredworkflow</file>
-</workflow>

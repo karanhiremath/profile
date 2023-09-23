@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8' ?>
-<workflow>
-  <name>unmountAll</name>
-  <version>1.0</version>
-  <bundle>com.xream.unmountAll</bundle>
-  <updated>1444899021</updated>
-  <file>unmountall.alfredworkflow</file>
-</workflow>

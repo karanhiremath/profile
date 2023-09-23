@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8' ?>
-<workflow>
-  <name>LabelColor</name>
-  <version>1.0</version>
-  <bundle>com.vitorgalvao.alfred.labelcolor</bundle>
-  <updated>1390325225</updated>
-  <file>labelcolor.alfredworkflow</file>
-</workflow>
