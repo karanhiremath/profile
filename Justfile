@@ -59,19 +59,20 @@ zsh:
 iterm:
     # iterm install
     brew install --cask iterm2
-    echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
+    # Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash
     curl -l https://iterm2.com/shell_integration/zsh \
-        -o ./.iterm2_shell_integration.zsh
+        -o {{APP_BIN}}/iterm/.iterm2_shell_integration.zsh
     curl -l https://iterm2.com/shell_integration/bash \
-        -o ./.iterm2_shell_integration.bash
+        -o {{APP_BIN}}/iterm/.iterm2_shell_integration.bash
 
 [macos]
 mac:
     ./bin/brew/install
     just gh
     just tmux
-    just iterm
+    # just iterm
     brew tap teamookla/speedtest
     brew install speedtest --force
     brew install --cask rectangle
+    brew install 1password-cli
     just alfred

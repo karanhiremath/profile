@@ -1,3 +1,4 @@
+export APP_BIN=./bin
 source ~/.config/.vars
 
 source "${PROFILE_DIR}/myprofile.sh"
@@ -37,8 +38,8 @@ precmd() {
 bindkey "^[[H" beginning-of-line
 bindkey "^[[F" end-of-line
 bindkey  "^[[3~"  delete-char
-
-source "${PROFILE_DIR}/.iterm2_shell_integration.zsh"
+echo "${APP_BIN}"
+source "${APP_BIN}"/iterm/.iterm2_shell_integration.zsh
 
 # doesnt seem to have an arm64 build for mac
 # eval "$(starship init zsh)"

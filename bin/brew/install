@@ -4,9 +4,9 @@ set -euo pipefail
 
 shopt -s failglob
 
-. "${APP_BIN}/bin/sh/shell_fns --source-only"
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
 
-app_name="APP NAME"
+app_name="brew"
 
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"

@@ -1,0 +1,18 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+echo "Installing tmux..."
+
+case "${MACHINE}" in
+    Linux)  sudo apt-get install tmux;;
+    Mac)    brew install tmux;;
+    *)      echo "Generic instructions not implemented"
+esac
+
+export TMUX_DIR="${HOME}"/.config/tmux
+mkdir -p "${TMUX_DIR}"
+ln -fs ./tmux.conf "${TMUX_DIR}"
+ln -fs ./tmux.conf "${HOME}"/.tmux.conf

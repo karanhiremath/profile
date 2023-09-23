@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8' ?>
-<workflow>
-  <name>iMessage Workflow</name>
-  <version>1.3</version>
-  <bundle>nc.workflow.imessage</bundle>
-  <updated>1399017190</updated>
-  <file>imessage.alfredworkflow</file>
-</workflow>
