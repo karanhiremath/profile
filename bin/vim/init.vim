@@ -1,4 +1,3 @@
-
 set autoread
 syntax on
 

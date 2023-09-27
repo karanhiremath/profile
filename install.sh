@@ -7,11 +7,11 @@ shopt -s failglob
 medir=$( pwd "$0" )
 export PROFILE_DIR="${medir}"
 
-echo "${MACHINE} ${ARCH}"
-
 . $PROFILE_DIR/bin/sh/shell_fns --source-only
 
 generate_config_vars
+
+echo "${MACHINE} ${ARCH}"
 
 # install cargo and then just so we can use Justfile to do the rest
 install_app "cargo"

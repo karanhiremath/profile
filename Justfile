@@ -3,6 +3,8 @@
 APP_BIN := "$(pwd)/bin"
 HOME := "$(echo $HOME)"
 
+
+
 all: shell git fish tmux vim nvim python bash zsh
 
 install:
@@ -13,6 +15,7 @@ shell:
 
 alacritty:
     # alacritty install
+
 alfred:
     # alfred install
     curl -O https://raw.githubusercontent.com/Homebrew/homebrew-cask/645973c9681519cfd471a4352f377cdd4e3f09b2/Casks/alfred.rb
@@ -33,7 +36,6 @@ tmux:
     ./bin/tmux/install
 
 vim:
-    #!/bin/sh
     # vim install
     touch "{{HOME}}/.netrc"
     mkdir -p "{{HOME}}/.cache/nvim/undo"
@@ -43,8 +45,13 @@ vim:
     ln -fns "{{APP_BIN}}"/nvim/init.lua "{{HOME}}"/.config/nvim/init.lua
     ln -fns "{{APP_BIN}}"/nvim/lua "{{HOME}}"/.config/nvim/lua
 
+packer:
+    # packer install
+    git clone --depth 1 https://github.com/wbthomason/packer.nvim ~/.local/share/nvim/site/pack/packer/start/packer.nvim
+
 nvim:
     # nvim install
+
     ./bin/nvim/install
 
 python:
@@ -65,7 +72,6 @@ iterm:
     curl -l https://iterm2.com/shell_integration/bash \
         -o ./.iterm2_shell_integration.bash
 
-[macos]
 mac:
     ./bin/brew/install
     just gh
