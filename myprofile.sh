@@ -78,4 +78,6 @@ function profile ()
 
 alias vi="nvim"
 
-source "$HOME/.cargo/env"
+# use bob 
+export PATH=$PATH:/home/vagrant/.cargo/bin:/home/vagrant/.local/share/bob/nvim-bin
+alias nvim="~/.local/share/bob/nvim-bin/nvim"
