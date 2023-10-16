@@ -58,6 +58,7 @@ zsh:
 
 iterm:
     # iterm install
+
     brew install --cask iterm2
     # Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash
     curl -l https://iterm2.com/shell_integration/zsh \
