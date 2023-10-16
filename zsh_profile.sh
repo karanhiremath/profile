@@ -38,8 +38,7 @@ precmd() {
 bindkey "^[[H" beginning-of-line
 bindkey "^[[F" end-of-line
 bindkey  "^[[3~"  delete-char
-echo "${APP_BIN}"
-source "${APP_BIN}"/iterm/.iterm2_shell_integration.zsh
+# source "${APP_BIN}"/iterm/.iterm2_shell_integration.zsh
 
 # doesnt seem to have an arm64 build for mac
 # eval "$(starship init zsh)"

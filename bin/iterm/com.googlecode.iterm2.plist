@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>AllowClipboardAccess</key>
+	<true/>
 	<key>AllowTabbarInTitlebarAccessoryBigSur</key>
 	<false/>
 	<key>AnimateGraphStatusBarComponents</key>
@@ -22,9 +24,13 @@
 	<false/>
 	<key>DisableFullscreenTransparency</key>
 	<false/>
+	<key>DoubleClickPerformsSmartSelection</key>
+	<true/>
 	<key>DrawOutlineAroundCursor</key>
 	<false/>
 	<key>EnableAPIServer</key>
+	<true/>
+	<key>EnableRendezvous</key>
 	<true/>
 	<key>ForceAntialiasingOnRetina</key>
 	<true/>
@@ -34,6 +40,8 @@
 	<false/>
 	<key>HotkeyMigratedFromSingleToMulti</key>
 	<true/>
+	<key>IRMemory</key>
+	<integer>4</integer>
 	<key>LogDrawingPerformance</key>
 	<false/>
 	<key>MetalRedrawPeriod</key>
@@ -314,6 +322,8 @@
 			<integer>80</integer>
 			<key>Command</key>
 			<string></string>
+			<key>Cursor Boost</key>
+			<real>0.0</real>
 			<key>Cursor Color</key>
 			<dict>
 				<key>Alpha Component</key>
@@ -2258,10 +2268,14 @@
 			<string>kNextWindowPointerAction</string>
 		</dict>
 	</dict>
+	<key>QuitWhenAllWindowsClosed</key>
+	<true/>
 	<key>SavePasteHistory</key>
 	<true/>
 	<key>ShowMetalFPSmeter</key>
 	<false/>
+	<key>SmartPlacement</key>
+	<true/>
 	<key>SoundForEsc</key>
 	<false/>
 	<key>StartDebugLoggingAutomatically</key>
