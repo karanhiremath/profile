@@ -46,10 +46,6 @@ vim:
     ln -fns "{{APP_BIN}}"/nvim/lua "{{HOME}}"/.config/nvim/lua
     ln -fns "{{APP_BIN}}"/nvim/after "{{HOME}}"/.config/nvim/after
 
-packer:
-    # packer install
-    git clone --depth 1 https://github.com/wbthomason/packer.nvim ~/.local/share/nvim/site/pack/packer/start/packer.nvim
-
 nvim:
     # nvim install
 

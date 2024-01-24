@@ -1,5 +1,5 @@
 -- This file can be loaded by calling `lua require('plugins')` from your init.vim
-local fn = vim.fn 
+local fn = vim.fn
 
 -- Automatically install packer
 local install_path = fn.stdpath("data") .. "/site/pack/packer/start/packer.nvim"
@@ -80,6 +80,11 @@ return require('packer').startup(function(use)
 		  {'neovim/nvim-lspconfig'},
 		  {'williamboman/mason.nvim'},
 		  {'williamboman/mason-lspconfig.nvim'},
+
+          -- linter
+          {'mfussenegger/nvim-lint'},
+          {'rshkarin/mason-nvim-lint'},
+
 
 		  -- Autocompletion
 		  {'hrsh7th/nvim-cmp'},
