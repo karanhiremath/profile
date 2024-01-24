@@ -45,10 +45,8 @@ function install_app() {
 
 function generate_config_vars()
 {
-
-    if [[ ! -e ~/.config/.vars ]]; then
-        touch "~/.config/.vars"
-    fi
+    mkdir -p ~/.config
+    touch ~/.config/.vars
 
     grep -rq "export PROFILE_DIR=${PROFILE_DIR}" ~/.config/.vars || echo "export PROFILE_DIR=${PROFILE_DIR}" >> ~/.config/.vars
     unameOut="$(uname -s)"

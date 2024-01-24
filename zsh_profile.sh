@@ -3,6 +3,8 @@ source ~/.config/.vars
 source "${PROFILE_DIR}/myprofile.sh"
 
 alias reload="source ~/.zshrc && echo 'ZSH Profile Reloaded'"
+alias relaod="reload"
+
 
 autoload -U colors && colors
 autoload -Uz promptinit && promptinit

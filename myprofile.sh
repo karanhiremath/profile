@@ -4,7 +4,6 @@ alias ls='ls -GFh'
 
 alias tmux="tmux -2"
 
-git config --global user.email 'me@karanhiremath.com'
 git config --global user.name 'Karan Hiremath'
 git config --global --add --bool push.autoSetupRemote true
 git config --global pull.rebase true
@@ -79,5 +78,4 @@ function profile ()
 alias vi="nvim"
 
 # use bob 
-export PATH=$PATH:/home/vagrant/.cargo/bin:/home/vagrant/.local/share/bob/nvim-bin
 alias nvim="~/.local/share/bob/nvim-bin/nvim"
