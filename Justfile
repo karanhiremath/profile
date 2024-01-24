@@ -44,6 +44,7 @@ vim:
     ln -fs "{{APP_BIN}}"/vim/.vimrc "{{HOME}}"/.vimrc
     ln -fns "{{APP_BIN}}"/nvim/init.lua "{{HOME}}"/.config/nvim/init.lua
     ln -fns "{{APP_BIN}}"/nvim/lua "{{HOME}}"/.config/nvim/lua
+    ln -fns "{{APP_BIN}}"/nvim/after "{{HOME}}"/.config/nvim/after
 
 packer:
     # packer install

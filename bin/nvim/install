@@ -24,9 +24,4 @@ case "${MACHINE}" in
     ;;
 esac
 
-case "${ARCH}" in
-    aarch64)  echo "aarch64 architecture specific install instructions here";;
-    *)      echo "Generic install instructions here";;
-esac
-
 install_messages "end" "$app_name"

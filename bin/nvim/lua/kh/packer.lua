@@ -39,14 +39,13 @@ packer.init({
 	},
 })
 
--- Only required if you have packer configured as `opt`
 return require('packer').startup(function(use)
 	use 'wbthomason/packer.nvim'
 
-	use {
-		'nvim-telescope/telescope.nvim', tag = '0.1.0',
-		requires = { {'nvim-lua/plenary.nvim'} }
-	}
+    use {
+      'nvim-telescope/telescope.nvim', tag = '0.1.5',
+      requires = { {'nvim-lua/plenary.nvim'} }
+    }
 
     use({
         "folke/trouble.nvim",
@@ -104,7 +103,7 @@ return require('packer').startup(function(use)
           variant = 'moon'
           vim.cmd('colorscheme rose-pine')
           disable_background = true
-          disable_float_background = true
+          -- disable_float_background = true
 
           groups = {
               background = '2b3e50'
