@@ -18,7 +18,7 @@ autoload -Uz vcs_info
 
 # Format the vcs_info_msg_0_ variable
 zstyle ':vcs_info:git:*' formats '%b'
- 
+
 # Set up the prompt (with git branch name)
 setopt PROMPT_SUBST
 
@@ -41,6 +41,10 @@ bindkey "^[[F" end-of-line
 bindkey  "^[[3~"  delete-char
 
 source "${PROFILE_DIR}"/.iterm2_shell_integration.zsh
+
+# Add stuff to path
+path+=('~/.cargo/bin')
+export PATH
 
 # doesnt seem to have an arm64 build for mac
 # eval "$(starship init zsh)"

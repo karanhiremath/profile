@@ -101,6 +101,7 @@ return require('packer').startup(function(use)
   }
 
   -- use("folke/zen-mode.nvim")
+    use({'rebelot/kanagawa.nvim'})
     use({
       'rose-pine/neovim',
       as = 'rose-pine',
