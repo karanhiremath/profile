@@ -4,7 +4,6 @@ APP_BIN := "$(pwd)/bin"
 HOME := "$(echo $HOME)"
 
 
-
 all: shell git fish tmux vim nvim python bash zsh
 
 install:
@@ -50,6 +49,9 @@ nvim:
     # nvim install
 
     ./bin/nvim/install
+
+obsidian:
+    ./bin/obsidian/install
 
 python:
     # python install
