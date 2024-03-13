@@ -4,11 +4,12 @@ set -euo pipefail
 
 shopt -s failglob
 
-. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+. "${PROFILE_DIR}/bin/sh/shell_fns" --source-only
 
 app_name="nvim"
 nvim_version="v0.9.5"
-bob_install_location="~/.local/share/bob/nvim-bin"
+bob_version="2.8.0"
+bob_install_location="$HOME/.local/share/bob/nvim-bin"
 
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
@@ -16,9 +17,9 @@ ARCH="$(uname -m)"
 install_messages "start" "$app_name"
 
 case "${MACHINE}" in
-    *)      
+    *)
         echo "Install bob"
-        cargo install bob-nvim
+        cargo install bob-nvim --locked --version "${bob_version}"
         export PATH=$PATH:~/.cargo/bin/bob:${bob_install_location}
         ~/.cargo/bin/bob use "${nvim_version}"
     ;;

@@ -16,4 +16,14 @@ telescope.setup {
             n = { ["<leader>tt"] = trouble.open_with_trouble },
         },
     },
+    vimgrep_arguments = {
+        'rg',
+        '--with-filename',
+        '--line-number',
+        '--column',
+        '--smart-case',
+        '--ignore-file',
+        '.gitignore'
+    }
 }
+
