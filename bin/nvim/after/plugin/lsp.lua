@@ -1,6 +1,19 @@
 local lsp = require("lsp-zero")
+local utils = require("utils")
 
-lsp.on_attach(function(client, bufnr)
+
+lsp.ensure_installed({
+    'rust_analyzer',
+})
+
+-- Fix Undefined global 'vim'
+lsp.nvim_workspace()
+
+local cmp = require("cmp")
+local cmp_select = {behavior = cmp.SelectBehavior.Select}
+
+
+local custom_attach = function(client, bufnr)
   local opts = {buffer = bufnr, remap = false}
 
   vim.keymap.set("n", "gd", function() vim.lsp.buf.definition() end, opts)
@@ -13,10 +26,12 @@ lsp.on_attach(function(client, bufnr)
   vim.keymap.set("n", "<leader>vrr", function() vim.lsp.buf.references() end, opts)
   vim.keymap.set("n", "<leader>vrn", function() vim.lsp.buf.rename() end, opts)
   vim.keymap.set("i", "<C-h>", function() vim.lsp.buf.signature_help() end, opts)
-end)
+end
 
+lsp.on_attach(custom_attach)
 lsp.setup()
 require("mason").setup()
+
 require("mason-lspconfig").setup({
     ensure_installed = {
         'snyk_ls',
@@ -33,8 +48,6 @@ require("mason-lspconfig").setup({
     },
 })
 
-local cmp = require("cmp")
-local cmp_select = {behavior = cmp.SelectBehavior.Select}
 local cmp_action = lsp.cmp_action()
 
 -- require('luasnip.loaders.from_vscode').lazy_load()
@@ -70,5 +83,46 @@ cmp.setup({
     }),
     -- note: if you are going to use lsp-kind (another plugin)
     -- replace the line below with the function from lsp-kind
-    formatting = lsp.cmp_format(),
 })
+
+if utils.executable("pylsp") then
+    local venv_path = os.getenv('VIRTUAL_ENV')
+    local py_path = nil
+    -- decide which python executable to use for mypy
+    if venv_path ~= nil then
+        py_path = venv_path .. "/bin/python3"
+    else
+        py_path = "/opt/python3.10/bin/python3"
+    end
+
+
+    lspconfig = require("lspconfig")
+    lspconfig.pylsp.setup {
+        on_attach = custom_attach,
+        settings = {
+            pylsp = {
+                plugins = {
+                    black = { enabled = true },
+                    autopep8 = { enabled = false },
+                     yapf = { enabled = false },
+                    -- linter options
+                    pylint = { enabled = true, executable = "pylint" },
+                    pyflakes = { enabled = false },
+                    pycodestyle = { enabled = false },
+                    -- type checker
+                    pylsp_mypy = { enabled = true },
+                    -- auto-completion options
+                    jedi_completion = { fuzzy = true },
+                    -- import sorting
+                    pyls_isort = { enabled = true },
+                }
+            }
+        },
+        flags = {
+            debounce_text_changes = 200,
+        },
+        capabilities = capabilities,
+    }
+else
+    vim.notify("pylsp not found", vim.log.levels.WARN, { title = "Nvim-config" })
+end
