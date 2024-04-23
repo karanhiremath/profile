@@ -2,7 +2,7 @@
 
 set export
 
-APP_BIN := join(justfile_directory(), "bin")
+APP_BIN := justfile_directory() / "bin"
 HOME := env_var("HOME")
 os := os()
 arch := arch()

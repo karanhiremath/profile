@@ -1,0 +1,36 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+setopt CSH_NULL_GLOB
+
+. "${APP_BIN}"/sh/shell_fns --source-only
+
+app_name="obsidian"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if ! is_cmd_installed "${app_name}"; then
+    install_messages "start" "${app_name}"
+
+    case "${MACHINE}" in
+        Linux*)  echo "Linux specific install instructions here";;
+        Mac* | Darwin*) brew install --cask obsidian;;
+        *)      echo "Generic install instructions here";;
+    esac
+
+    case "${ARCH}" in
+        aarch64*)  echo "aarch64 architecture specific install instructions here";;
+        *)      echo "Generic install instructions here";;
+    esac
+
+    install_messages "end" "${app_name}"
+else
+    case "${MACHINE}" in
+        Linux*)  echo "Linux specific update instructions here";;
+        Mac* | Darwin*) brew upgrade obsidian;;
+        *)      echo "Generic update instructions here";;
+    esac
+
+fi
