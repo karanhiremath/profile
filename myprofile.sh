@@ -51,7 +51,10 @@ function activate ()
 
 alias fileserver="ssh karan@karanhiremath.com -t -- /bin/sh -c 'exec tmux has-session -t fs && tmux attach-session -t fs || exec tmux new -s fs'"
 
-alias mac="tmux has-session -t mac && tmux attach-session -t mac || exec tmux new -s mac"
+function mac() {
+    local sessionname="${1:-mac}"
+    tmux has-session -t "${sessionname}" && tmux attach-session -t "${sessionname}" || exec tmux new -s "${sessionname}"
+}
 
 alias reload-ssh='eval $(tmux show-env -s | grep '^SSH_')'
 
