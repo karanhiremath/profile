@@ -2,12 +2,8 @@ local lsp = require("lsp-zero")
 local utils = require("utils")
 
 
-lsp.ensure_installed({
-    'rust_analyzer',
-})
-
 -- Fix Undefined global 'vim'
-lsp.nvim_workspace()
+-- lsp.nvim_workspace()
 
 local cmp = require("cmp")
 local cmp_select = {behavior = cmp.SelectBehavior.Select}
@@ -37,7 +33,7 @@ require("mason-lspconfig").setup({
         'snyk_ls',
         'typos_lsp',
         'terraformls',
-
+        'pylsp',
     },
     handlers = {
         lsp.default_setup,
