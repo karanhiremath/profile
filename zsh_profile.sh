@@ -42,3 +42,4 @@ source "${PROFILE_DIR}/.iterm2_shell_integration.zsh"
 
 # doesnt seem to have an arm64 build for mac
 # eval "$(starship init zsh)"
+eval "$(gh copilot alias -- zsh)"
