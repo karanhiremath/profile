@@ -27,6 +27,11 @@ gh:
     # github cli install
     ./bin/gh/install
 
+ghostty:
+    # ghostty install
+    ./bin/ghostty/install
+    ln -fns "{{APP_BIN}}"/ghostty/config "{{HOME}}"/.config/ghostty/config
+
 fish:
     # fish install
 
@@ -64,18 +69,14 @@ zsh:
 
 iterm:
     # iterm install
-    brew install --cask iterm2
-    echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
-    curl -l https://iterm2.com/shell_integration/zsh \
-        -o ./.iterm2_shell_integration.zsh
-    curl -l https://iterm2.com/shell_integration/bash \
-        -o ./.iterm2_shell_integration.bash
+    ./bin/iterm/install
 
 mac:
     ./bin/brew/install
     just gh
     just tmux
-    just iterm
+    # just iterm
+    just ghostty
     brew tap teamookla/speedtest
     brew install speedtest --force
     brew install --cask rectangle

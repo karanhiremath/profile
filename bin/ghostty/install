@@ -1,0 +1,29 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="ghostty"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    Linux)  echo "Linux specific install instructions here";;
+    Darwin)    brew install --cask ghostty;;
+    *)      echo "Generic install instructions here";;
+esac
+
+case "${ARCH}" in
+    aarch64)  echo "aarch64 architecture specific install instructions here";;
+    *)      echo "Generic install instructions here";;
+esac
+
+mkdir -p "${HOME}"/.config/ghostty
+
+install_messages "end" "$app_name"
