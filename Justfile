@@ -71,6 +71,10 @@ iterm:
     # iterm install
     ./bin/iterm/install
 
+opentofu:
+    # opentofu install
+    ./bin/opentofu/install
+
 mac:
     ./bin/brew/install
     just gh
