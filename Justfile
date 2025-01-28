@@ -85,3 +85,4 @@ mac:
     brew install speedtest --force
     brew install --cask rectangle
     just alfred
+    just opentofu
