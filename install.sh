@@ -16,6 +16,10 @@ echo "${MACHINE} ${ARCH}"
 
 # install cargo and then just so we can use Justfile to do the rest
 install_app "cargo"
+
+# source cargo for use in other installation steps
+. "$HOME/.cargo/env"
+
 install_app "just"
 
 just all
