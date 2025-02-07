@@ -4,7 +4,6 @@ APP_BIN := "$(pwd)/bin"
 HOME := "$(echo $HOME)"
 
 
-
 all: shell git fish tmux vim nvim python bash zsh
 
 install:
@@ -28,6 +27,11 @@ gh:
     # github cli install
     ./bin/gh/install
 
+ghostty:
+    # ghostty install
+    ./bin/ghostty/install
+    ln -fns "{{APP_BIN}}"/ghostty/config "{{HOME}}"/.config/ghostty/config
+
 fish:
     # fish install
 
@@ -44,15 +48,15 @@ vim:
     ln -fs "{{APP_BIN}}"/vim/.vimrc "{{HOME}}"/.vimrc
     ln -fns "{{APP_BIN}}"/nvim/init.lua "{{HOME}}"/.config/nvim/init.lua
     ln -fns "{{APP_BIN}}"/nvim/lua "{{HOME}}"/.config/nvim/lua
-
-packer:
-    # packer install
-    git clone --depth 1 https://github.com/wbthomason/packer.nvim ~/.local/share/nvim/site/pack/packer/start/packer.nvim
+    ln -fns "{{APP_BIN}}"/nvim/after "{{HOME}}"/.config/nvim/after
 
 nvim:
     # nvim install
 
     ./bin/nvim/install
+
+obsidian:
+    ./bin/obsidian/install
 
 python:
     # python install
@@ -65,19 +69,25 @@ zsh:
 
 iterm:
     # iterm install
-    brew install --cask iterm2
-    echo "Pulling latest iterm2_shell_integration.zsh and iterm2_shell_integration.bash"
-    curl -l https://iterm2.com/shell_integration/zsh \
-        -o ./.iterm2_shell_integration.zsh
-    curl -l https://iterm2.com/shell_integration/bash \
-        -o ./.iterm2_shell_integration.bash
+    ./bin/iterm/install
+
+opentofu:
+    # opentofu install
+    ./bin/opentofu/install
+
+steampipe:
+    # steampipe install
+    ./bin/steampipe/install
 
 mac:
     ./bin/brew/install
     just gh
     just tmux
-    just iterm
+    # just iterm
+    just ghostty
     brew tap teamookla/speedtest
     brew install speedtest --force
     brew install --cask rectangle
     just alfred
+    just opentofu
+    just steampipe

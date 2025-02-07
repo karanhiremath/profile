@@ -1,0 +1,24 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="obsidian"
+personal_notes_repo="git@github.com:karanhiremath/notes.git"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    *)
+        echo "Cloning obsidian git repo"
+        git clone "$personal_notes_repo" ~/obsidian/personal/
+    ;;
+esac
+
+install_messages "end" "$app_name"

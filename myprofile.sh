@@ -4,7 +4,6 @@ alias ls='ls -GFh'
 
 alias tmux="tmux -2"
 
-git config --global user.email 'me@karanhiremath.com'
 git config --global user.name 'Karan Hiremath'
 git config --global --add --bool push.autoSetupRemote true
 git config --global pull.rebase true
@@ -14,13 +13,13 @@ function gb ()
 {
     git checkout -b "$1"
 }
-function gac () 
-{ 
+function gac ()
+{
 	git add "$1" && git commit -m "$2";
 }
 
-function gacp () 
-{ 
+function gacp ()
+{
 	git add "$1" && git commit -m "$2" && git push;
 }
 
@@ -41,7 +40,7 @@ function docker-c-start ()
 
 function activate ()
 {
-  if [ -z "$1" ] 
+  if [ -z "$1" ]
     then
       echo "No virtualenv supplied"
   else
@@ -51,7 +50,18 @@ function activate ()
 
 alias fileserver="ssh karan@karanhiremath.com -t -- /bin/sh -c 'exec tmux has-session -t fs && tmux attach-session -t fs || exec tmux new -s fs'"
 
-alias mac="tmux has-session -t mac && tmux attach-session -t mac || exec tmux new -s mac"
+function local_tmux ()
+{
+    local sessionname="${1:-local}"
+    echo "Connecting to local session name: ${sessionname}"
+    tmux has-session -t "${sessionname}" && tmux attach-session -t "${sessionname}" || exec tmux new -s "${sessionname}"
+}
+function mac ()
+{
+    local sessionname="${1:-mac}"
+    echo "Connecting to local session name: ${sessionname}"
+    local_tmux "${sessionname}"
+}
 
 alias reload-ssh='eval $(tmux show-env -s | grep '^SSH_')'
 
@@ -78,6 +88,5 @@ function profile ()
 
 alias vi="nvim"
 
-# use bob 
-export PATH=$PATH:/home/vagrant/.cargo/bin:/home/vagrant/.local/share/bob/nvim-bin
+# use bob
 alias nvim="~/.local/share/bob/nvim-bin/nvim"

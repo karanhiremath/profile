@@ -6,13 +6,12 @@ shopt -s failglob
 
 echo "Installing tmux..."
 
-case "${MACHINE}"
-    Linux)  sudo apt-get install tmux;;
+case "${MACHINE}" in
     Mac)    brew install tmux;;
     *)      echo "Generic instructions not implemented"
 esac
 
-local tmux_dir=$(HOME)/.config/tmux
-mkdir -p $tmux_dir
-ln -fs ./tmux.conf $tmux_dir
-ln -fs ./tmux.conf $(HOME)/.tmux.conf
+tmux_dir="${HOME}/.config/tmux"
+mkdir -p "${tmux_dir}"
+ln -fs ./tmux.conf "${tmux_dir}"
+ln -fs ./tmux.conf "${HOME}/.tmux.conf"

@@ -1,0 +1,10 @@
+let g:netrw_dirhistmax  =10
+let g:netrw_dirhistcnt =8
+let g:netrw_dirhist_8='/home/karan/profile/bin/nvim'
+let g:netrw_dirhist_7='/home/karan/profile/bin/nvim/after'
+let g:netrw_dirhist_6='/home/karan/profile/bin/nvim'
+let g:netrw_dirhist_5='/home/karan/profile/bin/nvim/lua/kh'
+let g:netrw_dirhist_4='/home/karan/profile/bin/nvim/lua'
+let g:netrw_dirhist_3='/home/karan/profile/bin/nvim/lua/kh'
+let g:netrw_dirhist_2='/home/karan/profile/bin/nvim/lua'
+let g:netrw_dirhist_1='/home/karan/profile/bin/nvim'
