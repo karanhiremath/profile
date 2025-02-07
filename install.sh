@@ -6,6 +6,7 @@ shopt -s failglob
 
 medir=$( pwd "$0" )
 export PROFILE_DIR="${medir}"
+export APP_BIN="${PROFILE_DIR}/bin"
 
 . $PROFILE_DIR/bin/sh/shell_fns --source-only
 
@@ -126,7 +127,7 @@ fi
 if [[ ! -e ~/.tmux/plugins/tpm/ ]]; then
   git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 else
-    echo "~/.tmux/plugins/tmp exists!" 
+    echo "~/.tmux/plugins/tmp exists!"
 fi
 
 just nvim
