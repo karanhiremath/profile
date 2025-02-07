@@ -4,7 +4,7 @@ set -euo pipefail
 
 shopt -s failglob
 
-. "${APP_BIN}/sh/shell_fns --source-only"
+. "${APP_BIN}"/sh/shell_fns --source-only
 
 source "$HOME/.cargo/env"
 
