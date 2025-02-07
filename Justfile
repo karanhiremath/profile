@@ -75,6 +75,10 @@ opentofu:
     # opentofu install
     ./bin/opentofu/install
 
+steampipe:
+    # steampipe install
+    ./bin/steampipe/install
+
 mac:
     ./bin/brew/install
     just gh
@@ -86,3 +90,4 @@ mac:
     brew install --cask rectangle
     just alfred
     just opentofu
+    just steampipe

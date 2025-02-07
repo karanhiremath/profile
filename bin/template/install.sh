@@ -18,7 +18,7 @@ else
 
     case "${MACHINE}" in
         Linux)  echo "Linux specific install instructions here";;
-        Mac)    echo "Mac install instructions here";;
+        Darwin)    echo "Mac install instructions here";;
         *)      echo "Generic install instructions here";;
     esac
 
