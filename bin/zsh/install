@@ -11,28 +11,18 @@ app_name="bash"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-if [[ ! -e ~/.bash_profile ]]; then
-    touch ~/.bash_profile
+# confirm .zprofile and .zshrc are setup appropriately
+if grep -q "$medir/zsh_profile.sh" ~/.zshrc; then
+    echo "zsh_profile.sh already sourced in ~/.zshrc"
 else
-    echo "Bash Profile found at ~/.bash_profile"
+    echo "Sourcing $medir/zsh_profile.sh in ~/.zshrc"
+    echo "source $medir/zsh_profile.sh" >> ~/.zshrc
 fi
 
-if grep -q "${PROFILE_DIR}/bash_profile.sh" ~/.bash_profile; then
-    echo "bash_profile.sh already sourced in ~/.bash_profile"
+if grep -q "$medir/myprofile.sh" ~/.zshrc; then
+    echo "myprofile.sh already sourced in ~/.zshrc"
 else
-    echo "Sourcing ${PROFILE_DIR}/bash_profile.sh in ~/.bash_profile"
-    echo "source ${PROFILE_DIR}/bash_profile.sh" >> ~/.bash_profile
+    echo "Sourcing $medir/myprofile.sh in ~/.zshrc"
+    echo "source $medir/myprofile.sh" >> ~/.zshrc
 fi
 
-if grep -q "${PROFILE_DIR}/myprofile.sh" ~/.bash_profile; then
-    echo "myprofile.sh already sourced in ~/.bash_profile"
-else
-    echo "Sourcing ${PROFILE_DIR}/myprofile.sh in ~/.bash_profile"
-    echo "source ${PROFILE_DIR}/myprofile.sh" >> ~/.bash_profile
-fi
-
-if [[ ! -e ~/.bash_profile ]]; then
-    touch ~/.bash_profile
-else
-    echo "Bash Profile found at ~/.bash_profile"
-fi
