@@ -14,65 +14,8 @@ generate_config_vars
 
 echo "${MACHINE} ${ARCH}"
 
-# install cargo and then just so we can use Justfile to do the rest
-install_app "cargo"
-
-# source cargo for use in other installation steps
-. "$HOME/.cargo/env"
-
-install_app "just"
-
-just all
-
-if [[ $machine == "Mac" ]]; then
-    just mac
-fi
-
-if [[ ! -e ~/.bash_profile ]]; then
-    touch ~/.bash_profile
-else
-    echo "Bash Profile found at ~/.bash_profile"
-fi
-
-if grep -q "$medir/bash_profile.sh" ~/.bash_profile; then
-    echo "bash_profile.sh already sourced in ~/.bash_profile"
-else
-    echo "Sourcing $medir/bash_profile.sh in ~/.bash_profile"
-    echo "source $medir/bash_profile.sh" >> ~/.bash_profile
-fi
-
-if grep -q "$medir/myprofile.sh" ~/.bash_profile; then
-    echo "myprofile.sh already sourced in ~/.bash_profile"
-else
-    echo "Sourcing $medir/myprofile.sh in ~/.bash_profile"
-    echo "source $medir/myprofile.sh" >> ~/.bash_profile
-fi
-
-if [[ ! -e ~/.bash_profile ]]; then
-    touch ~/.bash_profile
-else
-    echo "Bash Profile found at ~/.bash_profile"
-fi
-
-if [[ ! -e ~/.zshrc ]]; then
-    # Setup Oh My ZSH and any plugins:
-#    git clone https://github.com/ohmyzsh/ohmyzsh.git ~/.dotfiles/.oh-my-zsh
-#    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-#    git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
-    echo "No oh-my-zsh"
-else
-    echo "ZSH Profile found at ~/.zshrc"
-fi
-
-# add brew to `/.zshrc
-if [[ $machine == "Mac" ]]; then
-    if grep -q "/opt/homebrew/bin" ~/.zshrc; then
-        echo "homebrew bin added to ~/.zshrc"
-    else
-        echo "adding brew to ~/.zshrc PATH"
-        echo "export PATH=/opt/homebrew/bin:$PATH" >> ~/.zshrc
-    fi
-fi
+"${APP_BIN}"/zsh/install
+"${APP_BIN}"/zsh/install
 
 # confirm .zprofile and .zshrc are setup appropriately
 if grep -q "$medir/zsh_profile.sh" ~/.zshrc; then
@@ -133,5 +76,41 @@ if [[ ! -e ~/.tmux/plugins/tpm/ ]]; then
 else
     echo "~/.tmux/plugins/tmp exists!"
 fi
+
+# install cargo and then just so we can use Justfile to do the rest
+install_app "cargo"
+
+# source cargo for use in other installation steps
+. "$HOME/.cargo/env"
+
+install_app "just"
+
+just all
+
+if [[ $machine == "Mac" ]]; then
+    just mac
+fi
+
+if [[ ! -e ~/.zshrc ]]; then
+    # Setup Oh My ZSH and any plugins:
+#    git clone https://github.com/ohmyzsh/ohmyzsh.git ~/.dotfiles/.oh-my-zsh
+#    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+#    git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+    echo "No oh-my-zsh"
+else
+    echo "ZSH Profile found at ~/.zshrc"
+fi
+
+# add brew to `/.zshrc
+if [[ $machine == "Mac" ]]; then
+    if grep -q "/opt/homebrew/bin" ~/.zshrc; then
+        echo "homebrew bin added to ~/.zshrc"
+    else
+        echo "adding brew to ~/.zshrc PATH"
+        echo "export PATH=/opt/homebrew/bin:$PATH" >> ~/.zshrc
+    fi
+fi
+
+
 
 just nvim
