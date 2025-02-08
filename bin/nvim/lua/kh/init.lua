@@ -1,6 +1,7 @@
+require("kh.packer")
 require("kh.set")
 require("kh.remap")
-require("kh.packer")
+
 
 local augroup = vim.api.nvim_create_augroup
 local khgroup = augroup('kh', {})
