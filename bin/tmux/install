@@ -8,7 +8,7 @@ shopt -s failglob
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-. "${PROFILE_DIR}/bin/sh/shell_fns --source-only"
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
 
 echo "Installing tmux..."
 
