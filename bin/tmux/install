@@ -4,6 +4,10 @@ set -euo pipefail
 
 shopt -s failglob
 
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
 . "${APP_BIN}/bin/sh/shell_fns --source-only"
 
 echo "Installing tmux..."

@@ -7,8 +7,7 @@ shopt -s failglob
 . "${PROFILE_DIR}/bin/sh/shell_fns" --source-only
 
 packer_target_dir="${HOME}"/.local/share/nvim/site/pack/packer/start/packer.nvim
-git -c "$packer_target_dir" pull origin ||\
-    git clone --depth 1 https://github.com/wbthomason/packer.nvim\
+git -C "$packer_target_dir" pull origin || git clone --depth 1 https://github.com/wbthomason/packer.nvim\
         "$packer_target_dir"
 
 touch "${HOME}/.netrc"
