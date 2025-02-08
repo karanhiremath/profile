@@ -12,17 +12,17 @@ MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 # confirm .zprofile and .zshrc are setup appropriately
-if grep -q "$medir/zsh_profile.sh" ~/.zshrc; then
+if grep -q "${PROFILE_DIR}/zsh_profile.sh" ~/.zshrc; then
     echo "zsh_profile.sh already sourced in ~/.zshrc"
 else
-    echo "Sourcing $medir/zsh_profile.sh in ~/.zshrc"
-    echo "source $medir/zsh_profile.sh" >> ~/.zshrc
+    echo "Sourcing ${PROFILE_DIR}/zsh_profile.sh in ~/.zshrc"
+    echo "source ${PROFILE_DIR}/zsh_profile.sh" >> ~/.zshrc
 fi
 
-if grep -q "$medir/myprofile.sh" ~/.zshrc; then
+if grep -q "${PROFILE_DIR}/myprofile.sh" ~/.zshrc; then
     echo "myprofile.sh already sourced in ~/.zshrc"
 else
-    echo "Sourcing $medir/myprofile.sh in ~/.zshrc"
-    echo "source $medir/myprofile.sh" >> ~/.zshrc
+    echo "Sourcing ${PROFILE_DIR}/myprofile.sh in ~/.zshrc"
+    echo "source ${PROFILE_DIR}/myprofile.sh" >> ~/.zshrc
 fi
 
