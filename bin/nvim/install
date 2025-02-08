@@ -6,9 +6,9 @@ shopt -s failglob
 
 . "${PROFILE_DIR}/bin/sh/shell_fns" --source-only
 
-git -c "${HOME}"/.local/share/nvim/site/pack/pakcer/start/packer.nvim pull origin ||\
+git -c "${HOME}/.local/share/nvim/site/pack/pakcer/start/packer.nvim" pull origin ||\
     git clone --depth 1 https://github.com/wbthomason/packer.nvim\
-        "${HOME}"/.local/share/nvim/site/pack/packer/start/packer.nvim
+        "${HOME}/.local/share/nvim/site/pack/packer/start/packer.nvim"
 
 touch "${HOME}/.netrc"
 mkdir -p "${HOME}/.cache/nvim/undo"
