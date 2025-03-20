@@ -6,6 +6,13 @@ shopt -s failglob
 
 . "${PROFILE_DIR}/bin/sh/shell_fns" --source-only
 
+touch "${HOME}/.netrc"
+mkdir -p "${HOME}/.cache/nvim/undo"
+mkdir -p "${HOME}/.config/nvim/"
+ln -fns "${PROFILE_DIR}"/bin/nvim/init.lua "${HOME}"/.config/nvim/init.lua
+ln -fns "${PROFILE_DIR}"/bin/nvim/lua "${HOME}"/.config/nvim/lua
+ln -fns "${PROFILE_DIR}"/bin/nvim/after "${HOME}"/.config/nvim/after
+
 app_name="nvim"
 nvim_version="v0.9.5"
 bob_version="2.8.0"

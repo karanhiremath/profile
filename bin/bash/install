@@ -1,0 +1,38 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="bash"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if [[ ! -e ~/.bash_profile ]]; then
+    touch ~/.bash_profile
+else
+    echo "Bash Profile found at ~/.bash_profile"
+fi
+
+if grep -q "${PROFILE_DIR}/bash_profile.sh" ~/.bash_profile; then
+    echo "bash_profile.sh already sourced in ~/.bash_profile"
+else
+    echo "Sourcing ${PROFILE_DIR}/bash_profile.sh in ~/.bash_profile"
+    echo "source ${PROFILE_DIR}/bash_profile.sh" >> ~/.bash_profile
+fi
+
+if grep -q "${PROFILE_DIR}/myprofile.sh" ~/.bash_profile; then
+    echo "myprofile.sh already sourced in ~/.bash_profile"
+else
+    echo "Sourcing ${PROFILE_DIR}/myprofile.sh in ~/.bash_profile"
+    echo "source ${PROFILE_DIR}/myprofile.sh" >> ~/.bash_profile
+fi
+
+if [[ ! -e ~/.bash_profile ]]; then
+    touch ~/.bash_profile
+else
+    echo "Bash Profile found at ~/.bash_profile"
+fi

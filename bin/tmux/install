@@ -4,6 +4,12 @@ set -euo pipefail
 
 shopt -s failglob
 
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
 echo "Installing tmux..."
 
 case "${MACHINE}" in
@@ -13,5 +19,5 @@ esac
 
 tmux_dir="${HOME}/.config/tmux"
 mkdir -p "${tmux_dir}"
-ln -fs ./tmux.conf "${tmux_dir}"
-ln -fs ./tmux.conf "${HOME}/.tmux.conf"
+ln -fs "${PROFILE_DIR}/bin/tmux/tmux.conf" "${tmux_dir}/"
+ln -fs "${PROFILE_DIR}/bin/tmux/tmux.conf" "${HOME}/.tmux.conf"

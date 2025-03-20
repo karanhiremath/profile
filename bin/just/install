@@ -4,7 +4,7 @@ set -euo pipefail
 
 shopt -s failglob
 
-. "${APP_BIN}/bin/sh/shell_fns --source-only"
+. "${APP_BIN}"/sh/shell_fns --source-only
 
 source "$HOME/.cargo/env"
 
@@ -19,6 +19,7 @@ if [[ $(cargo install just) -ne 0 ]]; then
     case "${MACHINE}" in
         Linux)  echo "Linux specific install instructions here";;
         Mac)    brew install just;;
+        Darwin)    brew install just;;
         *)      echo "Generic install instructions here";;
     esac
 
