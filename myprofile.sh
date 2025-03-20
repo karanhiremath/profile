@@ -2,8 +2,6 @@ export MYSQL_PS1="\R:\m:\s\ \u\ [db\ \d]\ >\ "
 
 alias ls='ls -GFh'
 
-alias tmux="tmux -2"
-
 git config --global user.name 'Karan Hiremath'
 git config --global --add --bool push.autoSetupRemote true
 git config --global pull.rebase true
@@ -13,13 +11,13 @@ function gb ()
 {
     git checkout -b "$1"
 }
-function gac () 
-{ 
+function gac ()
+{
 	git add "$1" && git commit -m "$2";
 }
 
-function gacp () 
-{ 
+function gacp ()
+{
 	git add "$1" && git commit -m "$2" && git push;
 }
 
@@ -40,7 +38,7 @@ function docker-c-start ()
 
 function activate ()
 {
-  if [ -z "$1" ] 
+  if [ -z "$1" ]
     then
       echo "No virtualenv supplied"
   else
@@ -77,5 +75,5 @@ function profile ()
 
 alias vi="nvim"
 
-# use bob 
+# use bob
 alias nvim="~/.local/share/bob/nvim-bin/nvim"

@@ -5,7 +5,6 @@ source "${PROFILE_DIR}/myprofile.sh"
 alias reload="source ~/.zshrc && echo 'ZSH Profile Reloaded'"
 alias relaod="reload"
 
-
 autoload -U colors && colors
 autoload -Uz promptinit && promptinit
 
@@ -43,7 +42,7 @@ bindkey  "^[[3~"  delete-char
 source "${PROFILE_DIR}"/.iterm2_shell_integration.zsh
 
 # Add stuff to path
-path+=('~/.cargo/bin')
+path+=('home/karan/.cargo/bin')
 export PATH
 
 # doesnt seem to have an arm64 build for mac

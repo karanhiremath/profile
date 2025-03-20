@@ -1,14 +1,6 @@
 local lsp = require("lsp-zero")
 local utils = require("utils")
 
-
-lsp.ensure_installed({
-    'rust_analyzer',
-})
-
--- Fix Undefined global 'vim'
-lsp.nvim_workspace()
-
 local cmp = require("cmp")
 local cmp_select = {behavior = cmp.SelectBehavior.Select}
 
@@ -126,3 +118,10 @@ if utils.executable("pylsp") then
 else
     vim.notify("pylsp not found", vim.log.levels.WARN, { title = "Nvim-config" })
 end
+
+require 'nvim-treesitter.configs'.setup {
+    autotag = {
+        enable = true,
+    }
+}
+

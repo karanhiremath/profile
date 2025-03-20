@@ -4,14 +4,29 @@ set -euo pipefail
 
 shopt -s failglob
 
+script_dir=$(dirname "$(readlink -f "$0")")
+echo "${script_dir}"
+
 echo "Installing tmux..."
 
 case "${MACHINE}" in
-    Mac)    brew install tmux;;
+    Mac)
+        brew install tmux
+        tmux_install_dir="$(brew --prefix tmux)/bin/tmux"
+        echo "alias tmux=\"$tmux_install_dir\"" >> ~/.zshrc
+        ;;
     *)      echo "Generic instructions not implemented"
 esac
 
 tmux_dir="${HOME}/.config/tmux"
 mkdir -p "${tmux_dir}"
-ln -fs ./tmux.conf "${tmux_dir}"
-ln -fs ./tmux.conf "${HOME}/.tmux.conf"
+tmux_conf_file="${script_dir}/.tmux.conf"
+
+echo "Symlinking ${tmux_conf_file} to ${tmux_dir}/.tmux.conf"
+ln -fs "${tmux_conf_file}" "${tmux_dir}/.tmux.conf"
+echo "$(wc -l $tmux_conf_file) original lines, $(cat ${tmux_dir}/.tmux.conf | wc -l) lines in symlinked path "
+
+echo "Symlinking ${tmux_conf_file} to ${HOME}/.tmux.conf"
+ln -fs "${tmux_conf_file}" "${HOME}/.tmux.conf"
+echo "$(wc -l $tmux_conf_file) original lines, $(cat ${HOME}.tmux.conf | wc -l) lines in symlinked path "
+
