@@ -1,12 +1,26 @@
 #!/bin/bash
 # Common configuration for testing
 
+# Detect container engine (prefer podman over docker)
+detect_container_engine() {
+    if command -v podman >/dev/null 2>&1; then
+        echo "podman"
+    elif command -v docker >/dev/null 2>&1; then
+        echo "docker"
+    else
+        echo ""
+    fi
+}
+
+# Set container engine
+export CONTAINER_ENGINE="${CONTAINER_ENGINE:-$(detect_container_engine)}"
+
 # Test configuration variables
 export TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
 export TEST_VERBOSE="${TEST_VERBOSE:-0}"
 export TEST_KEEP_CONTAINERS="${TEST_KEEP_CONTAINERS:-0}"
 
-# Docker image names
+# Container image names
 export UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:latest}"
 export RHEL8_IMAGE="${RHEL8_IMAGE:-redhat/ubi8:latest}"
 export NIXOS_IMAGE="${NIXOS_IMAGE:-nixos/nix:latest}"

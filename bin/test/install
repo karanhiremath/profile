@@ -1,6 +1,6 @@
 #!/bin/bash
-# Install Docker testing infrastructure
-# This script ensures Docker is available for testing
+# Install container engine for testing infrastructure
+# This script ensures Podman or Docker is available for testing
 
 set -euo pipefail
 
@@ -8,34 +8,49 @@ shopt -s failglob
 
 . "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
 
-app_name="docker"
-
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-install_messages "start" "$app_name"
+# Check for podman first (preferred)
+if command -v podman > /dev/null 2>&1; then
+    app_name="podman"
+    install_messages "start" "$app_name"
+    echo "Podman already installed (preferred)!"
+    podman --version
+    install_messages "end" "$app_name"
+    exit 0
+fi
 
+# Check for docker as fallback
 if command -v docker > /dev/null 2>&1; then
+    app_name="docker"
+    install_messages "start" "$app_name"
     echo "Docker already installed!"
     docker --version
-else
-    echo "Docker not found. Please install Docker manually."
-    echo ""
-    echo "Installation instructions:"
-    echo "  Ubuntu/Debian: https://docs.docker.com/engine/install/ubuntu/"
-    echo "  Mac: https://docs.docker.com/desktop/install/mac-install/"
-    echo "  RHEL: https://docs.docker.com/engine/install/rhel/"
-    echo ""
-    exit 1
+    
+    # Verify Docker is running
+    if ! docker ps > /dev/null 2>&1; then
+        echo "Docker is installed but not running or accessible."
+        echo "Please start Docker or check permissions."
+        exit 1
+    fi
+    
+    echo "Docker is ready for testing!"
+    install_messages "end" "$app_name"
+    exit 0
 fi
 
-# Verify Docker is running
-if ! docker ps > /dev/null 2>&1; then
-    echo "Docker is installed but not running or accessible."
-    echo "Please start Docker or check permissions."
-    exit 1
-fi
-
-echo "Docker is ready for testing!"
-
-install_messages "end" "$app_name"
+# Neither found - provide installation instructions
+echo "Neither Podman nor Docker found. Please install one of them."
+echo ""
+echo "Podman installation (recommended - daemonless, rootless):"
+echo "  Ubuntu/Debian: sudo apt-get install -y podman"
+echo "  Mac: brew install podman"
+echo "  RHEL/Fedora: sudo dnf install -y podman"
+echo ""
+echo "Docker installation (alternative):"
+echo "  Ubuntu/Debian: https://docs.docker.com/engine/install/ubuntu/"
+echo "  Mac: https://docs.docker.com/desktop/install/mac-install/"
+echo "  RHEL: https://docs.docker.com/engine/install/rhel/"
+echo ""
+exit 1

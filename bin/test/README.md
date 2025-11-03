@@ -1,10 +1,19 @@
 # Profile Testing Infrastructure
 
-This directory contains Docker-based testing infrastructure for validating the profile repository installation across multiple operating systems.
+This directory contains container-based testing infrastructure for validating the profile repository installation across multiple operating systems using Podman or Docker.
 
 ## Overview
 
-The testing framework spins up Docker containers with different OS variants and validates that the profile repository installs correctly and that each app is handled properly.
+The testing framework spins up containers with different OS variants and validates that the profile repository installs correctly and that each app is handled properly. The framework automatically detects and prefers Podman over Docker for improved security and rootless operation.
+
+## Container Engine
+
+The test infrastructure supports both **Podman** (preferred) and **Docker**:
+
+- **Podman** (recommended): Daemonless, rootless container engine that's fully compatible with Docker
+- **Docker**: Traditional container engine with daemon
+
+The framework automatically detects which tool is available and uses Podman if both are installed.
 
 ## Supported Operating Systems
 
@@ -88,7 +97,7 @@ You can also run the test runner script directly for more control:
 
 For each OS variant, the test framework:
 
-1. **Builds Docker Image**: Creates a Docker image with the OS and basic dependencies
+1. **Builds Container Image**: Creates a container image with the OS and basic dependencies
 2. **Copies Repository**: Copies the profile repository into the container
 3. **Runs Validation**: Executes validation scripts to check:
    - Environment variables are set correctly
@@ -101,6 +110,9 @@ For each OS variant, the test framework:
 You can customize test behavior using environment variables:
 
 ```bash
+# Force specific container engine (default: auto-detect, prefers podman)
+export CONTAINER_ENGINE=podman  # or docker
+
 # Set timeout for tests (default: 600 seconds)
 export TEST_TIMEOUT=900
 
@@ -141,9 +153,9 @@ Supported apps:
 - cargo
 - just
 
-## Custom Docker Images
+## Custom Container Images
 
-You can use custom Docker images by setting environment variables:
+You can use custom container images by setting environment variables:
 
 ```bash
 export UBUNTU_IMAGE="ubuntu:20.04"
@@ -151,7 +163,7 @@ export RHEL8_IMAGE="registry.access.redhat.com/ubi8/ubi:latest"
 export NIXOS_IMAGE="nixos/nix:2.18.1"
 ```
 
-Or create your own Dockerfile:
+Or create your own Dockerfile/Containerfile:
 
 ```dockerfile
 FROM your-base-image:tag
@@ -185,25 +197,35 @@ Save as `Dockerfile.custom` in this directory and run:
 
 ### Build Failures
 
-If Docker image build fails:
-- Check that Docker is installed and running
+If container image build fails:
+- Check that Podman or Docker is installed and running
 - Verify network connectivity for package downloads
 - Try building with verbose output: `-v` flag
+
+### Container Engine Issues
+
+If the wrong container engine is being used:
+- Set explicitly: `export CONTAINER_ENGINE=podman`
+- Check which is available: `command -v podman` or `command -v docker`
 
 ### Test Failures
 
 If tests fail:
 - Use `-v` flag for verbose output
 - Use `-k` flag to keep containers for inspection
-- Check logs in the container: `docker logs <container-name>`
-- Enter the container: `docker run -it <image-name> /bin/bash`
+- Check logs: `$CONTAINER_ENGINE logs <container-name>`
+- Enter the container: `$CONTAINER_ENGINE run -it <image-name> /bin/bash`
 
 ### Permission Issues
 
-If you encounter permission issues:
+With Docker:
 - Ensure Docker daemon is running
 - Check that your user has Docker permissions
-- Try running with sudo (not recommended for security)
+- Consider switching to Podman for rootless operation
+
+With Podman:
+- Rootless mode is default, no special permissions needed
+- Ensure proper subuid/subgid mappings if issues occur
 
 ## Contributing
 

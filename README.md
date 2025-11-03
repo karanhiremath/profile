@@ -48,7 +48,7 @@ A cross-platform development environment configuration repository with automated
 
 ## Testing
 
-This repository includes comprehensive Docker-based testing infrastructure to validate installations across multiple operating systems.
+This repository includes comprehensive container-based testing infrastructure to validate installations across multiple operating systems using Podman or Docker.
 
 ### Quick Start
 
@@ -100,7 +100,7 @@ For detailed testing documentation, see [bin/test/README.md](bin/test/README.md)
 
 ## Requirements
 
-- Docker (for testing)
+- Podman or Docker (for testing, Podman preferred)
 - Bash
 - Git
 

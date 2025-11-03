@@ -1,6 +1,6 @@
 #!/bin/bash
 # Main test runner for profile repository
-# Tests installation across multiple OS environments using Docker
+# Tests installation across multiple OS environments using Podman or Docker
 
 set -euo pipefail
 
@@ -9,6 +9,13 @@ PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # Source test config
 . "${SCRIPT_DIR}/config.sh"
+
+# Check if container engine is available
+if [ -z "$CONTAINER_ENGINE" ]; then
+    log_error "No container engine found. Please install Podman or Docker."
+    log_info "Run: ./bin/test/install for installation instructions"
+    exit 1
+fi
 
 # Usage information
 usage() {
@@ -101,6 +108,7 @@ fi
 
 log_info "Profile Test Runner"
 log_info "==================="
+log_info "Container Engine: $CONTAINER_ENGINE"
 log_info "Profile Directory: $PROFILE_DIR"
 log_info "OS Variants: ${OS_LIST[*]}"
 log_info "Timeout: ${TIMEOUT}s"
@@ -127,20 +135,20 @@ run_os_test() {
         return 1
     fi
     
-    # Build Docker image
-    log_info "Building Docker image for $os..."
-    if ! docker build -t "$image_name" -f "$dockerfile" "$PROFILE_DIR" 2>&1 | \
+    # Build container image
+    log_info "Building container image for $os..."
+    if ! $CONTAINER_ENGINE build -t "$image_name" -f "$dockerfile" "$PROFILE_DIR" 2>&1 | \
         ([ "$VERBOSE" -eq 1 ] && cat || grep -E "ERROR|error:|Step|Successfully" || true); then
-        log_error "Failed to build Docker image for $os"
+        log_error "Failed to build container image for $os"
         TEST_RESULTS[$os]="BUILD_FAILED"
         return 1
     fi
     
-    log_info "Docker image built successfully"
+    log_info "Container image built successfully"
     
-    # Run container and execute basic validation
+    # Run container and execute validation
     log_info "Running container for $os..."
-    if ! docker run --name "$container_name" --rm "$image_name" \
+    if ! $CONTAINER_ENGINE run --name "$container_name" --rm "$image_name" \
         /bin/bash -c "
             export PROFILE_DIR=/home/testuser/profile
             export APP_BIN=/home/testuser/profile/bin
