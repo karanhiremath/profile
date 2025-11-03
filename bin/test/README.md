@@ -9,9 +9,10 @@ The testing framework spins up Docker containers with different OS variants and 
 ## Supported Operating Systems
 
 - **Ubuntu** (22.04): Debian-based Linux distribution
+- **Debian** (Bookworm): Stable Debian release
 - **RHEL 8**: Red Hat Enterprise Linux 8 (using UBI base image)
 - **NixOS**: NixOS Linux distribution with Nix package manager
-- **Alpine**: Lightweight Alpine Linux
+- **Alpine**: Lightweight Alpine Linux (experimental - may have package repo issues)
 
 ## Directory Structure
 
@@ -22,6 +23,7 @@ bin/test/
 ├── validate.sh               # Basic installation validation
 ├── validate-apps.sh          # App-specific validation tests
 ├── Dockerfile.ubuntu         # Ubuntu test environment
+├── Dockerfile.debian         # Debian test environment
 ├── Dockerfile.rhel8          # RHEL 8 test environment
 ├── Dockerfile.nixos          # NixOS test environment
 ├── Dockerfile.alpine         # Alpine test environment
@@ -40,6 +42,7 @@ just test
 
 # Test on specific OS
 just test-ubuntu
+just test-debian
 just test-rhel8
 just test-nixos
 just test-alpine

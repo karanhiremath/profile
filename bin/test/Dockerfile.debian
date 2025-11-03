@@ -1,15 +1,21 @@
-FROM alpine:3.18
+FROM debian:bookworm-slim
 
-# Update package repositories and install basic dependencies
-RUN apk update && apk add --no-cache \
-    bash \
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install basic dependencies
+RUN apt-get update && apt-get install -y \
     curl \
     git \
-    build-base \
-    sudo
+    build-essential \
+    sudo \
+    zsh \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create a test user with sudo privileges
-RUN adduser -D -s /bin/bash testuser && \
+RUN useradd -m -s /bin/bash testuser && \
     echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Set up working directory

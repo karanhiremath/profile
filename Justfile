@@ -101,6 +101,10 @@ test-ubuntu:
     # Test on Ubuntu
     ./bin/test/run-tests.sh ubuntu
 
+test-debian:
+    # Test on Debian
+    ./bin/test/run-tests.sh debian
+
 test-rhel8:
     # Test on RHEL 8
     ./bin/test/run-tests.sh rhel8

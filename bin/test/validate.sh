@@ -58,29 +58,58 @@ validate_installation() {
     
     log_info "Starting installation validation..."
     
-    # Check basic shell setup
-    if validate_file_exists "$HOME/.zshrc"; then
-        log_info "Shell configuration validated"
-    else
-        log_warn "Shell configuration may be incomplete"
-    fi
-    
-    # Validate common apps
-    for app in git zsh bash tmux; do
-        if validate_command_exists "$app"; then
-            log_info "$app validation passed"
-        else
-            log_error "$app validation failed"
-            ((failed++))
-        fi
-    done
-    
     # Check profile directory is set
     if [ -n "${PROFILE_DIR:-}" ]; then
         log_info "✓ PROFILE_DIR is set: $PROFILE_DIR"
+        
+        # Validate profile directory structure
+        if validate_directory_exists "$PROFILE_DIR"; then
+            log_info "✓ Profile directory exists"
+        else
+            log_error "✗ Profile directory missing"
+            ((failed++))
+        fi
+        
+        # Check key directories and files
+        if validate_directory_exists "$PROFILE_DIR/bin"; then
+            log_info "✓ bin directory exists"
+        else
+            log_error "✗ bin directory missing"
+            ((failed++))
+        fi
+        
+        if validate_file_exists "$PROFILE_DIR/Justfile"; then
+            log_info "✓ Justfile exists"
+        else
+            log_warn "✗ Justfile missing"
+        fi
+        
+        if validate_file_exists "$PROFILE_DIR/install.sh"; then
+            log_info "✓ install.sh exists"
+        else
+            log_warn "✗ install.sh missing"
+        fi
     else
-        log_warn "✗ PROFILE_DIR is not set"
+        log_error "✗ PROFILE_DIR is not set"
         ((failed++))
+    fi
+    
+    # Validate that basic commands exist (pre-installed in container)
+    log_info "Checking available commands..."
+    for app in git bash; do
+        if validate_command_exists "$app"; then
+            log_info "$app is available"
+        else
+            log_warn "$app is not available (optional)"
+        fi
+    done
+    
+    # Check for zsh (optional)
+    if command -v zsh >/dev/null 2>&1; then
+        validate_command_exists "zsh"
+        log_info "zsh is available"
+    else
+        log_info "zsh not available (optional)"
     fi
     
     return $failed

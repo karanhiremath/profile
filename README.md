@@ -1,5 +1,7 @@
 # Profile
 
+A cross-platform development environment configuration repository with automated testing across multiple operating systems.
+
 ## Using this profile
 
 ### Automated Installation
@@ -16,6 +18,7 @@
  ```bash
   source ~/.bash_profile
   ```
+
 ### Manual Installation
 
 1. Clone this repository wherever you want
@@ -42,4 +45,62 @@
   ```bash
   source ~/.bash_profile
   ```
+
+## Testing
+
+This repository includes comprehensive Docker-based testing infrastructure to validate installations across multiple operating systems.
+
+### Quick Start
+
+```bash
+# Test on all supported OS variants
+./bin/test/run-tests.sh all
+
+# Test on specific OS
+./bin/test/run-tests.sh ubuntu
+./bin/test/run-tests.sh debian
+
+# Using just (if installed)
+just test
+just test-ubuntu
+just test-debian
+```
+
+### Supported Operating Systems
+
+- **Ubuntu 22.04** - Debian-based Linux distribution
+- **Debian Bookworm** - Stable Debian release
+- **RHEL 8** - Red Hat Enterprise Linux (using UBI base)
+- **NixOS** - NixOS with Nix package manager
+- **Alpine Linux** - Lightweight Linux (experimental)
+
+### Test Commands
+
+```bash
+# Run all tests
+./bin/test/run-tests.sh all
+
+# Test specific OS
+./bin/test/run-tests.sh ubuntu
+
+# Test with verbose output
+./bin/test/run-tests.sh -v ubuntu
+
+# Keep containers for debugging
+./bin/test/run-tests.sh -k ubuntu
+
+# Test specific app installation
+./bin/test/run-tests.sh -a tmux ubuntu
+
+# Validate installed apps
+./bin/test/validate-apps.sh git tmux vim
+```
+
+For detailed testing documentation, see [bin/test/README.md](bin/test/README.md).
+
+## Requirements
+
+- Docker (for testing)
+- Bash
+- Git
 

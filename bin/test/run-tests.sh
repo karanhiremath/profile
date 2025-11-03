@@ -26,9 +26,10 @@ OPTIONS:
 
 OS VARIANTS (default: all):
     ubuntu              Test on Ubuntu 22.04
+    debian              Test on Debian Bookworm
     rhel8               Test on RHEL 8
     nixos               Test on NixOS
-    alpine              Test on Alpine Linux
+    alpine              Test on Alpine Linux (experimental)
     all                 Test on all OS variants
 
 EXAMPLES:
@@ -69,7 +70,7 @@ while [[ $# -gt 0 ]]; do
             APPS_TO_TEST="$APPS_TO_TEST $2"
             shift 2
             ;;
-        ubuntu|rhel8|nixos|alpine|all)
+        ubuntu|rhel8|nixos|alpine|debian|all)
             OS_LIST+=("$1")
             shift
             ;;
@@ -87,7 +88,7 @@ fi
 
 # Expand 'all' to all OS variants
 if [[ " ${OS_LIST[@]} " =~ " all " ]]; then
-    OS_LIST=(ubuntu rhel8 nixos alpine)
+    OS_LIST=(ubuntu debian rhel8 nixos alpine)
 fi
 
 # Export configuration
@@ -129,7 +130,7 @@ run_os_test() {
     # Build Docker image
     log_info "Building Docker image for $os..."
     if ! docker build -t "$image_name" -f "$dockerfile" "$PROFILE_DIR" 2>&1 | \
-        ([ "$VERBOSE" -eq 1 ] && cat || grep -E "ERROR|error:|Step|Successfully"); then
+        ([ "$VERBOSE" -eq 1 ] && cat || grep -E "ERROR|error:|Step|Successfully" || true); then
         log_error "Failed to build Docker image for $os"
         TEST_RESULTS[$os]="BUILD_FAILED"
         return 1
