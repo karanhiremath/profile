@@ -91,3 +91,36 @@ mac:
     just alfred
     just opentofu
     just steampipe
+
+# Test commands
+test:
+    # Run tests on all OS variants
+    ./bin/test/run-tests.sh all
+
+test-ubuntu:
+    # Test on Ubuntu
+    ./bin/test/run-tests.sh ubuntu
+
+test-rhel8:
+    # Test on RHEL 8
+    ./bin/test/run-tests.sh rhel8
+
+test-nixos:
+    # Test on NixOS
+    ./bin/test/run-tests.sh nixos
+
+test-alpine:
+    # Test on Alpine Linux
+    ./bin/test/run-tests.sh alpine
+
+test-app APP:
+    # Test specific app installation
+    ./bin/test/run-tests.sh -a {{APP}} all
+
+test-verbose:
+    # Run tests with verbose output
+    ./bin/test/run-tests.sh -v all
+
+validate-apps *APPS:
+    # Validate that specific apps are installed correctly
+    ./bin/test/validate-apps.sh {{APPS}}

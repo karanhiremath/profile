@@ -1,0 +1,36 @@
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install basic dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    build-essential \
+    sudo \
+    zsh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a test user with sudo privileges
+RUN useradd -m -s /bin/bash testuser && \
+    echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Set up working directory
+WORKDIR /home/testuser
+
+# Switch to test user
+USER testuser
+
+# Copy the profile repository
+COPY --chown=testuser:testuser . /home/testuser/profile
+
+# Set environment variables
+ENV PROFILE_DIR=/home/testuser/profile
+ENV APP_BIN=/home/testuser/profile/bin
+
+WORKDIR /home/testuser/profile
+
+# Default command
+CMD ["/bin/bash"]
