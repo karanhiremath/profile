@@ -12,19 +12,24 @@ MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 if cmd_test_or_install $app_name -eq 0; then
-    echo "Already installed!"
+    echo "Starship already installed!"
 else
     install_messages "start" "$app_name"
 
     case "${MACHINE}" in
-        Linux)  echo "Linux specific install instructions here";;
-        Mac)    echo "Mac install instructions here";;
-        *)      echo "Generic install instructions here";;
-    esac
-
-    case "${ARCH}" in
-        aarch64)  echo "aarch64 architecture specific install instructions here";;
-        *)      echo "Generic install instructions here";;
+        Darwin|Mac)
+            echo "Installing starship on Mac..."
+            brew install starship
+            ;;
+        Linux)
+            echo "Installing starship on Linux..."
+            # Use official installer script
+            curl -sS https://starship.rs/install.sh | sh -s -- -y
+            ;;
+        *)
+            echo "Using generic installer..."
+            curl -sS https://starship.rs/install.sh | sh -s -- -y
+            ;;
     esac
 
     install_messages "end" "$app_name"

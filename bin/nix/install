@@ -1,0 +1,41 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="nix"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v nix >/dev/null 2>&1; then
+    echo "Nix already installed!"
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing Nix on Mac..."
+            echo "Using the official Nix installer..."
+            sh <(curl -L https://nixos.org/nix/install)
+            ;;
+        Linux)
+            echo "Installing Nix on Linux..."
+            echo "Using the official Nix installer..."
+            sh <(curl -L https://nixos.org/nix/install) --daemon
+            ;;
+        *)
+            echo "Installing Nix (multi-user installation)..."
+            sh <(curl -L https://nixos.org/nix/install) --daemon
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+    
+    echo ""
+    echo "Nix installation complete!"
+    echo "Please restart your shell or run: source ~/.nix-profile/etc/profile.d/nix.sh"
+fi

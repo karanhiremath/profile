@@ -4,20 +4,45 @@ set -euo pipefail
 
 shopt -s failglob
 
-
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 . "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
 
-echo "Installing tmux..."
+app_name="tmux"
+
+install_messages "start" "$app_name"
 
 case "${MACHINE}" in
-    Mac)    brew install tmux;;
-    *)      echo "Generic instructions not implemented"
+    Darwin|Mac)
+        echo "Installing tmux on Mac..."
+        brew install tmux
+        ;;
+    Linux)
+        echo "Installing tmux on Linux..."
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y tmux
+        elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y tmux
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y tmux
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --noconfirm tmux
+        else
+            echo "Package manager not supported. Please install tmux manually."
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
 esac
 
+# Create configuration directory and symlinks
 tmux_dir="${HOME}/.config/tmux"
 mkdir -p "${tmux_dir}"
 ln -fs "${PROFILE_DIR}/bin/tmux/tmux.conf" "${tmux_dir}/"
 ln -fs "${PROFILE_DIR}/bin/tmux/tmux.conf" "${HOME}/.tmux.conf"
+
+install_messages "end" "$app_name"

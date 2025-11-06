@@ -4,39 +4,51 @@ set -euo pipefail
 
 shopt -s failglob
 
-. "${APP_BIN}/bin/sh/shell_fns --source-only"
+. "${APP_BIN}/sh/shell_fns" --source-only
 
 app_name="gh"
 
-if cmd_test_or_install $app_name -eq 0; then
-    echo "Already installed!"
-else
-    install_messages "start" "$app_name"
-
-
-function debian_install() {
-    type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && sudo apt update \
-    && sudo apt install gh -y
-}
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
 
 if cmd_test_or_install $app_name -eq 0; then
-    echo "Already installed!"
+    echo "GitHub CLI already installed!"
 else
     install_messages "start" "$app_name"
 
     case "${MACHINE}" in
-        Linux)  debian_install();;
-        Mac)    brew install gh;;
-        *)      echo "Unknown '${MACHINE=}'"
-    esac
-
-    case "${ARCH}" in
-        aarch64)  echo "aarch64 architecture specific install instructions here";;
-        *)      echo "Generic install instructions here";;
+        Darwin|Mac)
+            echo "Installing GitHub CLI on Mac..."
+            brew install gh
+            ;;
+        Linux)
+            echo "Installing GitHub CLI on Linux..."
+            # Debian/Ubuntu
+            if command -v apt-get >/dev/null 2>&1; then
+                type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+                curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+                    && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+                    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+                    && sudo apt update \
+                    && sudo apt install gh -y
+            # RHEL/Fedora/CentOS
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y 'dnf-command(config-manager)'
+                sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+                sudo dnf install -y gh
+            elif command -v yum >/dev/null 2>&1; then
+                sudo yum install -y yum-utils
+                sudo yum-config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+                sudo yum install -y gh
+            else
+                echo "Unsupported Linux distribution. Please install manually from https://github.com/cli/cli"
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
     esac
 
     install_messages "end" "$app_name"

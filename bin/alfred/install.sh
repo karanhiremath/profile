@@ -6,26 +6,28 @@ shopt -s failglob
 
 . "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
 
-app_name="APP NAME"
+app_name="alfred"
 
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-if cmd_test_or_install $app_name -eq 0; then
-    echo "Already installed!"
-else
-    install_messages "start" "$app_name"
+install_messages "start" "$app_name"
 
-    case "${MACHINE}" in
-        Linux)  echo "Linux specific install instructions here";;
-        Mac)    echo "Mac install instructions here";;
-        *)      echo "Generic install instructions here";;
-    esac
+case "${MACHINE}" in
+    Darwin|Mac)
+        echo "Installing Alfred on Mac..."
+        # Alfred is Mac-only
+        brew install --cask alfred
+        ;;
+    Linux)
+        echo "Alfred is only available for macOS."
+        echo "For Linux alternatives, consider: ulauncher, albert, or rofi"
+        exit 1
+        ;;
+    *)
+        echo "Alfred is only available for macOS."
+        exit 1
+        ;;
+esac
 
-    case "${ARCH}" in
-        aarch64)  echo "aarch64 architecture specific install instructions here";;
-        *)      echo "Generic install instructions here";;
-    esac
-
-    install_messages "end" "$app_name"
-fi
+install_messages "end" "$app_name"

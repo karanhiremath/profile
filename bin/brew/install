@@ -13,13 +13,31 @@ app_name="brew"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-if cmd_test_or_install $app_name -eq 0; then
-    echo "Updating Homebrew"
+if command -v brew >/dev/null 2>&1; then
+    echo "Homebrew already installed. Updating..."
     brew update
 else
     install_messages "start" "$app_name"
 
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing Homebrew on Mac..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            ;;
+        Linux)
+            echo "Installing Homebrew on Linux (Linuxbrew)..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            
+            # Add Homebrew to PATH for Linux
+            echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
+            echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.zshrc
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
 
     install_messages "end" "$app_name"
 fi

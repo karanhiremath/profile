@@ -24,12 +24,29 @@ ARCH="$(uname -m)"
 install_messages "start" "$app_name"
 
 case "${MACHINE}" in
-    *)
-        echo "Install bob"
+    Darwin|Mac)
+        echo "Installing nvim on Mac..."
+        # Check if cargo is available, if not install via homebrew
+        if ! command -v cargo >/dev/null 2>&1; then
+            echo "Cargo not found, installing nvim via Homebrew..."
+            brew install neovim
+        else
+            echo "Installing bob-nvim to manage neovim versions..."
+            cargo install bob-nvim --locked --version "${bob_version}"
+            export PATH=$PATH:~/.cargo/bin/bob:${bob_install_location}
+            ~/.cargo/bin/bob use "${nvim_version}"
+        fi
+        ;;
+    Linux|*)
+        echo "Installing bob-nvim to manage neovim versions..."
+        if ! command -v cargo >/dev/null 2>&1; then
+            echo "ERROR: cargo is required but not installed. Please install Rust/Cargo first."
+            exit 1
+        fi
         cargo install bob-nvim --locked --version "${bob_version}"
         export PATH=$PATH:~/.cargo/bin/bob:${bob_install_location}
         ~/.cargo/bin/bob use "${nvim_version}"
-    ;;
+        ;;
 esac
 
 install_messages "end" "$app_name"
