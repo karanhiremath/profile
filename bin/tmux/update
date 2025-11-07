@@ -1,0 +1,49 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="tmux"
+
+echo "Updating tmux..."
+
+MACHINE="$(uname -s)"
+
+case "${MACHINE}" in
+    Darwin|Mac)
+        if command -v brew >/dev/null 2>&1; then
+            echo "Updating tmux via Homebrew..."
+            brew upgrade tmux
+        else
+            echo "Homebrew not available. Cannot update tmux."
+            exit 1
+        fi
+        ;;
+    Linux)
+        if command -v apt-get >/dev/null 2>&1; then
+            echo "Updating tmux via apt..."
+            sudo apt-get update && sudo apt-get upgrade -y tmux
+        elif command -v yum >/dev/null 2>&1; then
+            echo "Updating tmux via yum..."
+            sudo yum upgrade -y tmux
+        elif command -v dnf >/dev/null 2>&1; then
+            echo "Updating tmux via dnf..."
+            sudo dnf upgrade -y tmux
+        elif command -v pacman >/dev/null 2>&1; then
+            echo "Updating tmux via pacman..."
+            sudo pacman -Syu --noconfirm tmux
+        else
+            echo "Package manager not supported. Cannot update tmux."
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+echo "tmux update complete."

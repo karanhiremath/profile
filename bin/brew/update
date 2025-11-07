@@ -1,0 +1,20 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="brew"
+
+echo "Updating Homebrew..."
+
+if command -v brew >/dev/null 2>&1; then
+    brew update
+    brew upgrade
+    echo "Homebrew updated successfully."
+else
+    echo "Homebrew not installed. Nothing to update."
+    exit 1
+fi

@@ -1,0 +1,36 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+echo "Updating Rust and Cargo..."
+
+MACHINE="$(uname -s)"
+
+case "${MACHINE}" in
+    Darwin|Mac)
+        # Update via Homebrew if installed that way
+        if brew list rust >/dev/null 2>&1; then
+            echo "Updating Rust via Homebrew..."
+            brew upgrade rust
+        elif command -v rustup >/dev/null 2>&1; then
+            echo "Updating Rust via rustup..."
+            rustup update
+        else
+            echo "Rust not installed via Homebrew or rustup. Skipping update."
+        fi
+        ;;
+    Linux|*)
+        # Update via rustup
+        if command -v rustup >/dev/null 2>&1; then
+            echo "Updating Rust via rustup..."
+            rustup update
+        else
+            echo "rustup not found. Cannot update Rust."
+            exit 1
+        fi
+        ;;
+esac
+
+echo "Cargo update complete."

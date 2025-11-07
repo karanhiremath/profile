@@ -37,8 +37,14 @@ function install_app() {
     echo "Checking status for ${app}"
     if command -v "${app}" > /dev/null 2>&1; then
         location="$(command -v $app)"
-        echo "${app} already available at ${location}. Running Update"
-        "${PROFILE_DIR}"/bin/"${app}"/update
+        echo "${app} already available at ${location}."
+        # Check if update script exists, run it if available
+        if [ -f "${PROFILE_DIR}/bin/${app}/update" ]; then
+            echo "Running update for ${app}..."
+            "${PROFILE_DIR}"/bin/"${app}"/update
+        else
+            echo "No update script found for ${app}. Skipping update."
+        fi
     else
         "${PROFILE_DIR}"/bin/"${app}"/install
     fi

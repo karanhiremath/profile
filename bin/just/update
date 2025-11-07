@@ -1,0 +1,37 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="just"
+
+echo "Updating just..."
+
+MACHINE="$(uname -s)"
+
+if command -v cargo >/dev/null 2>&1; then
+    echo "Updating just via cargo..."
+    source "$HOME/.cargo/env" 2>/dev/null || true
+    cargo install just --force
+else
+    case "${MACHINE}" in
+        Darwin|Mac)
+            if command -v brew >/dev/null 2>&1; then
+                echo "Updating just via Homebrew..."
+                brew upgrade just
+            else
+                echo "Neither cargo nor Homebrew available. Cannot update just."
+                exit 1
+            fi
+            ;;
+        Linux)
+            echo "Cargo not available. Please install cargo to update just, or use your package manager."
+            exit 1
+            ;;
+    esac
+fi
+
+echo "just update complete."
