@@ -21,6 +21,7 @@ alfred:
 
 git:
     # git install
+    ./bin/git/install
 
 gh:
     # github cli install
