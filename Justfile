@@ -80,10 +80,25 @@ steampipe:
     ./bin/steampipe/install
 
 mac:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Install brew first
     ./bin/brew/install
+    # Source brew into PATH for Mac
+    if [ -f /opt/homebrew/bin/brew ]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [ -f /usr/local/bin/brew ]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+    # Verify brew is available
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "ERROR: Homebrew not found in PATH after installation."
+        echo "Please run: eval \"\$(brew shellenv)\" or restart your shell"
+        exit 1
+    fi
+    # Run Mac-specific installations
     just gh
     just tmux
-    # just iterm
     just ghostty
     brew tap teamookla/speedtest
     brew install speedtest --force

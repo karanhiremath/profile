@@ -88,6 +88,14 @@ install_app "just"
 just all
 
 if [[ $machine == "Mac" ]]; then
+    # Ensure brew is in PATH before running Mac-specific installations
+    if [ -f /opt/homebrew/bin/brew ]; then
+        export PATH="/opt/homebrew/bin:$PATH"
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [ -f /usr/local/bin/brew ]; then
+        export PATH="/usr/local/bin:$PATH"
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
     just mac
 fi
 
