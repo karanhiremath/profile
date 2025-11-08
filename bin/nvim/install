@@ -49,4 +49,8 @@ case "${MACHINE}" in
         ;;
 esac
 
+# Install nvim plugins after nvim is installed
+echo "Installing nvim plugins..."
+"${PROFILE_DIR}/bin/nvim/install-plugins"
+
 install_messages "end" "$app_name"

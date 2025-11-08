@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Install neovim plugins using Packer
+
+set -e
+
+echo "Installing nvim plugins..."
+
+# Get the script directory (where nvim config is)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Packer installation path
+PACKER_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/pack/packer/start/packer.nvim"
+
+# Install Packer if not already installed
+if [ ! -d "$PACKER_PATH" ]; then
+    echo "Installing Packer.nvim..."
+    git clone --depth 1 https://github.com/wbthomason/packer.nvim "$PACKER_PATH"
+    echo "Packer installed successfully"
+else
+    echo "Packer already installed"
+fi
+
+# Install plugins using PackerSync
+# Use headless mode to run nvim without UI and quit after sync
+echo "Installing/updating plugins with PackerSync..."
+
+# Run nvim headless to install plugins
+# The --headless flag runs nvim without UI
+# -c 'autocmd User PackerComplete quitall' ensures nvim exits after sync completes
+# PackerSync installs/updates all plugins
+nvim --headless -c 'autocmd User PackerComplete quitall' -c 'PackerSync'
+
+echo "✓ Nvim plugins installed successfully"

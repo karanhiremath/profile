@@ -37,4 +37,8 @@ case "${MACHINE}" in
         ;;
 esac
 
+# Update nvim plugins
+echo "Updating nvim plugins..."
+"${PROFILE_DIR}/bin/nvim/install-plugins"
+
 echo "nvim update complete."
