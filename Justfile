@@ -17,8 +17,7 @@ alacritty:
 
 alfred:
     # alfred install
-    curl -O https://raw.githubusercontent.com/Homebrew/homebrew-cask/645973c9681519cfd471a4352f377cdd4e3f09b2/Casks/alfred.rb
-    brew install --cask ./alfred.rb
+    ./bin/alfred/install.sh
 
 git:
     # git install

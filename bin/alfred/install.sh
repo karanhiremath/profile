@@ -5,6 +5,7 @@ set -euo pipefail
 shopt -s failglob
 
 . "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+. "${PROFILE_DIR}"/bin/sh/brew_helper.sh
 
 app_name="alfred"
 
@@ -17,6 +18,10 @@ case "${MACHINE}" in
     Darwin|Mac)
         echo "Installing Alfred on Mac..."
         # Alfred is Mac-only
+        ensure_brew_in_path || {
+            echo "ERROR: Homebrew not found. Please install Homebrew first."
+            exit 1
+        }
         brew install --cask alfred
         ;;
     Linux)
