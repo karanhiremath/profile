@@ -58,3 +58,16 @@ else
 
     install_messages "end" "$app_name"
 fi
+
+# Prompt user to authenticate with GitHub
+echo ""
+echo "GitHub CLI installed successfully!"
+echo "To authenticate with GitHub, please run: gh auth login"
+echo ""
+read -p "Would you like to authenticate now? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    gh auth login
+else
+    echo "You can authenticate later by running: gh auth login"
+fi
