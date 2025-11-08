@@ -5,6 +5,7 @@ set -euo pipefail
 shopt -s failglob
 
 . "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
 
 app_name="gh"
 
@@ -19,6 +20,10 @@ else
     case "${MACHINE}" in
         Darwin|Mac)
             echo "Installing GitHub CLI on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
             brew install gh
             ;;
         Linux)

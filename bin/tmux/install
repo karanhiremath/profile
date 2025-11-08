@@ -8,6 +8,7 @@ MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 . "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+. "${PROFILE_DIR}"/bin/sh/brew_helper.sh
 
 app_name="tmux"
 
@@ -16,6 +17,10 @@ install_messages "start" "$app_name"
 case "${MACHINE}" in
     Darwin|Mac)
         echo "Installing tmux on Mac..."
+        ensure_brew_in_path || {
+            echo "ERROR: Homebrew not found. Please install Homebrew first."
+            exit 1
+        }
         brew install tmux
         ;;
     Linux)

@@ -84,25 +84,40 @@ mac:
     set -euo pipefail
     # Install brew first
     ./bin/brew/install
-    # Source brew into PATH for Mac
+    
+    # Determine and source Homebrew location
     if [ -f /opt/homebrew/bin/brew ]; then
+        export PATH="/opt/homebrew/bin:$PATH"
         eval "$(/opt/homebrew/bin/brew shellenv)"
+        BREW_CMD="/opt/homebrew/bin/brew"
     elif [ -f /usr/local/bin/brew ]; then
+        export PATH="/usr/local/bin:$PATH"
         eval "$(/usr/local/bin/brew shellenv)"
-    fi
-    # Verify brew is available
-    if ! command -v brew >/dev/null 2>&1; then
-        echo "ERROR: Homebrew not found in PATH after installation."
-        echo "Please run: eval \"\$(brew shellenv)\" or restart your shell"
+        BREW_CMD="/usr/local/bin/brew"
+    else
+        echo "ERROR: Homebrew not found after installation."
+        echo "Expected locations:"
+        echo "  - /opt/homebrew/bin/brew (Apple Silicon)"
+        echo "  - /usr/local/bin/brew (Intel Mac)"
+        echo ""
+        echo "Please install Homebrew manually or check installation logs."
         exit 1
     fi
+    
+    # Verify brew is available
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "ERROR: Homebrew not found in PATH."
+        echo "Trying to use ${BREW_CMD} directly..."
+        alias brew="${BREW_CMD}"
+    fi
+    
     # Run Mac-specific installations
     just gh
     just tmux
     just ghostty
-    brew tap teamookla/speedtest
-    brew install speedtest --force
-    brew install --cask rectangle
+    ${BREW_CMD} tap teamookla/speedtest
+    ${BREW_CMD} install speedtest --force
+    ${BREW_CMD} install --cask rectangle
     just alfred
     just opentofu
     just steampipe

@@ -24,29 +24,84 @@ else
             echo "Installing Homebrew on Mac..."
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
             
-            # Add Homebrew to PATH for current session and shell profiles
-            # On Apple Silicon, Homebrew is in /opt/homebrew
-            # On Intel Macs, Homebrew is in /usr/local
-            if [ -d "/opt/homebrew/bin" ]; then
-                # Apple Silicon Mac
-                export PATH="/opt/homebrew/bin:$PATH"
-                eval "$(/opt/homebrew/bin/brew shellenv)"
-            elif [ -d "/usr/local/bin" ]; then
-                # Intel Mac
-                export PATH="/usr/local/bin:$PATH"
-                eval "$(/usr/local/bin/brew shellenv)"
+            # Determine Homebrew location
+            if [ -d "/opt/homebrew" ]; then
+                BREW_PREFIX="/opt/homebrew"
+            elif [ -d "/usr/local/Homebrew" ]; then
+                BREW_PREFIX="/usr/local"
+            else
+                echo "ERROR: Could not find Homebrew installation"
+                exit 1
             fi
             
-            echo "Homebrew installed and added to PATH for current session."
+            # Add to current session
+            export PATH="${BREW_PREFIX}/bin:$PATH"
+            eval "$(${BREW_PREFIX}/bin/brew shellenv)"
+            
+            # Add to shell profiles for future sessions
+            BREW_SHELLENV_CMD="eval \"\$(${BREW_PREFIX}/bin/brew shellenv)\""
+            
+            # Add to .zshrc
+            if [ -f ~/.zshrc ]; then
+                if ! grep -q "${BREW_PREFIX}/bin/brew shellenv" ~/.zshrc; then
+                    echo "" >> ~/.zshrc
+                    echo "# Homebrew setup" >> ~/.zshrc
+                    echo "${BREW_SHELLENV_CMD}" >> ~/.zshrc
+                    echo "Added Homebrew to ~/.zshrc"
+                fi
+            fi
+            
+            # Add to .bash_profile
+            if [ -f ~/.bash_profile ]; then
+                if ! grep -q "${BREW_PREFIX}/bin/brew shellenv" ~/.bash_profile; then
+                    echo "" >> ~/.bash_profile
+                    echo "# Homebrew setup" >> ~/.bash_profile
+                    echo "${BREW_SHELLENV_CMD}" >> ~/.bash_profile
+                    echo "Added Homebrew to ~/.bash_profile"
+                fi
+            fi
+            
+            # Add to .profile as fallback
+            if [ -f ~/.profile ]; then
+                if ! grep -q "${BREW_PREFIX}/bin/brew shellenv" ~/.profile; then
+                    echo "" >> ~/.profile
+                    echo "# Homebrew setup" >> ~/.profile
+                    echo "${BREW_SHELLENV_CMD}" >> ~/.profile
+                    echo "Added Homebrew to ~/.profile"
+                fi
+            fi
+            
+            echo "Homebrew installed at ${BREW_PREFIX}"
+            echo "Homebrew added to PATH for current session and shell profiles."
             ;;
         Linux)
             echo "Installing Homebrew on Linux (Linuxbrew)..."
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
             
             # Add Homebrew to PATH for Linux
-            echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
-            echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.zshrc
-            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+            if [ -d "/home/linuxbrew/.linuxbrew" ]; then
+                export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+                eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+                
+                # Add to shell profiles
+                BREW_SHELLENV_CMD='eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"'
+                
+                if [ -f ~/.bashrc ]; then
+                    if ! grep -q "/home/linuxbrew/.linuxbrew/bin/brew shellenv" ~/.bashrc; then
+                        echo "" >> ~/.bashrc
+                        echo "# Homebrew setup" >> ~/.bashrc
+                        echo "${BREW_SHELLENV_CMD}" >> ~/.bashrc
+                    fi
+                fi
+                
+                if [ -f ~/.zshrc ]; then
+                    if ! grep -q "/home/linuxbrew/.linuxbrew/bin/brew shellenv" ~/.zshrc; then
+                        echo "" >> ~/.zshrc
+                        echo "# Homebrew setup" >> ~/.zshrc
+                        echo "${BREW_SHELLENV_CMD}" >> ~/.zshrc
+                    fi
+                fi
+            fi
             ;;
         *)
             echo "Unsupported platform: ${MACHINE}"
