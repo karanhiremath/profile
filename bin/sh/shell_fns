@@ -26,9 +26,9 @@ function cmd_test_or_install() {
     local app_name="${1}"
     echo "Checking status for ${app_name}"
     if command -v "${app_name}" > /dev/null 2>&1; then
-        exit 0
+        return 0
     else
-        exit 2
+        return 1
     fi
 }
 

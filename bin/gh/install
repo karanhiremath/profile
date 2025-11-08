@@ -12,7 +12,7 @@ app_name="gh"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-if cmd_test_or_install $app_name -eq 0; then
+if command -v gh >/dev/null 2>&1; then
     echo "GitHub CLI already installed!"
 else
     install_messages "start" "$app_name"
@@ -58,4 +58,3 @@ else
 
     install_messages "end" "$app_name"
 fi
-

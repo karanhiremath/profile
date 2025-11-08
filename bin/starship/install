@@ -4,14 +4,14 @@ set -euo pipefail
 
 shopt -s failglob
 
-. "${APP_BIN}/bin/sh/shell_fns --source-only"
+. "${APP_BIN}/sh/shell_fns" --source-only
 
 app_name="starship"
 
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-if cmd_test_or_install $app_name -eq 0; then
+if command -v starship >/dev/null 2>&1; then
     echo "Starship already installed!"
 else
     install_messages "start" "$app_name"
