@@ -14,7 +14,6 @@ ln -fns "${PROFILE_DIR}"/bin/nvim/lua "${HOME}"/.config/nvim/lua
 ln -fns "${PROFILE_DIR}"/bin/nvim/after "${HOME}"/.config/nvim/after
 
 app_name="nvim"
-nvim_version_latest="stable"  # Try latest stable first
 nvim_version_fallback="v0.9.5"  # Fallback for older systems
 bob_version="2.8.0"
 bob_install_location="$HOME/.local/share/bob/nvim-bin"
@@ -23,6 +22,27 @@ MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 install_messages "start" "$app_name"
+
+# Function to get latest nvim version from GitHub
+get_latest_nvim_version() {
+    echo "Fetching latest neovim version from GitHub..."
+    local latest_version
+    
+    # Try using gh if available, otherwise use curl
+    if command -v gh >/dev/null 2>&1; then
+        latest_version=$(gh api repos/neovim/neovim/releases/latest --jq '.tag_name' 2>/dev/null)
+    else
+        latest_version=$(curl -fsSL https://api.github.com/repos/neovim/neovim/releases/latest 2>/dev/null | grep -o '"tag_name": "[^"]*' | cut -d'"' -f4)
+    fi
+    
+    if [ -n "$latest_version" ]; then
+        echo "Latest neovim version: ${latest_version}"
+        echo "$latest_version"
+    else
+        echo "Failed to fetch latest version, will use fallback"
+        echo ""
+    fi
+}
 
 # Function to try installing nvim with bob
 try_install_nvim_bob() {
@@ -62,9 +82,17 @@ case "${MACHINE}" in
             echo "Cargo not found, installing latest nvim via Homebrew..."
             brew install neovim
         else
+            # Get latest version from GitHub
+            nvim_version_latest=$(get_latest_nvim_version)
+            
+            if [ -z "$nvim_version_latest" ]; then
+                echo "Could not fetch latest version, using fallback ${nvim_version_fallback}..."
+                nvim_version_latest="${nvim_version_fallback}"
+            fi
+            
             # Try latest first, fall back to older version if it fails
             if ! try_install_nvim_bob "${nvim_version_latest}"; then
-                echo "Latest version failed, trying fallback version ${nvim_version_fallback}..."
+                echo "Version ${nvim_version_latest} failed, trying fallback version ${nvim_version_fallback}..."
                 if try_install_nvim_bob "${nvim_version_fallback}"; then
                     echo "Using neovim ${nvim_version_fallback} - will install compatible nvim-lspconfig"
                     # Mark that we need older lspconfig
@@ -83,9 +111,17 @@ case "${MACHINE}" in
             exit 1
         fi
         
+        # Get latest version from GitHub
+        nvim_version_latest=$(get_latest_nvim_version)
+        
+        if [ -z "$nvim_version_latest" ]; then
+            echo "Could not fetch latest version, using fallback ${nvim_version_fallback}..."
+            nvim_version_latest="${nvim_version_fallback}"
+        fi
+        
         # Try latest first, fall back to older version if it fails
         if ! try_install_nvim_bob "${nvim_version_latest}"; then
-            echo "Latest version failed (possibly due to glibc incompatibility), trying fallback version ${nvim_version_fallback}..."
+            echo "Version ${nvim_version_latest} failed (possibly due to glibc incompatibility), trying fallback version ${nvim_version_fallback}..."
             if try_install_nvim_bob "${nvim_version_fallback}"; then
                 echo "Using neovim ${nvim_version_fallback} - will install compatible nvim-lspconfig"
                 # Mark that we need older lspconfig
