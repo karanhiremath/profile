@@ -1,4 +1,5 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# This script is compatible with Bash 3.x (macOS default) and higher
 # Main test runner for profile repository
 # Tests installation across multiple OS environments using Podman or Docker
 
@@ -116,8 +117,37 @@ log_info "Keep Containers: $KEEP_CONTAINERS"
 [ -n "$APPS_TO_TEST" ] && log_info "Apps to test: $APPS_TO_TEST"
 echo
 
-# Test results tracking
-declare -A TEST_RESULTS
+# Test results tracking (Bash 3.x compatible)
+TEST_RESULTS_OS=""
+TEST_RESULTS_STATUS=""
+
+# Helper functions for test results
+add_test_result() {
+    local os=$1
+    local status=$2
+    if [ -z "$TEST_RESULTS_OS" ]; then
+        TEST_RESULTS_OS="$os"
+        TEST_RESULTS_STATUS="$status"
+    else
+        TEST_RESULTS_OS="$TEST_RESULTS_OS $os"
+        TEST_RESULTS_STATUS="$TEST_RESULTS_STATUS $status"
+    fi
+}
+
+get_test_result() {
+    local os=$1
+    local os_list=($TEST_RESULTS_OS)
+    local status_list=($TEST_RESULTS_STATUS)
+    local i=0
+    for test_os in "${os_list[@]}"; do
+        if [ "$test_os" = "$os" ]; then
+            echo "${status_list[$i]}"
+            return
+        fi
+        ((i++))
+    done
+    echo "UNKNOWN"
+}
 
 # Run tests for each OS
 run_os_test() {
@@ -131,7 +161,7 @@ run_os_test() {
     # Check if Dockerfile exists
     if [ ! -f "$dockerfile" ]; then
         log_error "Dockerfile not found: $dockerfile"
-        TEST_RESULTS[$os]="SKIP"
+        add_test_result "$os" "SKIP"
         return 1
     fi
     
