@@ -37,8 +37,8 @@ curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --c
    https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
 
 ln -si "$medir/vimprofile.sh" ~/.vimrc
-if [[ ! -e ~/.config/nvim ]]; then
-    mkdir -p ~/.config/nvim
+if [[ ! -e "${HOME}/.config/nvim" ]]; then
+    mkdir -p "${HOME}"/.config/nvim
 fi
 ln -si "$medir/vimprofile.sh" ~/.config/nvim/init.vim
 echo "Symlinking $medir/vimprofile.sh in ~/.vimrc"
