@@ -15,20 +15,31 @@ ARCH="$(uname -m)"
 configure_podman() {
     echo "Configuring podman for the current environment..."
     
-    # Fix D-Bus session address if it's pointing to the wrong user
-    if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-        local expected_bus="unix:path=${XDG_RUNTIME_DIR}/bus"
-        if [ "$DBUS_SESSION_BUS_ADDRESS" != "$expected_bus" ]; then
-            echo "Fixing DBUS_SESSION_BUS_ADDRESS from $DBUS_SESSION_BUS_ADDRESS to $expected_bus"
-            export DBUS_SESSION_BUS_ADDRESS="$expected_bus"
-        fi
-    fi
+    # Detect OS
+    local os_type="$(uname -s)"
     
-    # Ensure XDG_RUNTIME_DIR is set properly
-    if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
-        local uid=$(id -u)
-        export XDG_RUNTIME_DIR="/run/user/${uid}"
-        echo "Set XDG_RUNTIME_DIR to $XDG_RUNTIME_DIR"
+    # Only apply D-Bus fixes on Linux where /run directory exists
+    if [ "$os_type" = "Linux" ]; then
+        # Ensure XDG_RUNTIME_DIR is set properly
+        if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+            local uid=$(id -u)
+            local runtime_dir="/run/user/${uid}"
+            if [ -d "$runtime_dir" ]; then
+                export XDG_RUNTIME_DIR="$runtime_dir"
+                echo "Set XDG_RUNTIME_DIR to $XDG_RUNTIME_DIR"
+            fi
+        fi
+        
+        # Fix D-Bus session address if it's pointing to the wrong user
+        if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+            local expected_bus="unix:path=${XDG_RUNTIME_DIR}/bus"
+            if [ "$DBUS_SESSION_BUS_ADDRESS" != "$expected_bus" ]; then
+                echo "Fixing DBUS_SESSION_BUS_ADDRESS from $DBUS_SESSION_BUS_ADDRESS to $expected_bus"
+                export DBUS_SESSION_BUS_ADDRESS="$expected_bus"
+            fi
+        fi
+    else
+        echo "Non-Linux OS detected ($os_type) - skipping D-Bus configuration"
     fi
 }
 

@@ -17,13 +17,17 @@ export CONTAINER_ENGINE="${CONTAINER_ENGINE:-$(detect_container_engine)}"
 
 # Fix D-Bus session address for podman if needed
 # This prevents "Interactive authentication required" errors in CI environments
+# Only applies to Linux systems where /run directory exists
 if [ "$CONTAINER_ENGINE" = "podman" ]; then
-    # Ensure XDG_RUNTIME_DIR is set
+    # Ensure XDG_RUNTIME_DIR is set (Linux only)
     if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
-        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+        runtime_dir="/run/user/$(id -u)"
+        if [ -d "$runtime_dir" ]; then
+            export XDG_RUNTIME_DIR="$runtime_dir"
+        fi
     fi
     
-    # Fix DBUS_SESSION_BUS_ADDRESS if it's pointing to wrong user
+    # Fix DBUS_SESSION_BUS_ADDRESS if it's pointing to wrong user (Linux only)
     if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
         expected_bus="unix:path=${XDG_RUNTIME_DIR}/bus"
         if [ "$DBUS_SESSION_BUS_ADDRESS" != "$expected_bus" ] && [ -S "${XDG_RUNTIME_DIR}/bus" ]; then
