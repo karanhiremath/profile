@@ -38,8 +38,41 @@ configure_podman() {
                 export DBUS_SESSION_BUS_ADDRESS="$expected_bus"
             fi
         fi
+    elif [ "$os_type" = "Darwin" ]; then
+        echo "macOS detected - checking podman machine status..."
+        
+        # Check if any machine exists
+        local machine_list=$(podman machine list 2>/dev/null || echo "")
+        
+        if [ -z "$machine_list" ] || ! echo "$machine_list" | grep -qv "^NAME"; then
+            # No machines exist, need to initialize
+            echo "No podman machine found. Initializing default machine..."
+            if ! podman machine init 2>&1; then
+                echo "Warning: Failed to initialize podman machine"
+                return 1
+            fi
+            echo "Podman machine initialized successfully"
+            
+            # After init, need to start
+            echo "Starting podman machine..."
+            if ! podman machine start 2>&1; then
+                echo "Warning: Failed to start podman machine"
+                return 1
+            fi
+            echo "Podman machine started successfully"
+        elif ! echo "$machine_list" | grep -q "Currently running"; then
+            # Machine exists but not running, need to start
+            echo "Podman machine exists but not running. Starting..."
+            if ! podman machine start 2>&1; then
+                echo "Warning: Failed to start podman machine"
+                return 1
+            fi
+            echo "Podman machine started successfully"
+        else
+            echo "Podman machine is already running"
+        fi
     else
-        echo "Non-Linux OS detected ($os_type) - skipping D-Bus configuration"
+        echo "OS type: $os_type - skipping platform-specific configuration"
     fi
 }
 
@@ -58,7 +91,14 @@ if command -v podman > /dev/null 2>&1; then
     if podman info >/dev/null 2>&1; then
         echo "Podman is properly configured and ready!"
     else
-        echo "Warning: Podman info check failed, but continuing..."
+        echo "Warning: Podman info check failed"
+        # On macOS, provide helpful error message
+        if [ "$MACHINE" = "Darwin" ]; then
+            echo "If you see connection errors, try:"
+            echo "  podman machine init"
+            echo "  podman machine start"
+        fi
+        echo "Continuing anyway..."
     fi
     
     install_messages "end" "$app_name"
