@@ -144,7 +144,7 @@ get_test_result() {
             echo "${status_list[$i]}"
             return
         fi
-        ((i++))
+        ((i++)) || true
     done
     echo "UNKNOWN"
 }
@@ -170,7 +170,7 @@ run_os_test() {
     if ! $CONTAINER_ENGINE build -t "$image_name" -f "$dockerfile" "$PROFILE_DIR" 2>&1 | \
         ([ "$VERBOSE" -eq 1 ] && cat || grep -E "ERROR|error:|Step|Successfully" || true); then
         log_error "Failed to build container image for $os"
-        TEST_RESULTS[$os]="BUILD_FAILED"
+        add_test_result "$os" "BUILD_FAILED"
         return 1
     fi
     
@@ -200,12 +200,12 @@ run_os_test() {
             fi
         " 2>&1 | ([ "$VERBOSE" -eq 1 ] && cat || tail -20); then
         log_error "Container validation failed for $os"
-        TEST_RESULTS[$os]="TEST_FAILED"
+        add_test_result "$os" "TEST_FAILED"
         return 1
     fi
     
     log_info "✓ Tests passed for $os"
-    TEST_RESULTS[$os]="PASSED"
+    add_test_result "$os" "PASSED"
     return 0
 }
 
@@ -220,7 +220,7 @@ main() {
             log_info "✓ $os: PASSED"
         else
             log_error "✗ $os: FAILED"
-            ((failed++))
+            ((failed++)) || true
         fi
         log_info "========================================"
         echo
@@ -231,7 +231,7 @@ main() {
     log_info "Test Summary"
     log_info "============"
     for os in "${OS_LIST[@]}"; do
-        result="${TEST_RESULTS[$os]:-UNKNOWN}"
+        result="$(get_test_result "$os")"
         case $result in
             PASSED)
                 echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $os: $result"
