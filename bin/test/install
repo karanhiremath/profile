@@ -11,12 +11,45 @@ shopt -s failglob
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Configure podman if it exists
+configure_podman() {
+    echo "Configuring podman for the current environment..."
+    
+    # Fix D-Bus session address if it's pointing to the wrong user
+    if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+        local expected_bus="unix:path=${XDG_RUNTIME_DIR}/bus"
+        if [ "$DBUS_SESSION_BUS_ADDRESS" != "$expected_bus" ]; then
+            echo "Fixing DBUS_SESSION_BUS_ADDRESS from $DBUS_SESSION_BUS_ADDRESS to $expected_bus"
+            export DBUS_SESSION_BUS_ADDRESS="$expected_bus"
+        fi
+    fi
+    
+    # Ensure XDG_RUNTIME_DIR is set properly
+    if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+        local uid=$(id -u)
+        export XDG_RUNTIME_DIR="/run/user/${uid}"
+        echo "Set XDG_RUNTIME_DIR to $XDG_RUNTIME_DIR"
+    fi
+}
+
 # Check for podman first (preferred)
 if command -v podman > /dev/null 2>&1; then
     app_name="podman"
     install_messages "start" "$app_name"
     echo "Podman already installed (preferred)!"
     podman --version
+    
+    # Configure podman for the environment
+    configure_podman
+    
+    # Test podman configuration
+    echo "Testing podman configuration..."
+    if podman info >/dev/null 2>&1; then
+        echo "Podman is properly configured and ready!"
+    else
+        echo "Warning: Podman info check failed, but continuing..."
+    fi
+    
     install_messages "end" "$app_name"
     exit 0
 fi
