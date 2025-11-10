@@ -79,6 +79,13 @@ steampipe:
     # steampipe install
     ./bin/steampipe/install
 
+podman:
+    # Install and configure podman for testing
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    ./bin/test/install
+
 mac:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -123,35 +130,35 @@ mac:
     just steampipe
 
 # Test commands
-test:
+test: podman
     # Run tests on all OS variants
     ./bin/test/run-tests.sh all
 
-test-ubuntu:
+test-ubuntu: podman
     # Test on Ubuntu
     ./bin/test/run-tests.sh ubuntu
 
-test-debian:
+test-debian: podman
     # Test on Debian
     ./bin/test/run-tests.sh debian
 
-test-rhel8:
+test-rhel8: podman
     # Test on RHEL 8
     ./bin/test/run-tests.sh rhel8
 
-test-nixos:
+test-nixos: podman
     # Test on NixOS
     ./bin/test/run-tests.sh nixos
 
-test-alpine:
+test-alpine: podman
     # Test on Alpine Linux
     ./bin/test/run-tests.sh alpine
 
-test-app APP:
+test-app APP: podman
     # Test specific app installation
     ./bin/test/run-tests.sh -a {{APP}} all
 
-test-verbose:
+test-verbose: podman
     # Run tests with verbose output
     ./bin/test/run-tests.sh -v all
 

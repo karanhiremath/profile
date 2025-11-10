@@ -11,12 +11,96 @@ shopt -s failglob
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Configure podman if it exists
+configure_podman() {
+    echo "Configuring podman for the current environment..."
+    
+    # Detect OS
+    local os_type="$(uname -s)"
+    
+    # Only apply D-Bus fixes on Linux where /run directory exists
+    if [ "$os_type" = "Linux" ]; then
+        # Ensure XDG_RUNTIME_DIR is set properly
+        if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+            local uid=$(id -u)
+            local runtime_dir="/run/user/${uid}"
+            if [ -d "$runtime_dir" ]; then
+                export XDG_RUNTIME_DIR="$runtime_dir"
+                echo "Set XDG_RUNTIME_DIR to $XDG_RUNTIME_DIR"
+            fi
+        fi
+        
+        # Fix D-Bus session address if it's pointing to the wrong user
+        if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+            local expected_bus="unix:path=${XDG_RUNTIME_DIR}/bus"
+            if [ "$DBUS_SESSION_BUS_ADDRESS" != "$expected_bus" ]; then
+                echo "Fixing DBUS_SESSION_BUS_ADDRESS from $DBUS_SESSION_BUS_ADDRESS to $expected_bus"
+                export DBUS_SESSION_BUS_ADDRESS="$expected_bus"
+            fi
+        fi
+    elif [ "$os_type" = "Darwin" ]; then
+        echo "macOS detected - checking podman machine status..."
+        
+        # Check if any machine exists
+        local machine_list=$(podman machine list 2>/dev/null || echo "")
+        
+        if [ -z "$machine_list" ] || ! echo "$machine_list" | grep -qv "^NAME"; then
+            # No machines exist, need to initialize
+            echo "No podman machine found. Initializing default machine..."
+            if ! podman machine init 2>&1; then
+                echo "Warning: Failed to initialize podman machine"
+                return 1
+            fi
+            echo "Podman machine initialized successfully"
+            
+            # After init, need to start
+            echo "Starting podman machine..."
+            if ! podman machine start 2>&1; then
+                echo "Warning: Failed to start podman machine"
+                return 1
+            fi
+            echo "Podman machine started successfully"
+        elif ! echo "$machine_list" | grep -q "Currently running"; then
+            # Machine exists but not running, need to start
+            echo "Podman machine exists but not running. Starting..."
+            if ! podman machine start 2>&1; then
+                echo "Warning: Failed to start podman machine"
+                return 1
+            fi
+            echo "Podman machine started successfully"
+        else
+            echo "Podman machine is already running"
+        fi
+    else
+        echo "OS type: $os_type - skipping platform-specific configuration"
+    fi
+}
+
 # Check for podman first (preferred)
 if command -v podman > /dev/null 2>&1; then
     app_name="podman"
     install_messages "start" "$app_name"
     echo "Podman already installed (preferred)!"
     podman --version
+    
+    # Configure podman for the environment
+    configure_podman
+    
+    # Test podman configuration
+    echo "Testing podman configuration..."
+    if podman info >/dev/null 2>&1; then
+        echo "Podman is properly configured and ready!"
+    else
+        echo "Warning: Podman info check failed"
+        # On macOS, provide helpful error message
+        if [ "$MACHINE" = "Darwin" ]; then
+            echo "If you see connection errors, try:"
+            echo "  podman machine init"
+            echo "  podman machine start"
+        fi
+        echo "Continuing anyway..."
+    fi
+    
     install_messages "end" "$app_name"
     exit 0
 fi
