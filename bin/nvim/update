@@ -1,0 +1,44 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="nvim"
+
+echo "Updating nvim..."
+
+MACHINE="$(uname -s)"
+
+case "${MACHINE}" in
+    Darwin|Mac)
+        # Check if installed via Homebrew or bob-nvim
+        if brew list neovim >/dev/null 2>&1; then
+            echo "Updating nvim via Homebrew..."
+            brew upgrade neovim
+        elif command -v bob >/dev/null 2>&1; then
+            echo "Updating nvim via bob-nvim..."
+            bob update
+        else
+            echo "nvim installation method not recognized. Cannot update."
+            exit 1
+        fi
+        ;;
+    Linux|*)
+        if command -v bob >/dev/null 2>&1; then
+            echo "Updating nvim via bob-nvim..."
+            bob update
+        else
+            echo "bob-nvim not found. Cannot update nvim."
+            exit 1
+        fi
+        ;;
+esac
+
+# Update nvim plugins
+echo "Updating nvim plugins..."
+"${PROFILE_DIR}/bin/nvim/install-plugins"
+
+echo "nvim update complete."

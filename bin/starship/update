@@ -1,0 +1,35 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="starship"
+
+echo "Updating starship..."
+
+MACHINE="$(uname -s)"
+
+case "${MACHINE}" in
+    Darwin|Mac)
+        if command -v brew >/dev/null 2>&1; then
+            echo "Updating starship via Homebrew..."
+            brew upgrade starship
+        else
+            echo "Homebrew not available. Cannot update starship."
+            exit 1
+        fi
+        ;;
+    Linux)
+        echo "Updating starship via official installer..."
+        curl -sS https://starship.rs/install.sh | sh -s -- -y --force
+        ;;
+    *)
+        echo "Using generic installer..."
+        curl -sS https://starship.rs/install.sh | sh -s -- -y --force
+        ;;
+esac
+
+echo "starship update complete."

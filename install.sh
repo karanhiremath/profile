@@ -58,18 +58,8 @@ else
     echo "~/.vim/autoload/plug.vim already exists"
 fi
 
-if [[ ! -e ~/.tmux.conf ]]; then
-    touch ~/.tmux.conf
-else
-    echo "tmux config found at ~/.tmux.conf"
-fi
-
-if grep -q "$medir/.tmux.conf" ~/.tmux.conf; then
-    echo ".tmux.conf already sourced in ~/.tmux.conf"
-else
-    echo "Sourcing $medir/.tmux.conf in ~/.tmux.conf"
-    echo "source-file $medir/.tmux.conf" >> ~/.tmux.conf
-fi
+# tmux.conf is managed by bin/tmux/install which creates a symlink
+# No need to manually source it here
 
 if [[ ! -e ~/.tmux/plugins/tpm/ ]]; then
   git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
@@ -85,9 +75,32 @@ install_app "cargo"
 
 install_app "just"
 
+# On Mac, install brew early so it's available for all recipes
+if [[ $machine == "Mac" ]]; then
+    echo "Installing Homebrew early for Mac..."
+    install_app "brew"
+    
+    # Ensure brew is in PATH for subsequent commands
+    if [ -f /opt/homebrew/bin/brew ]; then
+        export PATH="/opt/homebrew/bin:$PATH"
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [ -f /usr/local/bin/brew ]; then
+        export PATH="/usr/local/bin:$PATH"
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+fi
+
 just all
 
 if [[ $machine == "Mac" ]]; then
+    # Ensure brew is still in PATH (in case shell changed)
+    if [ -f /opt/homebrew/bin/brew ]; then
+        export PATH="/opt/homebrew/bin:$PATH"
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [ -f /usr/local/bin/brew ]; then
+        export PATH="/usr/local/bin:$PATH"
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
     just mac
 fi
 

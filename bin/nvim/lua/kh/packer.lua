@@ -72,12 +72,15 @@ return require('packer').startup(function(use)
     use("tpope/vim-fugitive")
     -- use("nvim-treesitter/nvim-treesitter-context")
 
-    use {
+    -- Check if we need to use older lspconfig for nvim 0.9.x
+  local use_old_lspconfig = vim.fn.filereadable(vim.fn.expand('~/.config/nvim/.use-old-lspconfig')) == 1
+  
+  use {
       'VonHeikemen/lsp-zero.nvim',
       branch = 'v3.x',
       requires = {
-          -- LSP Support
-          {'neovim/nvim-lspconfig'},
+          -- LSP Support - use older commit for nvim 0.9.x if needed
+          use_old_lspconfig and {'neovim/nvim-lspconfig', commit = 'a981d4447b92c54a4d464eb1a76b799bc3f9a771'} or {'neovim/nvim-lspconfig'},
           {'williamboman/mason.nvim'},
           {'williamboman/mason-lspconfig.nvim'},
 

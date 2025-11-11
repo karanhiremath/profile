@@ -14,8 +14,7 @@ ln -fns "${PROFILE_DIR}"/bin/nvim/lua "${HOME}"/.config/nvim/lua
 ln -fns "${PROFILE_DIR}"/bin/nvim/after "${HOME}"/.config/nvim/after
 
 app_name="nvim"
-nvim_version="v0.9.5"
-bob_version="2.8.0"
+nvim_version_fallback="v0.9.5"  # Fallback for older systems
 bob_install_location="$HOME/.local/share/bob/nvim-bin"
 
 MACHINE="$(uname -s)"
@@ -23,13 +22,115 @@ ARCH="$(uname -m)"
 
 install_messages "start" "$app_name"
 
+# Function to install or update bob-nvim to latest version
+install_or_update_bob() {
+    if command -v bob >/dev/null 2>&1; then
+        echo "Bob-nvim already installed, updating to latest version..."
+        cargo install bob-nvim --locked --force
+    else
+        echo "Installing latest bob-nvim to manage neovim versions..."
+        cargo install bob-nvim --locked
+    fi
+}
+
+# Function to try installing nvim with bob using "latest"
+try_install_nvim_bob() {
+    echo "Attempting to install latest neovim via bob-nvim..."
+    
+    install_or_update_bob
+    
+    export PATH=$PATH:~/.cargo/bin/bob:${bob_install_location}
+    
+    # Use bob's built-in "latest" feature
+    if ~/.cargo/bin/bob use latest 2>/dev/null; then
+        echo "Successfully installed latest neovim"
+        
+        # Test if nvim actually runs
+        if ${bob_install_location}/nvim --version >/dev/null 2>&1; then
+            echo "Neovim is working correctly"
+            return 0
+        else
+            echo "Neovim installed but failed to run (likely glibc incompatibility)"
+            return 1
+        fi
+    else
+        echo "Failed to install latest neovim"
+        return 1
+    fi
+}
+
+# Function to try installing fallback nvim version
+try_install_nvim_bob_fallback() {
+    local version=$1
+    echo "Attempting to install neovim ${version} via bob-nvim..."
+    
+    install_or_update_bob
+    
+    export PATH=$PATH:~/.cargo/bin/bob:${bob_install_location}
+    
+    if ~/.cargo/bin/bob use "${version}" 2>/dev/null; then
+        echo "Successfully installed neovim ${version}"
+        
+        # Test if nvim actually runs
+        if ${bob_install_location}/nvim --version >/dev/null 2>&1; then
+            echo "Neovim ${version} is working correctly"
+            return 0
+        else
+            echo "Neovim ${version} installed but failed to run"
+            return 1
+        fi
+    else
+        echo "Failed to install neovim ${version}"
+        return 1
+    fi
+}
+
 case "${MACHINE}" in
-    *)
-        echo "Install bob"
-        cargo install bob-nvim --locked --version "${bob_version}"
-        export PATH=$PATH:~/.cargo/bin/bob:${bob_install_location}
-        ~/.cargo/bin/bob use "${nvim_version}"
-    ;;
+    Darwin|Mac)
+        echo "Installing nvim on Mac..."
+        # Check if cargo is available, if not install via homebrew
+        if ! command -v cargo >/dev/null 2>&1; then
+            echo "Cargo not found, installing latest nvim via Homebrew..."
+            brew install neovim
+        else
+            # Try latest first via bob's "latest" feature
+            if ! try_install_nvim_bob; then
+                echo "Latest version failed, trying fallback version ${nvim_version_fallback}..."
+                if try_install_nvim_bob_fallback "${nvim_version_fallback}"; then
+                    echo "Using neovim ${nvim_version_fallback} - will install compatible nvim-lspconfig"
+                    # Mark that we need older lspconfig
+                    touch "${PROFILE_DIR}/bin/nvim/.use-old-lspconfig"
+                else
+                    echo "Bob installation failed, falling back to Homebrew..."
+                    brew install neovim
+                fi
+            fi
+        fi
+        ;;
+    Linux|*)
+        echo "Installing nvim on Linux..."
+        if ! command -v cargo >/dev/null 2>&1; then
+            echo "ERROR: cargo is required but not installed. Please install Rust/Cargo first."
+            exit 1
+        fi
+        
+        # Try latest first via bob's "latest" feature
+        if ! try_install_nvim_bob; then
+            echo "Latest version failed (possibly due to glibc incompatibility), trying fallback version ${nvim_version_fallback}..."
+            if try_install_nvim_bob_fallback "${nvim_version_fallback}"; then
+                echo "Using neovim ${nvim_version_fallback} - will install compatible nvim-lspconfig"
+                # Mark that we need older lspconfig
+                touch "${PROFILE_DIR}/bin/nvim/.use-old-lspconfig"
+            else
+                echo "ERROR: Failed to install neovim via bob"
+                exit 1
+            fi
+        fi
+        ;;
 esac
+
+# Install nvim plugins after nvim is installed
+echo "Installing nvim plugins..."
+"${PROFILE_DIR}/bin/nvim/install-plugins"
 
 install_messages "end" "$app_name"

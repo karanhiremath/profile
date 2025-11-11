@@ -14,14 +14,24 @@ ARCH="$(uname -m)"
 install_messages "start" "$app_name"
 
 case "${MACHINE}" in
-    Linux)  echo "Linux specific install instructions here";;
-    Darwin)    brew update; brew install opentofu;;
-    *)      echo "Generic install instructions here";;
-esac
-
-case "${ARCH}" in
-    aarch64)  echo "aarch64 architecture specific install instructions here";;
-    *)      echo "Generic install instructions here";;
+    Darwin|Mac)
+        echo "Installing OpenTofu on Mac..."
+        brew update
+        brew install opentofu
+        ;;
+    Linux)
+        echo "Installing OpenTofu on Linux..."
+        # Install via official installer script
+        curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o /tmp/install-opentofu.sh
+        chmod +x /tmp/install-opentofu.sh
+        sudo /tmp/install-opentofu.sh --install-method deb
+        rm /tmp/install-opentofu.sh
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        echo "Please visit https://opentofu.org/docs/intro/install/ for manual installation instructions"
+        exit 1
+        ;;
 esac
 
 install_messages "end" "$app_name"

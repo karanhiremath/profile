@@ -1,0 +1,82 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+
+app_name="git"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+# Check if git is already installed
+if command -v git >/dev/null 2>&1; then
+    echo "Git already installed at $(which git)"
+    git --version
+    exit 0
+fi
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    Darwin|Mac)
+        echo "Installing Git on Mac..."
+        # Git comes with Xcode Command Line Tools
+        # Try to install via xcode-select first
+        if ! xcode-select -p >/dev/null 2>&1; then
+            echo "Installing Xcode Command Line Tools..."
+            xcode-select --install
+            echo "Please complete the Xcode Command Line Tools installation and re-run this script."
+            exit 1
+        fi
+        
+        # If still no git, install via Homebrew
+        if ! command -v git >/dev/null 2>&1; then
+            . "${PROFILE_DIR}"/bin/sh/brew_helper.sh
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install git
+        fi
+        ;;
+    Linux)
+        echo "Installing Git on Linux..."
+        # Debian/Ubuntu
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y git
+        # RHEL/Fedora/CentOS
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y git
+        elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y git
+        # Arch Linux
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --noconfirm git
+        # Alpine Linux
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add git
+        else
+            echo "Unsupported Linux distribution. Please install git manually."
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+# Verify installation
+if command -v git >/dev/null 2>&1; then
+    echo "Git successfully installed:"
+    git --version
+else
+    echo "ERROR: Git installation failed"
+    exit 1
+fi

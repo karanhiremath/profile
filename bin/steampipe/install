@@ -14,14 +14,20 @@ ARCH="$(uname -m)"
 install_messages "start" "$app_name"
 
 case "${MACHINE}" in
-    Linux)  echo "Linux specific install instructions here";;
-    Darwin)    brew install turbot/tap/steampipe;;
-    *)      echo "Generic install instructions here";;
-esac
-
-case "${ARCH}" in
-    aarch64)  echo "aarch64 architecture specific install instructions here";;
-    *)      echo "Generic install instructions here";;
+    Darwin|Mac)
+        echo "Installing Steampipe on Mac..."
+        brew install turbot/tap/steampipe
+        ;;
+    Linux)
+        echo "Installing Steampipe on Linux..."
+        # Use official install script
+        sudo /bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/turbot/steampipe/main/install.sh)"
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        echo "Please visit https://steampipe.io/downloads for manual installation instructions"
+        exit 1
+        ;;
 esac
 
 install_messages "end" "$app_name"

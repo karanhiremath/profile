@@ -6,8 +6,6 @@ shopt -s failglob
 
 . "${APP_BIN}"/sh/shell_fns --source-only
 
-source "$HOME/.cargo/env"
-
 app_name="just"
 
 MACHINE="$(uname -s)"
@@ -15,19 +13,38 @@ ARCH="$(uname -m)"
 
 install_messages "start" "$app_name"
 
-if [[ $(cargo install just) -ne 0 ]]; then
+# Try cargo first if available
+if command -v cargo >/dev/null 2>&1; then
+    echo "Installing just via cargo..."
+    source "$HOME/.cargo/env" 2>/dev/null || true
+    cargo install just
+else
+    # Fall back to platform-specific package managers
     case "${MACHINE}" in
-        Linux)  echo "Linux specific install instructions here";;
-        Mac)    brew install just;;
-        Darwin)    brew install just;;
-        *)      echo "Generic install instructions here";;
-    esac
-
-    case "${ARCH}" in
-        aarch64)  echo "aarch64 architecture specific install instructions here";;
-        *)      echo "Generic install instructions here";;
+        Darwin|Mac)
+            echo "Installing just on Mac via Homebrew..."
+            brew install just
+            ;;
+        Linux)
+            echo "Installing just on Linux..."
+            if command -v apt-get >/dev/null 2>&1; then
+                # For Ubuntu 22.04+
+                sudo apt-get update && sudo apt-get install -y just
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y just
+            elif command -v pacman >/dev/null 2>&1; then
+                sudo pacman -S --noconfirm just
+            else
+                echo "No suitable package manager found. Please install Rust/Cargo first, then run this script again."
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            echo "Please install Rust/Cargo first: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+            exit 1
+            ;;
     esac
 fi
 
 install_messages "end" "$app_name"
-

@@ -4,4 +4,27 @@ set -euo pipefail
 
 shopt -s failglob
 
-curl https://sh.rustup.rs -sSf | sh
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+echo "Installing Rust and Cargo..."
+
+case "${MACHINE}" in
+    Darwin|Mac)
+        echo "Installing on Mac..."
+        # Check if homebrew is available
+        if command -v brew >/dev/null 2>&1; then
+            echo "Installing via Homebrew (recommended for Mac)..."
+            brew install rust
+        else
+            echo "Homebrew not found, using rustup..."
+            curl https://sh.rustup.rs -sSf | sh -s -- -y
+        fi
+        ;;
+    Linux|*)
+        echo "Installing via rustup..."
+        curl https://sh.rustup.rs -sSf | sh -s -- -y
+        ;;
+esac
+
+echo "Cargo installation complete. Please run 'source ~/.cargo/env' or restart your shell."
