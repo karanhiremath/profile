@@ -4,7 +4,7 @@ set -euo pipefail
 
 shopt -s failglob
 
-. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+. "${APP_BIN}/sh/shell_fns" --source-only
 . "${APP_BIN}/sh/brew_helper.sh"
 
 app_name="huggingface-cli"
