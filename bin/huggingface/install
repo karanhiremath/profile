@@ -1,0 +1,66 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="huggingface-cli"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v huggingface-cli >/dev/null 2>&1; then
+    echo "Hugging Face CLI already installed!"
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Linux)
+            echo "Installing Hugging Face CLI..."
+            # Check if pip3 is available
+            if ! command -v pip3 >/dev/null 2>&1; then
+                echo "pip3 not found. Installing Python3 and pip..."
+                case "${MACHINE}" in
+                    Darwin)
+                        ensure_brew_in_path || {
+                            echo "ERROR: Homebrew not found. Please install Homebrew first."
+                            exit 1
+                        }
+                        brew install python3
+                        ;;
+                    Linux)
+                        if command -v apt-get >/dev/null 2>&1; then
+                            sudo apt-get update && sudo apt-get install -y python3-pip
+                        elif command -v dnf >/dev/null 2>&1; then
+                            sudo dnf install -y python3-pip
+                        elif command -v yum >/dev/null 2>&1; then
+                            sudo yum install -y python3-pip
+                        else
+                            echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
+                            exit 1
+                        fi
+                        ;;
+                esac
+            fi
+            
+            # Install huggingface_hub package which includes the CLI
+            pip3 install --user huggingface_hub[cli]
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "Hugging Face CLI installed successfully!"
+echo "To login to Hugging Face, run: huggingface-cli login"
+echo "To download a model, run: huggingface-cli download <model-id>"
+echo "To upload files, run: huggingface-cli upload <repo-id> <file>"
+echo ""

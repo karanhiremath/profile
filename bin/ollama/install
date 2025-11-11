@@ -1,0 +1,48 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="ollama"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v ollama >/dev/null 2>&1; then
+    echo "Ollama already installed!"
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin)
+            echo "Installing Ollama on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install ollama
+            ;;
+        Linux)
+            echo "Installing Ollama on Linux..."
+            # Use official Ollama install script
+            curl -fsSL https://ollama.com/install.sh | sh
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "Ollama installed successfully!"
+echo "To start Ollama service, run: ollama serve"
+echo "To download a model, run: ollama pull <model-name>"
+echo "Example: ollama pull llama2"
+echo ""

@@ -79,6 +79,12 @@ steampipe:
     # steampipe install
     ./bin/steampipe/install
 
+ai-toolkit:
+    # AI toolkit install (ollama, lmstudio, huggingface)
+    ./bin/ollama/install
+    ./bin/lmstudio/install
+    ./bin/huggingface/install
+
 podman:
     # Install and configure podman for testing
     #!/usr/bin/env bash

@@ -1,0 +1,72 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="lmstudio"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    Darwin)
+        echo "Installing LM Studio on Mac..."
+        ensure_brew_in_path || {
+            echo "ERROR: Homebrew not found. Please install Homebrew first."
+            exit 1
+        }
+        brew install --cask lm-studio
+        ;;
+    Linux)
+        echo "Installing LM Studio on Linux..."
+        # LM Studio for Linux - download and install AppImage or tar.gz
+        # Check architecture
+        case "${ARCH}" in
+            x86_64|amd64)
+                echo "Detected x86_64 architecture"
+                DOWNLOAD_URL="https://releases.lmstudio.ai/linux/x86/latest"
+                ;;
+            *)
+                echo "LM Studio primarily supports x86_64 on Linux"
+                echo "Please visit https://lmstudio.ai for manual installation"
+                exit 1
+                ;;
+        esac
+        
+        # Create installation directory
+        mkdir -p ~/.local/share/lmstudio
+        cd ~/.local/share/lmstudio
+        
+        # Download and extract LM Studio
+        echo "Downloading LM Studio..."
+        curl -L -o lmstudio.tar.gz "$DOWNLOAD_URL"
+        tar -xzf lmstudio.tar.gz
+        rm lmstudio.tar.gz
+        
+        # Create symlink to binary
+        mkdir -p ~/.local/bin
+        ln -sf ~/.local/share/lmstudio/lms ~/.local/bin/lms
+        
+        echo "LM Studio installed to ~/.local/share/lmstudio"
+        echo "Binary linked to ~/.local/bin/lms"
+        echo "Make sure ~/.local/bin is in your PATH"
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "LM Studio installed successfully!"
+echo "On Mac: Launch from Applications or run 'lm-studio'"
+echo "On Linux: Run 'lms' from terminal (ensure ~/.local/bin is in PATH)"
+echo ""
