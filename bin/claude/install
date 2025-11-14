@@ -7,64 +7,90 @@ shopt -s failglob
 . "${APP_BIN}/sh/shell_fns" --source-only
 . "${APP_BIN}/sh/brew_helper.sh"
 
-app_name="claude"
+app_name="claude-code"
 
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 # Check if already installed
-if command -v claude >/dev/null 2>&1 || [ -d ~/.local/share/claude ] || [ -d "/Applications/Claude.app" ]; then
-    echo "Claude Desktop already installed!"
+if command -v claude-code >/dev/null 2>&1; then
+    echo "Claude Code already installed!"
     exit 0
 fi
 
 install_messages "start" "$app_name"
 
-case "${MACHINE}" in
-    Darwin)
-        echo "Installing Claude Desktop on Mac..."
-        ensure_brew_in_path || {
-            echo "ERROR: Homebrew not found. Please install Homebrew first."
-            exit 1
-        }
-        brew install --cask claude
-        ;;
-    Linux)
-        echo "Installing Claude Desktop on Linux..."
-        # Check architecture
-        case "${ARCH}" in
-            x86_64|amd64)
-                echo "Detected x86_64 architecture"
-                # Claude Desktop for Linux - download AppImage
-                DOWNLOAD_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-desktop-linux/Versions/latest/Claude-x64.AppImage"
-                ;;
-            *)
-                echo "Claude Desktop primarily supports x86_64 on Linux"
-                echo "Please visit https://claude.ai/download for manual installation"
+# Function to check Node.js version
+check_node_version() {
+    if command -v node >/dev/null 2>&1; then
+        local node_version
+        node_version=$(node --version | sed 's/v//' | cut -d. -f1)
+        if [ "$node_version" -ge 18 ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Ensure Node.js and npm are installed and up to date
+if ! check_node_version; then
+    echo "Node.js 18+ is required. Installing/updating Node.js..."
+    case "${MACHINE}" in
+        Darwin)
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
                 exit 1
-                ;;
-        esac
-        
-        # Create installation directory
-        mkdir -p ~/.local/share/claude
-        
-        # Download Claude Desktop AppImage in a subshell to preserve working directory
-        (
-            cd ~/.local/share/claude || exit 1
-            
-            # Download Claude Desktop AppImage
-            echo "Downloading Claude Desktop..."
-            curl -L -o Claude.AppImage "$DOWNLOAD_URL"
-            chmod +x Claude.AppImage
-        )
-        
-        # Create symlink to binary
-        mkdir -p ~/.local/bin
-        ln -sf ~/.local/share/claude/Claude.AppImage ~/.local/bin/claude
-        
-        echo "Claude Desktop installed to ~/.local/share/claude"
-        echo "Binary linked to ~/.local/bin/claude"
-        echo "Make sure ~/.local/bin is in your PATH"
+            }
+            # Install or upgrade Node.js via Homebrew
+            if brew list node &>/dev/null; then
+                echo "Upgrading Node.js..."
+                brew upgrade node || brew install node
+            else
+                echo "Installing Node.js..."
+                brew install node
+            fi
+            ;;
+        Linux)
+            # Install Node.js via package manager
+            if command -v apt-get >/dev/null 2>&1; then
+                echo "Installing Node.js on Debian/Ubuntu..."
+                # Use NodeSource repository for latest LTS
+                curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+                sudo apt-get install -y nodejs
+            elif command -v dnf >/dev/null 2>&1; then
+                echo "Installing Node.js on Fedora/RHEL..."
+                curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash -
+                sudo dnf install -y nodejs
+            elif command -v yum >/dev/null 2>&1; then
+                echo "Installing Node.js on CentOS/RHEL..."
+                curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash -
+                sudo yum install -y nodejs
+            else
+                echo "ERROR: Could not install Node.js. Please install Node.js 18+ manually."
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+fi
+
+# Verify Node.js and npm are available
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    echo "ERROR: Node.js or npm not found after installation."
+    exit 1
+fi
+
+echo "Node.js version: $(node --version)"
+echo "npm version: $(npm --version)"
+
+# Install Claude Code via npm
+echo "Installing Claude Code..."
+case "${MACHINE}" in
+    Darwin|Linux)
+        npm install -g @anthropic-ai/claude-code
         ;;
     *)
         echo "Unsupported platform: ${MACHINE}"
@@ -75,7 +101,11 @@ esac
 install_messages "end" "$app_name"
 
 echo ""
-echo "Claude Desktop installed successfully!"
-echo "On Mac: Launch from Applications"
-echo "On Linux: Run 'claude' from terminal (ensure ~/.local/bin is in PATH)"
+echo "Claude Code installed successfully!"
+echo "Usage:"
+echo "  claude-code --help           - Show help"
+echo "  claude-code <prompt>         - Run Claude Code with a prompt"
+echo ""
+echo "Note: You'll need to set up your Anthropic API key."
+echo "Visit: https://console.anthropic.com/ to get your API key"
 echo ""
