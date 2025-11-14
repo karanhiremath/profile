@@ -1,0 +1,94 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="vllm"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v vllm >/dev/null 2>&1; then
+    echo "vLLM already installed!"
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Linux)
+            echo "Installing vLLM..."
+            # Check if pip3 is available
+            if ! command -v pip3 >/dev/null 2>&1; then
+                echo "pip3 not found. Installing Python3 and pip..."
+                case "${MACHINE}" in
+                    Darwin)
+                        ensure_brew_in_path || {
+                            echo "ERROR: Homebrew not found. Please install Homebrew first."
+                            exit 1
+                        }
+                        brew install python3
+                        ;;
+                    Linux)
+                        if command -v apt-get >/dev/null 2>&1; then
+                            sudo apt-get update && sudo apt-get install -y python3-pip
+                        elif command -v dnf >/dev/null 2>&1; then
+                            sudo dnf install -y python3-pip
+                        elif command -v yum >/dev/null 2>&1; then
+                            sudo yum install -y python3-pip
+                        else
+                            echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
+                            exit 1
+                        fi
+                        ;;
+                esac
+            fi
+            
+            # Install vLLM
+            echo "Installing vLLM package..."
+            case "${MACHINE}" in
+                Darwin)
+                    # On macOS, install CPU-only version
+                    echo "Installing vLLM for macOS (CPU-only)..."
+                    pip3 install --user vllm
+                    ;;
+                Linux)
+                    # On Linux, install with CUDA support (for NVIDIA DGX)
+                    echo "Installing vLLM for Linux with CUDA support..."
+                    pip3 install --user vllm
+                    
+                    # Check if CUDA is available
+                    if command -v nvidia-smi >/dev/null 2>&1; then
+                        echo "NVIDIA GPU detected. vLLM will use GPU acceleration."
+                        nvidia-smi
+                    else
+                        echo "No NVIDIA GPU detected. vLLM will run on CPU (not recommended for production)."
+                    fi
+                    ;;
+            esac
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "vLLM installed successfully!"
+echo ""
+echo "vLLM is a high-performance inference engine for LLMs."
+echo ""
+echo "Usage examples:"
+echo "  # Start vLLM server with a model"
+echo "  python3 -m vllm.entrypoints.openai.api_server --model facebook/opt-125m"
+echo ""
+echo "  # Or use the vllm CLI (if installed)"
+echo "  vllm serve facebook/opt-125m"
+echo ""
+echo "For more information, visit: https://docs.vllm.ai/"
+echo ""
