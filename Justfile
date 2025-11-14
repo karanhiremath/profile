@@ -80,7 +80,7 @@ steampipe:
     ./bin/steampipe/install
 
 ai-toolkit:
-    # AI toolkit install (ollama, lmstudio, huggingface, raycast, claude, copilot-cli, gemini-cli)
+    # AI toolkit install (ollama, lmstudio, huggingface, raycast, claude, copilot-cli, gemini-cli, vllm)
     ./bin/ollama/install
     ./bin/lmstudio/install
     ./bin/huggingface/install
@@ -88,6 +88,7 @@ ai-toolkit:
     ./bin/claude/install
     ./bin/copilot-cli/install
     ./bin/gemini-cli/install
+    ./bin/vllm/install
 
 podman:
     # Install and configure podman for testing
