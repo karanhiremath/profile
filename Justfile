@@ -81,6 +81,10 @@ steampipe:
 
 ai-toolkit:
     # AI toolkit install (ollama, lmstudio, huggingface, raycast, claude, copilot-cli, gemini-cli, vllm)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/ollama/install
     ./bin/lmstudio/install
     ./bin/huggingface/install
