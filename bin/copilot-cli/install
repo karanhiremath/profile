@@ -1,0 +1,49 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="github-copilot-cli"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+# Check if gh is installed first
+if ! command -v gh >/dev/null 2>&1; then
+    echo "GitHub CLI (gh) is required but not installed."
+    echo "Please install GitHub CLI first by running: just gh"
+    exit 1
+fi
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    Darwin|Linux)
+        echo "Installing GitHub Copilot CLI extension..."
+        # Install the Copilot CLI extension for GitHub CLI
+        gh extension install github/gh-copilot || {
+            echo "Extension might already be installed. Attempting upgrade..."
+            gh extension upgrade gh-copilot || true
+        }
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "GitHub Copilot CLI extension installed successfully!"
+echo "Usage:"
+echo "  gh copilot explain 'your command'   - Explain what a command does"
+echo "  gh copilot suggest 'what you want'  - Suggest a command to accomplish a task"
+echo ""
+echo "Note: You need to be authenticated with GitHub CLI and have Copilot access."
+echo "Run 'gh auth login' if not already authenticated."
+echo ""

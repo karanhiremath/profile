@@ -1,0 +1,43 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="raycast"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    Darwin)
+        echo "Installing Raycast on Mac..."
+        ensure_brew_in_path || {
+            echo "ERROR: Homebrew not found. Please install Homebrew first."
+            exit 1
+        }
+        brew install --cask raycast
+        ;;
+    Linux)
+        echo "Raycast is only available on macOS."
+        echo "Skipping installation on Linux."
+        exit 0
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "Raycast installed successfully!"
+echo "Launch Raycast from Applications or use Cmd+Space to open it."
+echo "Configure AI features in Raycast settings."
+echo ""

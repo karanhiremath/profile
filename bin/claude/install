@@ -1,0 +1,71 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="claude"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    Darwin)
+        echo "Installing Claude Desktop on Mac..."
+        ensure_brew_in_path || {
+            echo "ERROR: Homebrew not found. Please install Homebrew first."
+            exit 1
+        }
+        brew install --cask claude
+        ;;
+    Linux)
+        echo "Installing Claude Desktop on Linux..."
+        # Check architecture
+        case "${ARCH}" in
+            x86_64|amd64)
+                echo "Detected x86_64 architecture"
+                # Claude Desktop for Linux - download AppImage
+                DOWNLOAD_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest-desktop-linux/Versions/latest/Claude-x64.AppImage"
+                ;;
+            *)
+                echo "Claude Desktop primarily supports x86_64 on Linux"
+                echo "Please visit https://claude.ai/download for manual installation"
+                exit 1
+                ;;
+        esac
+        
+        # Create installation directory
+        mkdir -p ~/.local/share/claude
+        cd ~/.local/share/claude
+        
+        # Download Claude Desktop AppImage
+        echo "Downloading Claude Desktop..."
+        curl -L -o Claude.AppImage "$DOWNLOAD_URL"
+        chmod +x Claude.AppImage
+        
+        # Create symlink to binary
+        mkdir -p ~/.local/bin
+        ln -sf ~/.local/share/claude/Claude.AppImage ~/.local/bin/claude
+        
+        echo "Claude Desktop installed to ~/.local/share/claude"
+        echo "Binary linked to ~/.local/bin/claude"
+        echo "Make sure ~/.local/bin is in your PATH"
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "Claude Desktop installed successfully!"
+echo "On Mac: Launch from Applications"
+echo "On Linux: Run 'claude' from terminal (ensure ~/.local/bin is in PATH)"
+echo ""
