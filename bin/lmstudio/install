@@ -12,6 +12,12 @@ app_name="lmstudio"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Check if already installed
+if command -v lms >/dev/null 2>&1 || [ -d ~/.local/share/lmstudio ]; then
+    echo "LM Studio already installed!"
+    exit 0
+fi
+
 install_messages "start" "$app_name"
 
 case "${MACHINE}" in
@@ -41,13 +47,17 @@ case "${MACHINE}" in
         
         # Create installation directory
         mkdir -p ~/.local/share/lmstudio
-        cd ~/.local/share/lmstudio
         
-        # Download and extract LM Studio
-        echo "Downloading LM Studio..."
-        curl -L -o lmstudio.tar.gz "$DOWNLOAD_URL"
-        tar -xzf lmstudio.tar.gz
-        rm lmstudio.tar.gz
+        # Download and extract LM Studio in a subshell to preserve working directory
+        (
+            cd ~/.local/share/lmstudio || exit 1
+            
+            # Download and extract LM Studio
+            echo "Downloading LM Studio..."
+            curl -L -o lmstudio.tar.gz "$DOWNLOAD_URL"
+            tar -xzf lmstudio.tar.gz
+            rm lmstudio.tar.gz
+        )
         
         # Create symlink to binary
         mkdir -p ~/.local/bin

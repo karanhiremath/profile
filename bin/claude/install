@@ -12,6 +12,12 @@ app_name="claude"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Check if already installed
+if command -v claude >/dev/null 2>&1 || [ -d ~/.local/share/claude ] || [ -d "/Applications/Claude.app" ]; then
+    echo "Claude Desktop already installed!"
+    exit 0
+fi
+
 install_messages "start" "$app_name"
 
 case "${MACHINE}" in
@@ -41,12 +47,16 @@ case "${MACHINE}" in
         
         # Create installation directory
         mkdir -p ~/.local/share/claude
-        cd ~/.local/share/claude
         
-        # Download Claude Desktop AppImage
-        echo "Downloading Claude Desktop..."
-        curl -L -o Claude.AppImage "$DOWNLOAD_URL"
-        chmod +x Claude.AppImage
+        # Download Claude Desktop AppImage in a subshell to preserve working directory
+        (
+            cd ~/.local/share/claude || exit 1
+            
+            # Download Claude Desktop AppImage
+            echo "Downloading Claude Desktop..."
+            curl -L -o Claude.AppImage "$DOWNLOAD_URL"
+            chmod +x Claude.AppImage
+        )
         
         # Create symlink to binary
         mkdir -p ~/.local/bin

@@ -12,6 +12,12 @@ app_name="raycast"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Check if already installed (macOS only)
+if [[ "${MACHINE}" == "Darwin" ]] && [ -d "/Applications/Raycast.app" ]; then
+    echo "Raycast already installed!"
+    exit 0
+fi
+
 install_messages "start" "$app_name"
 
 case "${MACHINE}" in
