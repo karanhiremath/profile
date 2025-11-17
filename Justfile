@@ -80,7 +80,7 @@ steampipe:
     ./bin/steampipe/install
 
 ai-toolkit:
-    # AI toolkit install (ollama, lmstudio, huggingface, raycast, claude, copilot-cli, gemini-cli, vllm)
+    # AI toolkit install (ollama, lmstudio, huggingface, raycast, claude, copilot-cli, gemini-cli, vllm, openvpn)
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
@@ -93,6 +93,7 @@ ai-toolkit:
     ./bin/copilot-cli/install
     ./bin/gemini-cli/install
     ./bin/vllm/install
+    ./bin/openvpn/install
 
 podman:
     # Install and configure podman for testing

@@ -1,0 +1,170 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="openvpn"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+# Parse command line arguments
+OPENVPN_CONFIG_FILE=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --config|-c)
+            OPENVPN_CONFIG_FILE="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--config|-c /path/to/config.ovpn]"
+            exit 1
+            ;;
+    esac
+done
+
+# Check if already installed
+if command -v openvpn >/dev/null 2>&1; then
+    echo "OpenVPN already installed!"
+    openvpn --version | head -1
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin)
+            echo "Installing OpenVPN on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install openvpn
+            ;;
+        Linux)
+            echo "Installing OpenVPN on Linux..."
+            
+            # Detect Linux distribution
+            if [ -f /etc/os-release ]; then
+                . /etc/os-release
+                DISTRO=$ID
+                VERSION_ID=${VERSION_ID:-}
+            else
+                echo "ERROR: Cannot detect Linux distribution"
+                exit 1
+            fi
+            
+            case "${DISTRO}" in
+                ubuntu)
+                    echo "Detected Ubuntu ${VERSION_ID}"
+                    # Install OpenVPN
+                    if command -v apt-get >/dev/null 2>&1; then
+                        sudo apt-get update
+                        sudo apt-get install -y openvpn
+                        
+                        # For Ubuntu 16.04, may need to enable and start the service
+                        if [[ "${VERSION_ID}" == "16.04" ]]; then
+                            echo "Configuring OpenVPN for Ubuntu 16.04..."
+                            sudo systemctl enable openvpn || true
+                        fi
+                    else
+                        echo "ERROR: apt-get not found"
+                        exit 1
+                    fi
+                    ;;
+                debian)
+                    echo "Installing OpenVPN on Debian..."
+                    sudo apt-get update
+                    sudo apt-get install -y openvpn
+                    ;;
+                rhel|centos|fedora)
+                    echo "Installing OpenVPN on RHEL/CentOS/Fedora..."
+                    if command -v dnf >/dev/null 2>&1; then
+                        sudo dnf install -y openvpn
+                    elif command -v yum >/dev/null 2>&1; then
+                        sudo yum install -y openvpn
+                    else
+                        echo "ERROR: Neither dnf nor yum found"
+                        exit 1
+                    fi
+                    ;;
+                *)
+                    echo "Unsupported Linux distribution: ${DISTRO}"
+                    echo "Please install OpenVPN manually"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+# Handle OpenVPN config file if provided
+if [ -n "$OPENVPN_CONFIG_FILE" ]; then
+    echo ""
+    echo "Setting up OpenVPN configuration..."
+    
+    # Verify config file exists
+    if [ ! -f "$OPENVPN_CONFIG_FILE" ]; then
+        echo "ERROR: Config file not found: $OPENVPN_CONFIG_FILE"
+        exit 1
+    fi
+    
+    # Create OpenVPN config directory if it doesn't exist
+    case "${MACHINE}" in
+        Darwin)
+            CONFIG_DIR="/usr/local/etc/openvpn"
+            ;;
+        Linux)
+            CONFIG_DIR="/etc/openvpn"
+            ;;
+    esac
+    
+    sudo mkdir -p "$CONFIG_DIR"
+    
+    # Copy config file to OpenVPN directory
+    CONFIG_BASENAME=$(basename "$OPENVPN_CONFIG_FILE")
+    sudo cp "$OPENVPN_CONFIG_FILE" "$CONFIG_DIR/$CONFIG_BASENAME"
+    sudo chmod 600 "$CONFIG_DIR/$CONFIG_BASENAME"
+    
+    echo "Config file copied to: $CONFIG_DIR/$CONFIG_BASENAME"
+    
+    # For Linux, set up systemd service if applicable
+    if [[ "${MACHINE}" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
+        # Remove .ovpn extension for service name if present
+        SERVICE_NAME="${CONFIG_BASENAME%.ovpn}"
+        
+        echo ""
+        echo "To start OpenVPN with this configuration, run:"
+        echo "  sudo systemctl start openvpn@${SERVICE_NAME}"
+        echo "  sudo systemctl enable openvpn@${SERVICE_NAME}  # To start on boot"
+        echo ""
+        echo "To check status:"
+        echo "  sudo systemctl status openvpn@${SERVICE_NAME}"
+    fi
+fi
+
+echo ""
+echo "OpenVPN installed successfully!"
+echo ""
+if [ -z "$OPENVPN_CONFIG_FILE" ]; then
+    echo "Usage with config file:"
+    echo "  ./bin/openvpn/install --config /path/to/your/config.ovpn"
+    echo ""
+    echo "Manual usage:"
+    echo "  sudo openvpn --config /path/to/your/config.ovpn"
+else
+    echo "Configuration set up successfully!"
+    echo ""
+    echo "To connect manually:"
+    echo "  sudo openvpn --config $CONFIG_DIR/$CONFIG_BASENAME"
+fi
+echo ""
