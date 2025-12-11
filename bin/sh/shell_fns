@@ -117,11 +117,14 @@ function add_env_var_to_shell_config() {
         touch "$config_file"
     fi
     
+    # Escape single quotes in the value for safe shell usage
+    local escaped_value="${var_value//\'/\'\\\'\'}"
+    
     # Check if variable already exists
     if grep -q "^export ${var_name}=" "$config_file" 2>/dev/null; then
         # Remove existing variable and add updated one
         if grep -v "^export ${var_name}=" "$config_file" > "${config_file}.tmp" && \
-           echo "export ${var_name}='${var_value}'" >> "${config_file}.tmp"; then
+           echo "export ${var_name}='${escaped_value}'" >> "${config_file}.tmp"; then
             mv "${config_file}.tmp" "$config_file"
             echo "Updated ${var_name} in ${config_file}"
         else
@@ -131,7 +134,7 @@ function add_env_var_to_shell_config() {
         fi
     else
         # Add new variable
-        if echo "export ${var_name}='${var_value}'" >> "$config_file"; then
+        if echo "export ${var_name}='${escaped_value}'" >> "$config_file"; then
             echo "Added ${var_name} to ${config_file}"
         else
             echo "ERROR: Failed to add ${var_name} to ${config_file}"
@@ -148,11 +151,14 @@ function add_env_var_to_config_vars() {
     mkdir -p ~/.config
     touch ~/.config/.vars
     
+    # Escape single quotes in the value for safe shell usage
+    local escaped_value="${var_value//\'/\'\\\'\'}"
+    
     # Check if variable already exists
     if grep -q "^export ${var_name}=" ~/.config/.vars 2>/dev/null; then
         # Remove existing variable and add updated one
         if grep -v "^export ${var_name}=" ~/.config/.vars > ~/.config/.vars.tmp && \
-           echo "export ${var_name}='${var_value}'" >> ~/.config/.vars.tmp; then
+           echo "export ${var_name}='${escaped_value}'" >> ~/.config/.vars.tmp; then
             mv ~/.config/.vars.tmp ~/.config/.vars
             echo "Updated ${var_name} in ~/.config/.vars"
         else
@@ -162,7 +168,7 @@ function add_env_var_to_config_vars() {
         fi
     else
         # Add new variable
-        if echo "export ${var_name}='${var_value}'" >> ~/.config/.vars; then
+        if echo "export ${var_name}='${escaped_value}'" >> ~/.config/.vars; then
             echo "Added ${var_name} to ~/.config/.vars"
         else
             echo "ERROR: Failed to add ${var_name} to ~/.config/.vars"
