@@ -75,3 +75,170 @@ function generate_config_vars()
     export ARCH=$arch
     grep -rq "export ARCH=${ARCH}" ~/.config/.vars || echo "export ARCH=${ARCH}" >> ~/.config/.vars
 }
+
+# Detect current shell and return the appropriate config file
+function get_shell_config_file() {
+    local shell_name=$(basename "$SHELL")
+    
+    case "$shell_name" in
+        bash)
+            if [ -f ~/.bashrc ]; then
+                echo ~/.bashrc
+            elif [ -f ~/.bash_profile ]; then
+                echo ~/.bash_profile
+            else
+                echo ~/.profile
+            fi
+            ;;
+        zsh)
+            if [ -f ~/.zshrc ]; then
+                echo ~/.zshrc
+            else
+                echo ~/.zprofile
+            fi
+            ;;
+        fish)
+            echo ~/.config/fish/config.fish
+            ;;
+        *)
+            # Default to .profile for unknown shells
+            echo ~/.profile
+            ;;
+    esac
+}
+
+# Safely add or update an environment variable in shell config
+function add_env_var_to_shell_config() {
+    local var_name="$1"
+    local var_value="$2"
+    local config_file="${3:-$(get_shell_config_file)}"
+    
+    if [ ! -f "$config_file" ]; then
+        touch "$config_file"
+    fi
+    
+    # Check if variable already exists
+    if grep -q "^export ${var_name}=" "$config_file" 2>/dev/null; then
+        # Update existing variable
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s|^export ${var_name}=.*|export ${var_name}='${var_value}'|" "$config_file"
+        else
+            sed -i "s|^export ${var_name}=.*|export ${var_name}='${var_value}'|" "$config_file"
+        fi
+        echo "Updated ${var_name} in ${config_file}"
+    else
+        # Add new variable
+        echo "export ${var_name}='${var_value}'" >> "$config_file"
+        echo "Added ${var_name} to ${config_file}"
+    fi
+}
+
+# Safely add or update environment variable in ~/.config/.vars
+function add_env_var_to_config_vars() {
+    local var_name="$1"
+    local var_value="$2"
+    
+    mkdir -p ~/.config
+    touch ~/.config/.vars
+    
+    # Check if variable already exists
+    if grep -q "^export ${var_name}=" ~/.config/.vars 2>/dev/null; then
+        # Update existing variable
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s|^export ${var_name}=.*|export ${var_name}='${var_value}'|" ~/.config/.vars
+        else
+            sed -i "s|^export ${var_name}=.*|export ${var_name}='${var_value}'|" ~/.config/.vars
+        fi
+        echo "Updated ${var_name} in ~/.config/.vars"
+    else
+        # Add new variable
+        echo "export ${var_name}='${var_value}'" >> ~/.config/.vars
+        echo "Added ${var_name} to ~/.config/.vars"
+    fi
+}
+
+# Setup Google Cloud Vertex AI environment variables
+function setup_vertex_ai_env() {
+    local service_type="$1"  # "claude" or "gemini"
+    
+    echo ""
+    echo "=========================================="
+    echo "Vertex AI Configuration Setup"
+    echo "=========================================="
+    echo ""
+    
+    # Check if gcloud is installed
+    if ! command -v gcloud >/dev/null 2>&1; then
+        echo "ERROR: Google Cloud SDK (gcloud) is not installed."
+        echo "Please install it first:"
+        echo "  macOS: brew install google-cloud-sdk"
+        echo "  Linux: curl https://sdk.cloud.google.com | bash"
+        echo ""
+        return 1
+    fi
+    
+    # Get current gcloud project
+    local current_project=$(gcloud config get-value project 2>/dev/null)
+    
+    echo "Current gcloud project: ${current_project:-<not set>}"
+    echo ""
+    
+    # Prompt for project ID
+    read -p "Enter your Google Cloud Project ID [${current_project}]: " project_id
+    project_id="${project_id:-$current_project}"
+    
+    if [ -z "$project_id" ]; then
+        echo "ERROR: Project ID is required"
+        return 1
+    fi
+    
+    # Prompt for region
+    echo ""
+    echo "Common regions:"
+    echo "  - us-central1 (Iowa)"
+    echo "  - us-east4 (Northern Virginia)"
+    echo "  - europe-west4 (Netherlands)"
+    echo "  - asia-southeast1 (Singapore)"
+    read -p "Enter your preferred region [us-central1]: " region
+    region="${region:-us-central1}"
+    
+    # Add environment variables
+    echo ""
+    echo "Adding environment variables..."
+    
+    add_env_var_to_config_vars "GOOGLE_CLOUD_PROJECT" "$project_id"
+    add_env_var_to_config_vars "GOOGLE_CLOUD_REGION" "$region"
+    
+    if [ "$service_type" = "claude" ]; then
+        add_env_var_to_config_vars "ANTHROPIC_VERTEX_AI" "true"
+        add_env_var_to_config_vars "ANTHROPIC_PROJECT_ID" "$project_id"
+        add_env_var_to_config_vars "ANTHROPIC_REGION" "$region"
+    fi
+    
+    echo ""
+    echo "Environment variables configured in ~/.config/.vars"
+    echo ""
+    echo "To apply changes immediately, run:"
+    echo "  source ~/.config/.vars"
+    echo ""
+    
+    # Prompt to enable APIs
+    read -p "Would you like to enable required Vertex AI APIs now? (y/n) [y]: " enable_apis
+    enable_apis="${enable_apis:-y}"
+    
+    if [[ "$enable_apis" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "Enabling Vertex AI APIs..."
+        gcloud config set project "$project_id"
+        gcloud services enable aiplatform.googleapis.com
+        echo "APIs enabled successfully!"
+    fi
+    
+    echo ""
+    echo "=========================================="
+    echo "Vertex AI setup complete!"
+    echo "=========================================="
+    echo ""
+    
+    return 0
+}
