@@ -3,7 +3,7 @@
 
 function install_messages() {
     local help="""
-fn ame: install_messages()
+fname: install_messages()
 params:
     - message_type - start/end message
     - app_name - name of the app to include in message"""
@@ -70,7 +70,7 @@ function generate_config_vars()
     unamemOut="$(uname -m)"
     case "${unamemOut}" in
         aarch64)    arch=Arm64;;
-        *)          arch="UNKOWN:${unamemOut}"
+        *)          arch="UNKNOWN:${unamemOut}"
     esac
     export ARCH=$arch
     grep -rq "export ARCH=${ARCH}" ~/.config/.vars || echo "export ARCH=${ARCH}" >> ~/.config/.vars
@@ -215,7 +215,7 @@ function setup_vertex_ai_env() {
             echo "ERROR: Invalid project ID format."
             echo "Project IDs must:"
             echo "  - Be 6-30 characters long"
-            echo "  - Start with a lowercase letter"
+            echo "  - Start with a lowercase letter or digit"
             echo "  - Contain only lowercase letters, digits, and hyphens"
             echo "  - End with a lowercase letter or digit"
             echo ""
