@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 
 function install_messages() {
@@ -116,9 +116,6 @@ function add_env_var_to_shell_config() {
     if [ ! -f "$config_file" ]; then
         touch "$config_file"
     fi
-    
-    # Escape special characters in the value for safe use in sed
-    local escaped_value=$(printf '%s\n' "$var_value" | sed 's/[\/&]/\\&/g')
     
     # Check if variable already exists
     if grep -q "^export ${var_name}=" "$config_file" 2>/dev/null; then
