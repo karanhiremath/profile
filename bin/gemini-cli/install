@@ -12,8 +12,27 @@ app_name="gemini-cli"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Handle command line arguments
+case "${1:-}" in
+    -h|--help)
+        cat "${SCRIPT_DIR}/README.md"
+        exit 0
+        ;;
+    --setup-vertex-ai)
+        setup_vertex_ai_env "gemini"
+        exit 0
+        ;;
+esac
+
 if command -v gemini >/dev/null 2>&1; then
     echo "Gemini CLI already installed!"
+    echo ""
+    echo "For setup instructions, run: ${BASH_SOURCE[0]} --help"
+    echo "For interactive Vertex AI setup, run: ${BASH_SOURCE[0]} --setup-vertex-ai"
+    exit 0
 else
     install_messages "start" "$app_name"
 
@@ -59,11 +78,20 @@ else
 fi
 
 echo ""
+echo "=========================================="
 echo "Gemini CLI installed successfully!"
-echo "To use Gemini CLI, you'll need to set up your API key:"
-echo "  export GEMINI_API_KEY='your-api-key-here'"
-echo "Get your API key from: https://makersuite.google.com/app/apikey"
+echo "=========================================="
 echo ""
-echo "Usage:"
-echo "  gemini 'your prompt here'"
+echo "Next Steps:"
+echo ""
+echo "1. For detailed setup instructions:"
+echo "   ${SCRIPT_DIR}/install --help"
+echo ""
+echo "2. Quick start with Google AI Studio API:"
+echo "   - Get API key: https://makersuite.google.com/app/apikey"
+echo "   - Set: export GEMINI_API_KEY='your-api-key'"
+echo "   - Usage: gemini 'your prompt here'"
+echo ""
+echo "3. For enterprise/production with Vertex AI:"
+echo "   ${SCRIPT_DIR}/install --setup-vertex-ai"
 echo ""

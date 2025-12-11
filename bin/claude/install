@@ -12,9 +12,27 @@ app_name="claude-code"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Handle command line arguments
+case "${1:-}" in
+    -h|--help)
+        cat "${SCRIPT_DIR}/README.md"
+        exit 0
+        ;;
+    --setup-vertex-ai)
+        setup_vertex_ai_env "claude"
+        exit 0
+        ;;
+esac
+
 # Check if already installed
 if command -v claude-code >/dev/null 2>&1; then
     echo "Claude Code already installed!"
+    echo ""
+    echo "For setup instructions, run: ${BASH_SOURCE[0]} --help"
+    echo "For interactive Vertex AI setup, run: ${BASH_SOURCE[0]} --setup-vertex-ai"
     exit 0
 fi
 
@@ -101,11 +119,19 @@ esac
 install_messages "end" "$app_name"
 
 echo ""
+echo "=========================================="
 echo "Claude Code installed successfully!"
-echo "Usage:"
-echo "  claude-code --help           - Show help"
-echo "  claude-code <prompt>         - Run Claude Code with a prompt"
+echo "=========================================="
 echo ""
-echo "Note: You'll need to set up your Anthropic API key."
-echo "Visit: https://console.anthropic.com/ to get your API key"
+echo "Next Steps:"
+echo ""
+echo "1. For detailed setup instructions:"
+echo "   ${SCRIPT_DIR}/install --help"
+echo ""
+echo "2. Quick start with Anthropic API:"
+echo "   - Get API key: https://console.anthropic.com/"
+echo "   - Set: export ANTHROPIC_API_KEY='your-api-key'"
+echo ""
+echo "3. For enterprise/production with Vertex AI:"
+echo "   ${SCRIPT_DIR}/install --setup-vertex-ai"
 echo ""
