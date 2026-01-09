@@ -90,3 +90,8 @@ alias vi="nvim"
 
 # use bob
 alias nvim="~/.local/share/bob/nvim-bin/nvim"
+
+function ping_test ()
+{
+    ping -c 10 google.com
+}
