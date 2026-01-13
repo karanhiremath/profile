@@ -120,12 +120,11 @@ claude:
     ./bin/claude/install
 
 copilot:
-    # Install/upgrade GitHub CLI (gh) and GitHub Copilot CLI
+    # Install/upgrade GitHub Copilot CLI (standalone)
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
-    ./bin/gh/install
     ./bin/copilot-cli/install
 
 copilot-cli:

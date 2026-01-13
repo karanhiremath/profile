@@ -22,21 +22,25 @@ app_name="github-copilot-cli"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-# Check if gh is installed first, and install it if not
-if ! command -v gh >/dev/null 2>&1; then
-    echo "GitHub CLI (gh) is required but not installed."
-    echo "Installing GitHub CLI first..."
-    "${APP_BIN}/gh/install" || {
-        echo "ERROR: Failed to install GitHub CLI. Please install it manually by running: just gh"
-        exit 1
-    }
-fi
-
-# Check if extension is already installed
-if gh extension list | grep -q "github/gh-copilot"; then
-    echo "GitHub Copilot CLI extension already installed. Checking for updates..."
-    echo "Upgrading GitHub Copilot CLI extension..."
-    gh extension upgrade gh-copilot || echo "GitHub Copilot CLI is already up to date"
+# Check if copilot-cli command already exists (installed via any method)
+if command -v copilot-cli >/dev/null 2>&1 || command -v github-copilot >/dev/null 2>&1; then
+    echo "GitHub Copilot CLI already installed. Checking for updates..."
+    
+    # Try to upgrade via Homebrew if installed that way
+    if command -v brew >/dev/null 2>&1 && brew list github-copilot-cli >/dev/null 2>&1; then
+        echo "Upgrading via Homebrew..."
+        brew upgrade github-copilot-cli || echo "GitHub Copilot CLI is already up to date"
+    # Try to upgrade via npm if installed that way
+    elif command -v npm >/dev/null 2>&1 && npm list -g @githubnext/github-copilot-cli >/dev/null 2>&1; then
+        echo "Upgrading via npm..."
+        npm update -g @githubnext/github-copilot-cli || echo "GitHub Copilot CLI is already up to date"
+    # Try to upgrade via gh extension if installed that way
+    elif command -v gh >/dev/null 2>&1 && gh extension list | grep -q "github/gh-copilot"; then
+        echo "Upgrading GitHub Copilot CLI extension..."
+        gh extension upgrade gh-copilot || echo "GitHub Copilot CLI is already up to date"
+    else
+        echo "GitHub Copilot CLI is already installed"
+    fi
     exit 0
 fi
 
@@ -44,12 +48,43 @@ install_messages "start" "$app_name"
 
 case "${MACHINE}" in
     Darwin|Linux)
-        echo "Installing GitHub Copilot CLI extension..."
-        # Install the Copilot CLI extension for GitHub CLI
-        gh extension install github/gh-copilot || {
-            echo "Extension might already be installed. Attempting upgrade..."
-            gh extension upgrade gh-copilot || true
-        }
+        # Prefer Homebrew if available
+        if command -v brew >/dev/null 2>&1; then
+            echo "Installing GitHub Copilot CLI via Homebrew..."
+            ensure_brew_in_path
+            # Check if the tap/formula exists
+            if brew tap | grep -q "github/gh" || brew search github-copilot-cli | grep -q "github-copilot-cli"; then
+                brew install github-copilot-cli || {
+                    echo "Homebrew installation failed, falling back to npm..."
+                    if command -v npm >/dev/null 2>&1; then
+                        echo "Installing GitHub Copilot CLI via npm..."
+                        npm install -g @githubnext/github-copilot-cli
+                    else
+                        echo "ERROR: npm not found. Please install Node.js/npm or run: just node"
+                        exit 1
+                    fi
+                }
+            else
+                echo "Homebrew formula not found, falling back to npm..."
+                if command -v npm >/dev/null 2>&1; then
+                    echo "Installing GitHub Copilot CLI via npm..."
+                    npm install -g @githubnext/github-copilot-cli
+                else
+                    echo "ERROR: npm not found. Please install Node.js/npm or run: just node"
+                    exit 1
+                fi
+            fi
+        # Use npm if available
+        elif command -v npm >/dev/null 2>&1; then
+            echo "Installing GitHub Copilot CLI via npm..."
+            npm install -g @githubnext/github-copilot-cli
+        else
+            echo "ERROR: Neither Homebrew nor npm found."
+            echo "Please install either Homebrew (recommended) or Node.js/npm"
+            echo "Homebrew: https://brew.sh"
+            echo "Node.js: https://nodejs.org or run: just node"
+            exit 1
+        fi
         ;;
     *)
         echo "Unsupported platform: ${MACHINE}"
@@ -60,11 +95,12 @@ esac
 install_messages "end" "$app_name"
 
 echo ""
-echo "GitHub Copilot CLI extension installed successfully!"
+echo "GitHub Copilot CLI installed successfully!"
 echo "Usage:"
-echo "  gh copilot explain 'your command'   - Explain what a command does"
-echo "  gh copilot suggest 'what you want'  - Suggest a command to accomplish a task"
+echo "  github-copilot --help              - Show available commands"
+echo "  github-copilot suggest 'task'      - Suggest a command to accomplish a task"
+echo "  github-copilot explain 'command'   - Explain what a command does"
 echo ""
-echo "Note: You need to be authenticated with GitHub CLI and have Copilot access."
-echo "Run 'gh auth login' if not already authenticated."
+echo "Note: You need to authenticate with GitHub and have Copilot access."
+echo "Run 'github-copilot auth' to authenticate."
 echo ""
