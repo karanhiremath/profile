@@ -20,7 +20,16 @@ MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 if command -v gemini >/dev/null 2>&1; then
-    echo "Gemini CLI already installed!"
+    echo "Gemini CLI already installed. Checking for updates..."
+    case "${MACHINE}" in
+        Darwin|Linux)
+            echo "Upgrading Gemini CLI..."
+            pip3 install --user --upgrade gemini-cli
+            ;;
+        *)
+            echo "Gemini CLI is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
 else
     install_messages "start" "$app_name"
 

@@ -20,7 +20,16 @@ MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 if command -v huggingface-cli >/dev/null 2>&1; then
-    echo "Hugging Face CLI already installed!"
+    echo "Hugging Face CLI already installed. Checking for updates..."
+    case "${MACHINE}" in
+        Darwin|Linux)
+            echo "Upgrading Hugging Face CLI..."
+            pip3 install --user --upgrade huggingface_hub[cli]
+            ;;
+        *)
+            echo "Hugging Face CLI is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
 else
     install_messages "start" "$app_name"
 

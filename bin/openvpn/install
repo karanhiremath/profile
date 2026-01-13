@@ -37,8 +37,51 @@ done
 
 # Check if already installed
 if command -v openvpn >/dev/null 2>&1; then
-    echo "OpenVPN already installed!"
+    echo "OpenVPN already installed. Checking for updates..."
     openvpn --version | head -1
+    
+    case "${MACHINE}" in
+        Darwin)
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            echo "Upgrading OpenVPN via Homebrew..."
+            brew upgrade openvpn || echo "OpenVPN is already up to date"
+            ;;
+        Linux)
+            echo "Upgrading OpenVPN on Linux..."
+            
+            # Detect Linux distribution
+            if [ -f /etc/os-release ]; then
+                . /etc/os-release
+                DISTRO=$ID
+            else
+                echo "ERROR: Cannot detect Linux distribution"
+                exit 1
+            fi
+            
+            case "${DISTRO}" in
+                ubuntu|debian)
+                    sudo apt-get update
+                    sudo apt-get upgrade -y openvpn
+                    ;;
+                rhel|centos|fedora)
+                    if command -v dnf >/dev/null 2>&1; then
+                        sudo dnf upgrade -y openvpn
+                    elif command -v yum >/dev/null 2>&1; then
+                        sudo yum upgrade -y openvpn
+                    fi
+                    ;;
+                *)
+                    echo "OpenVPN is installed but upgrade not fully supported on: ${DISTRO}"
+                    ;;
+            esac
+            ;;
+        *)
+            echo "OpenVPN is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
 else
     install_messages "start" "$app_name"
 

@@ -21,7 +21,45 @@ ARCH="$(uname -m)"
 
 # Check if already installed
 if command -v lms >/dev/null 2>&1 || [ -d ~/.local/share/lmstudio ]; then
-    echo "LM Studio already installed!"
+    echo "LM Studio already installed. Checking for updates..."
+    
+    case "${MACHINE}" in
+        Darwin)
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            echo "Upgrading LM Studio via Homebrew..."
+            brew upgrade --cask lm-studio || echo "LM Studio is already up to date"
+            ;;
+        Linux)
+            echo "Upgrading LM Studio on Linux..."
+            # Re-download and install latest version
+            case "${ARCH}" in
+                x86_64|amd64)
+                    DOWNLOAD_URL="https://releases.lmstudio.ai/linux/x86/latest"
+                    ;;
+                *)
+                    echo "LM Studio primarily supports x86_64 on Linux"
+                    exit 1
+                    ;;
+            esac
+            
+            mkdir -p ~/.local/share/lmstudio
+            (
+                cd ~/.local/share/lmstudio || exit 1
+                echo "Downloading latest LM Studio..."
+                curl -L -o lmstudio.tar.gz "$DOWNLOAD_URL"
+                tar -xzf lmstudio.tar.gz
+                rm lmstudio.tar.gz
+            )
+            mkdir -p ~/.local/bin
+            ln -sf ~/.local/share/lmstudio/lms ~/.local/bin/lms
+            ;;
+        *)
+            echo "LM Studio is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
     exit 0
 fi
 

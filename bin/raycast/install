@@ -21,7 +21,13 @@ ARCH="$(uname -m)"
 
 # Check if already installed (macOS only)
 if [[ "${MACHINE}" == "Darwin" ]] && [ -d "/Applications/Raycast.app" ]; then
-    echo "Raycast already installed!"
+    echo "Raycast already installed. Checking for updates..."
+    ensure_brew_in_path || {
+        echo "ERROR: Homebrew not found. Please install Homebrew first."
+        exit 1
+    }
+    echo "Upgrading Raycast via Homebrew..."
+    brew upgrade --cask raycast || echo "Raycast is already up to date"
     exit 0
 fi
 

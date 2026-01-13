@@ -28,7 +28,9 @@ fi
 
 # Check if extension is already installed
 if gh extension list | grep -q "github/gh-copilot"; then
-    echo "GitHub Copilot CLI extension already installed!"
+    echo "GitHub Copilot CLI extension already installed. Checking for updates..."
+    echo "Upgrading GitHub Copilot CLI extension..."
+    gh extension upgrade gh-copilot || echo "GitHub Copilot CLI is already up to date"
     exit 0
 fi
 

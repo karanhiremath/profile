@@ -20,7 +20,21 @@ MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 if command -v vllm >/dev/null 2>&1; then
-    echo "vLLM already installed!"
+    echo "vLLM already installed. Checking for updates..."
+    case "${MACHINE}" in
+        Darwin|Linux)
+            echo "Upgrading vLLM..."
+            pip3 install --user --upgrade vllm
+            
+            # Check if CUDA is available on Linux
+            if [[ "${MACHINE}" == "Linux" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+                echo "NVIDIA GPU detected. vLLM will use GPU acceleration."
+            fi
+            ;;
+        *)
+            echo "vLLM is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
 else
     install_messages "start" "$app_name"
 

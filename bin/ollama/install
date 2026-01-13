@@ -20,7 +20,26 @@ MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
 if command -v ollama >/dev/null 2>&1; then
-    echo "Ollama already installed!"
+    echo "Ollama already installed. Checking for updates..."
+    
+    case "${MACHINE}" in
+        Darwin)
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            echo "Upgrading Ollama via Homebrew..."
+            brew upgrade ollama || echo "Ollama is already up to date"
+            ;;
+        Linux)
+            echo "Upgrading Ollama on Linux..."
+            # Re-run the official install script which handles upgrades
+            curl -fsSL https://ollama.com/install.sh | sh
+            ;;
+        *)
+            echo "Ollama is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
 else
     install_messages "start" "$app_name"
 

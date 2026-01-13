@@ -79,21 +79,192 @@ steampipe:
     # steampipe install
     ./bin/steampipe/install
 
-ai-toolkit:
-    # AI toolkit install (ollama, lmstudio, huggingface, raycast, claude, copilot-cli, gemini-cli, vllm, openvpn)
+ollama:
+    # Install/upgrade Ollama
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/ollama/install
+
+lmstudio:
+    # Install/upgrade LM Studio
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/lmstudio/install
+
+huggingface:
+    # Install/upgrade Hugging Face CLI
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/huggingface/install
+
+raycast:
+    # Install/upgrade Raycast
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/raycast/install
+
+claude:
+    # Install/upgrade Claude Code
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/claude/install
+
+copilot-cli:
+    # Install/upgrade GitHub Copilot CLI
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/copilot-cli/install
+
+gemini-cli:
+    # Install/upgrade Gemini CLI
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/gemini-cli/install
+
+vllm:
+    # Install/upgrade vLLM
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/vllm/install
+
+openvpn:
+    # Install/upgrade OpenVPN
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/openvpn/install
+
+ai-toolkit:
+    # Install/upgrade all AI toolkit tools (continues on failure)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    
+    echo "Installing/upgrading AI toolkit tools..."
+    echo "Note: Installation will continue even if individual tools fail"
+    echo ""
+    
+    failed_installs=()
+    
+    # Ollama
+    echo "==> Installing/upgrading Ollama..."
+    if ./bin/ollama/install; then
+        echo "✓ Ollama completed successfully"
+    else
+        echo "✗ Ollama failed"
+        failed_installs+=("ollama")
+    fi
+    echo ""
+    
+    # LM Studio
+    echo "==> Installing/upgrading LM Studio..."
+    if ./bin/lmstudio/install; then
+        echo "✓ LM Studio completed successfully"
+    else
+        echo "✗ LM Studio failed"
+        failed_installs+=("lmstudio")
+    fi
+    echo ""
+    
+    # Hugging Face CLI
+    echo "==> Installing/upgrading Hugging Face CLI..."
+    if ./bin/huggingface/install; then
+        echo "✓ Hugging Face CLI completed successfully"
+    else
+        echo "✗ Hugging Face CLI failed"
+        failed_installs+=("huggingface")
+    fi
+    echo ""
+    
+    # Raycast
+    echo "==> Installing/upgrading Raycast..."
+    if ./bin/raycast/install; then
+        echo "✓ Raycast completed successfully"
+    else
+        echo "✗ Raycast failed"
+        failed_installs+=("raycast")
+    fi
+    echo ""
+    
+    # Claude Code
+    echo "==> Installing/upgrading Claude Code..."
+    if ./bin/claude/install; then
+        echo "✓ Claude Code completed successfully"
+    else
+        echo "✗ Claude Code failed"
+        failed_installs+=("claude")
+    fi
+    echo ""
+    
+    # GitHub Copilot CLI
+    echo "==> Installing/upgrading GitHub Copilot CLI..."
+    if ./bin/copilot-cli/install; then
+        echo "✓ GitHub Copilot CLI completed successfully"
+    else
+        echo "✗ GitHub Copilot CLI failed"
+        failed_installs+=("copilot-cli")
+    fi
+    echo ""
+    
+    # Gemini CLI
+    echo "==> Installing/upgrading Gemini CLI..."
+    if ./bin/gemini-cli/install; then
+        echo "✓ Gemini CLI completed successfully"
+    else
+        echo "✗ Gemini CLI failed"
+        failed_installs+=("gemini-cli")
+    fi
+    echo ""
+    
+    # vLLM
+    echo "==> Installing/upgrading vLLM..."
+    if ./bin/vllm/install; then
+        echo "✓ vLLM completed successfully"
+    else
+        echo "✗ vLLM failed"
+        failed_installs+=("vllm")
+    fi
+    echo ""
+    
+    # OpenVPN
+    echo "==> Installing/upgrading OpenVPN..."
+    if ./bin/openvpn/install; then
+        echo "✓ OpenVPN completed successfully"
+    else
+        echo "✗ OpenVPN failed"
+        failed_installs+=("openvpn")
+    fi
+    echo ""
+    
+    # Summary
+    echo "========================================="
+    echo "AI Toolkit Installation Summary"
+    echo "========================================="
+    if [ ${#failed_installs[@]} -eq 0 ]; then
+        echo "All tools installed/upgraded successfully!"
+    else
+        echo "Failed installations: ${failed_installs[*]}"
+        echo "You can retry individual tools with: just <tool-name>"
+    fi
+    echo "========================================="
 
 podman:
     # Install and configure podman for testing
