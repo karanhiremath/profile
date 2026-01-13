@@ -1,0 +1,121 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="gemini-cli"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v gemini >/dev/null 2>&1; then
+    echo "Gemini CLI already installed. Checking for updates..."
+    case "${MACHINE}" in
+        Darwin)
+            # Try Homebrew first if available
+            if ensure_brew_in_path 2>/dev/null && brew list gemini-cli >/dev/null 2>&1; then
+                echo "Upgrading Gemini CLI via Homebrew..."
+                brew upgrade gemini-cli
+            elif brew list gemini >/dev/null 2>&1; then
+                echo "Upgrading Gemini CLI via Homebrew..."
+                brew upgrade gemini
+            else
+                echo "Upgrading Gemini CLI via pipx..."
+                pipx upgrade gemini-cli
+            fi
+            ;;
+        Linux)
+            echo "Upgrading Gemini CLI via pipx..."
+            pipx upgrade gemini-cli
+            ;;
+        *)
+            echo "Gemini CLI is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin)
+            # Try Homebrew first if available
+            if ensure_brew_in_path 2>/dev/null && (brew info gemini-cli >/dev/null 2>&1 || brew info gemini >/dev/null 2>&1); then
+                echo "Installing Gemini CLI via Homebrew..."
+                brew install gemini-cli 2>/dev/null || brew install gemini 2>/dev/null || {
+                    echo "Homebrew formula not found, falling back to pip3..."
+                    if ! command -v pip3 >/dev/null 2>&1; then
+                        echo "pip3 not found. Installing Python3..."
+                        brew install python3
+                    fi
+                    pip3 install --user gemini-cli
+                }
+            else
+                echo "Installing Gemini CLI via pip3..."
+                # Check if pip3 is available
+                if ! command -v pip3 >/dev/null 2>&1; then
+                    echo "pip3 not found. Installing Python3 and pip..."
+                    ensure_brew_in_path || {
+                        echo "ERROR: Homebrew not found. Please install Homebrew first."
+                        exit 1
+                    }
+                    brew install python3
+                fi
+                
+                # Install gemini-cli package
+                pip3 install --user gemini-cli
+            fi
+            ;;
+        Linux)
+            echo "Installing Gemini CLI via pipx..."
+            # Check if pipx is available
+            if ! command -v pipx >/dev/null 2>&1; then
+                echo "pipx not found. Installing pipx..."
+                if command -v apt-get >/dev/null 2>&1; then
+                    sudo apt-get update && sudo apt-get install -y pipx
+                    pipx ensurepath
+                elif command -v dnf >/dev/null 2>&1; then
+                    sudo dnf install -y pipx
+                    pipx ensurepath
+                elif command -v yum >/dev/null 2>&1; then
+                    sudo yum install -y pipx
+                    pipx ensurepath
+                else
+                    echo "ERROR: Could not install pipx. Please install pipx manually."
+                    exit 1
+                fi
+            fi
+            
+            # Install gemini-cli package
+            pipx install gemini-cli
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "Gemini CLI installed successfully!"
+echo "To use Gemini CLI, you'll need to set up your API key:"
+echo "  export GEMINI_API_KEY='your-api-key-here'"
+echo "Get your API key from: https://makersuite.google.com/app/apikey"
+echo ""
+echo "Usage:"
+echo "  gemini 'your prompt here'"
+echo ""

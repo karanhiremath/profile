@@ -1,0 +1,120 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="huggingface-cli"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v huggingface-cli >/dev/null 2>&1; then
+    echo "Hugging Face CLI already installed. Checking for updates..."
+    case "${MACHINE}" in
+        Darwin)
+            # Try Homebrew first if available
+            if ensure_brew_in_path 2>/dev/null && brew list huggingface-cli >/dev/null 2>&1; then
+                echo "Upgrading Hugging Face CLI via Homebrew..."
+                brew upgrade huggingface-cli
+            elif brew list huggingface >/dev/null 2>&1; then
+                echo "Upgrading Hugging Face CLI via Homebrew..."
+                brew upgrade huggingface
+            else
+                echo "Upgrading Hugging Face CLI via pipx..."
+                pipx upgrade huggingface_hub
+            fi
+            ;;
+        Linux)
+            echo "Upgrading Hugging Face CLI via pipx..."
+            pipx upgrade huggingface_hub
+            ;;
+        *)
+            echo "Hugging Face CLI is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin)
+            # Try Homebrew first if available
+            if ensure_brew_in_path 2>/dev/null && (brew info huggingface-cli >/dev/null 2>&1 || brew info huggingface >/dev/null 2>&1); then
+                echo "Installing Hugging Face CLI via Homebrew..."
+                brew install huggingface-cli 2>/dev/null || brew install huggingface 2>/dev/null || {
+                    echo "Homebrew formula not found, falling back to pipx..."
+                    if ! command -v pipx >/dev/null 2>&1; then
+                        echo "pipx not found. Installing pipx..."
+                        brew install pipx
+                        pipx ensurepath
+                    fi
+                    pipx install 'huggingface_hub[cli]'
+                }
+            else
+                echo "Installing Hugging Face CLI via pipx..."
+                # Check if pipx is available
+                if ! command -v pipx >/dev/null 2>&1; then
+                    echo "pipx not found. Installing pipx..."
+                    ensure_brew_in_path || {
+                        echo "ERROR: Homebrew not found. Please install Homebrew first."
+                        exit 1
+                    }
+                    brew install pipx
+                    pipx ensurepath
+                fi
+                
+                # Install huggingface_hub package which includes the CLI
+                pipx install 'huggingface_hub[cli]'
+            fi
+            ;;
+        Linux)
+            echo "Installing Hugging Face CLI via pipx..."
+            # Check if pipx is available
+            if ! command -v pipx >/dev/null 2>&1; then
+                echo "pipx not found. Installing pipx..."
+                if command -v apt-get >/dev/null 2>&1; then
+                    sudo apt-get update && sudo apt-get install -y pipx
+                    pipx ensurepath
+                elif command -v dnf >/dev/null 2>&1; then
+                    sudo dnf install -y pipx
+                    pipx ensurepath
+                elif command -v yum >/dev/null 2>&1; then
+                    sudo yum install -y pipx
+                    pipx ensurepath
+                else
+                    echo "ERROR: Could not install pipx. Please install pipx manually."
+                    exit 1
+                fi
+            fi
+            
+            # Install huggingface_hub package which includes the CLI
+            pipx install 'huggingface_hub[cli]'
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "Hugging Face CLI installed successfully!"
+echo "To login to Hugging Face, run: huggingface-cli login"
+echo "To download a model, run: huggingface-cli download <model-id>"
+echo "To upload files, run: huggingface-cli upload <repo-id> <file>"
+echo ""

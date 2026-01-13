@@ -1,0 +1,96 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="copilot-cli"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+# Check if copilot-cli command already exists (installed via any method)
+if command -v copilot-cli >/dev/null 2>&1 || command -v github-copilot >/dev/null 2>&1; then
+    echo "GitHub Copilot CLI already installed. Checking for updates..."
+
+    # Try to upgrade via Homebrew if installed that way
+    if command -v brew >/dev/null 2>&1 && brew list copilot-cli >/dev/null 2>&1; then
+        echo "Upgrading via Homebrew..."
+        brew upgrade copilot-cli || echo "GitHub Copilot CLI is already up to date"
+    # Try to upgrade via npm if installed that way
+    elif command -v npm >/dev/null 2>&1 && npm list -g @github/copilot >/dev/null 2>&1; then
+        echo "Upgrading via npm..."
+        npm update -g @github/copilot || echo "GitHub Copilot CLI is already up to date"
+    # Try to upgrade via gh extension if installed that way
+    elif command -v gh >/dev/null 2>&1 && gh extension list | grep -q "github/gh-copilot"; then
+        echo "Upgrading GitHub Copilot CLI extension..."
+        gh extension upgrade gh-copilot || echo "GitHub Copilot CLI is already up to date"
+    else
+        echo "GitHub Copilot CLI is already installed"
+    fi
+    # Try to upgrade via npm if installed that way (add logic here if needed)
+    exit 0
+fi
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    Darwin|Linux)
+        # Prefer Homebrew if available
+        if command -v brew >/dev/null 2>&1; then
+            echo "Installing GitHub Copilot CLI via Homebrew..."
+            ensure_brew_in_path
+            # Check if the tap/formula exists
+            if brew search copilot-cli | grep -q "copilot-cli"; then
+                brew install copilot-cli || {
+                    echo "Homebrew installation failed, falling back to npm..."
+                    if command -v npm >/dev/null 2>&1; then
+                        echo "Installing GitHub Copilot CLI via npm..."
+                        npm install -g @github/copilot
+                    else
+                        echo "ERROR: npm not found. Please install Node.js/npm or run: just node"
+                        exit 1
+                    fi
+                }
+            else
+                echo "Homebrew formula not found, falling back to npm..."
+                if command -v npm >/dev/null 2>&1; then
+                    echo "Installing GitHub Copilot CLI via npm..."
+                    npm install -g @github/copilot
+                else
+                    echo "ERROR: npm not found. Please install Node.js/npm or run: just node"
+                    exit 1
+                fi
+            fi
+        # Use npm if available
+        elif command -v npm >/dev/null 2>&1; then
+            echo "Installing GitHub Copilot CLI via npm..."
+            npm install -g @github/copilot
+        else
+            echo "ERROR: Neither Homebrew nor npm found."
+            echo "Please install either Homebrew (recommended) or Node.js/npm"
+            echo "Homebrew: https://brew.sh"
+            echo "Node.js: https://nodejs.org or run: just node"
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+install_messages "end" "$app_name"

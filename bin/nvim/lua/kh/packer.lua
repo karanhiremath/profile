@@ -74,7 +74,7 @@ return require('packer').startup(function(use)
 
     -- Check if we need to use older lspconfig for nvim 0.9.x
   local use_old_lspconfig = vim.fn.filereadable(vim.fn.expand('~/.config/nvim/.use-old-lspconfig')) == 1
-  
+
   use {
       'VonHeikemen/lsp-zero.nvim',
       branch = 'v3.x',
@@ -120,6 +120,9 @@ return require('packer').startup(function(use)
             }
       end
     })
+
+    use 'github/copilot.vim'
+
 
     if packer_bootstrap then
         require('packer').sync()

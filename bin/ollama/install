@@ -1,0 +1,77 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="ollama"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v ollama >/dev/null 2>&1; then
+    echo "Ollama already installed. Checking for updates..."
+    
+    case "${MACHINE}" in
+        Darwin)
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            echo "Upgrading Ollama via Homebrew..."
+            brew upgrade ollama || echo "Ollama is already up to date"
+            ;;
+        Linux)
+            echo "Upgrading Ollama on Linux..."
+            # Re-run the official install script which handles upgrades
+            curl -fsSL https://ollama.com/install.sh | sh
+            ;;
+        *)
+            echo "Ollama is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin)
+            echo "Installing Ollama on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install ollama
+            ;;
+        Linux)
+            echo "Installing Ollama on Linux..."
+            # Use official Ollama install script
+            curl -fsSL https://ollama.com/install.sh | sh
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "Ollama installed successfully!"
+echo "To start Ollama service, run: ollama serve"
+echo "To download a model, run: ollama pull <model-name>"
+echo "Example: ollama pull llama2"
+echo ""

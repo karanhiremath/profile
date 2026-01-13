@@ -1,0 +1,65 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="raycast"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+# Check if already installed (macOS only)
+if [[ "${MACHINE}" == "Darwin" ]] && [ -d "/Applications/Raycast.app" ]; then
+    echo "Raycast already installed. Checking for updates..."
+    ensure_brew_in_path || {
+        echo "ERROR: Homebrew not found. Please install Homebrew first."
+        exit 1
+    }
+    echo "Upgrading Raycast via Homebrew..."
+    brew upgrade --cask raycast || echo "Raycast is already up to date"
+    exit 0
+fi
+
+install_messages "start" "$app_name"
+
+case "${MACHINE}" in
+    Darwin)
+        echo "Installing Raycast on Mac..."
+        ensure_brew_in_path || {
+            echo "ERROR: Homebrew not found. Please install Homebrew first."
+            exit 1
+        }
+        brew install --cask raycast
+        ;;
+    Linux)
+        echo "Raycast is only available on macOS."
+        echo "Skipping installation on Linux."
+        exit 0
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "Raycast installed successfully!"
+echo "Launch Raycast from Applications or use Cmd+Space to open it."
+echo "Configure AI features in Raycast settings."
+echo ""

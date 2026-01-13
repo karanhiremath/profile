@@ -1,0 +1,123 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="claude-code"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+# Check if already installed
+if command -v claude-code >/dev/null 2>&1; then
+    echo "Claude Code already installed. Checking for updates..."
+    echo "Upgrading Claude Code via npm..."
+    npm update -g @anthropic-ai/claude-code
+    exit 0
+fi
+
+install_messages "start" "$app_name"
+
+# Function to check Node.js version
+check_node_version() {
+    if command -v node >/dev/null 2>&1; then
+        local node_version
+        node_version=$(node --version | sed 's/v//' | cut -d. -f1)
+        if [ "$node_version" -ge 18 ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Ensure Node.js and npm are installed and up to date
+if ! check_node_version; then
+    echo "Node.js 18+ is required. Installing/updating Node.js..."
+    case "${MACHINE}" in
+        Darwin)
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            # Install or upgrade Node.js via Homebrew
+            if brew list node &>/dev/null; then
+                echo "Upgrading Node.js..."
+                brew upgrade node || brew install node
+            else
+                echo "Installing Node.js..."
+                brew install node
+            fi
+            ;;
+        Linux)
+            # Install Node.js via package manager
+            if command -v apt-get >/dev/null 2>&1; then
+                echo "Installing Node.js on Debian/Ubuntu..."
+                # Use NodeSource repository for latest LTS
+                curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+                sudo apt-get install -y nodejs
+            elif command -v dnf >/dev/null 2>&1; then
+                echo "Installing Node.js on Fedora/RHEL..."
+                curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash -
+                sudo dnf install -y nodejs
+            elif command -v yum >/dev/null 2>&1; then
+                echo "Installing Node.js on CentOS/RHEL..."
+                curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash -
+                sudo yum install -y nodejs
+            else
+                echo "ERROR: Could not install Node.js. Please install Node.js 18+ manually."
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+fi
+
+# Verify Node.js and npm are available
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    echo "ERROR: Node.js or npm not found after installation."
+    exit 1
+fi
+
+echo "Node.js version: $(node --version)"
+echo "npm version: $(npm --version)"
+
+# Install Claude Code via npm
+echo "Installing Claude Code..."
+case "${MACHINE}" in
+    Darwin|Linux)
+        npm install -g @anthropic-ai/claude-code
+        ;;
+    *)
+        echo "Unsupported platform: ${MACHINE}"
+        exit 1
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "Claude Code installed successfully!"
+echo "Usage:"
+echo "  claude-code --help           - Show help"
+echo "  claude-code <prompt>         - Run Claude Code with a prompt"
+echo ""
+echo "Note: You'll need to set up your Anthropic API key."
+echo "Visit: https://console.anthropic.com/ to get your API key"
+echo ""

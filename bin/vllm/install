@@ -1,0 +1,122 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="vllm"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v vllm >/dev/null 2>&1; then
+    echo "vLLM already installed. Checking for updates..."
+    case "${MACHINE}" in
+        Darwin|Linux)
+            echo "Upgrading vLLM..."
+            pipx upgrade vllm
+            
+            # Check if CUDA is available on Linux
+            if [[ "${MACHINE}" == "Linux" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+                echo "NVIDIA GPU detected. vLLM will use GPU acceleration."
+            fi
+            ;;
+        *)
+            echo "vLLM is installed but upgrade not supported on: ${MACHINE}"
+            ;;
+    esac
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Linux)
+            echo "Installing vLLM..."
+            # Check if pipx is available
+            if ! command -v pipx >/dev/null 2>&1; then
+                echo "pipx not found. Installing pipx..."
+                case "${MACHINE}" in
+                    Darwin)
+                        ensure_brew_in_path || {
+                            echo "ERROR: Homebrew not found. Please install Homebrew first."
+                            exit 1
+                        }
+                        brew install pipx
+                        pipx ensurepath
+                        ;;
+                    Linux)
+                        if command -v apt-get >/dev/null 2>&1; then
+                            sudo apt-get update && sudo apt-get install -y pipx
+                            pipx ensurepath
+                        elif command -v dnf >/dev/null 2>&1; then
+                            sudo dnf install -y pipx
+                            pipx ensurepath
+                        elif command -v yum >/dev/null 2>&1; then
+                            sudo yum install -y pipx
+                            pipx ensurepath
+                        else
+                            echo "ERROR: Could not install pipx. Please install pipx manually."
+                            exit 1
+                        fi
+                        ;;
+                esac
+            fi
+            
+            # Install vLLM
+            echo "Installing vLLM package..."
+            case "${MACHINE}" in
+                Darwin)
+                    # On macOS, install CPU-only version
+                    echo "Installing vLLM for macOS (CPU-only)..."
+                    pipx install vllm
+                    ;;
+                Linux)
+                    # On Linux, install with CUDA support (for NVIDIA DGX)
+                    echo "Installing vLLM for Linux with CUDA support..."
+                    pipx install vllm
+                    
+                    # Check if CUDA is available
+                    if command -v nvidia-smi >/dev/null 2>&1; then
+                        echo "NVIDIA GPU detected. vLLM will use GPU acceleration."
+                        nvidia-smi
+                    else
+                        echo "No NVIDIA GPU detected. vLLM will run on CPU (not recommended for production)."
+                    fi
+                    ;;
+            esac
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "vLLM installed successfully!"
+echo ""
+echo "vLLM is a high-performance inference engine for LLMs."
+echo ""
+echo "Usage examples:"
+echo "  # Start vLLM server with a model"
+echo "  python3 -m vllm.entrypoints.openai.api_server --model facebook/opt-125m"
+echo ""
+echo "  # Or use the vllm CLI (if installed)"
+echo "  vllm serve facebook/opt-125m"
+echo ""
+echo "For more information, visit: https://docs.vllm.ai/"
+echo ""

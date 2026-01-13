@@ -79,6 +79,94 @@ steampipe:
     # steampipe install
     ./bin/steampipe/install
 
+ollama:
+    # Install/upgrade Ollama
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/ollama/install
+
+lmstudio:
+    # Install/upgrade LM Studio
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/lmstudio/install
+
+huggingface:
+    # Install/upgrade Hugging Face CLI
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/huggingface/install
+
+raycast:
+    # Install/upgrade Raycast
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/raycast/install
+
+claude:
+    # Install/upgrade Claude Code
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/claude/install
+
+copilot:
+    # Install/upgrade GitHub Copilot CLI (standalone)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/copilot-cli/install
+
+copilot-cli:
+    # Install/upgrade GitHub Copilot CLI (alias for copilot)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/copilot-cli/install
+
+gemini-cli:
+    # Install/upgrade Gemini CLI
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/gemini-cli/install
+
+vllm:
+    # Install/upgrade vLLM
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/vllm/install
+
+openvpn:
+    # Install/upgrade OpenVPN
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/openvpn/install
+
+ai-toolkit:
+    # Install/upgrade all AI toolkit tools (continues on failure)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/ai-toolkit/install-all
+
 podman:
     # Install and configure podman for testing
     #!/usr/bin/env bash
