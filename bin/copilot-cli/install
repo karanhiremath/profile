@@ -4,6 +4,13 @@ set -euo pipefail
 
 shopt -s failglob
 
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
 . "${APP_BIN}/sh/shell_fns" --source-only
 . "${APP_BIN}/sh/brew_helper.sh"
 
