@@ -22,11 +22,14 @@ app_name="github-copilot-cli"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
-# Check if gh is installed first
+# Check if gh is installed first, and install it if not
 if ! command -v gh >/dev/null 2>&1; then
     echo "GitHub CLI (gh) is required but not installed."
-    echo "Please install GitHub CLI first by running: just gh"
-    exit 1
+    echo "Installing GitHub CLI first..."
+    "${APP_BIN}/gh/install" || {
+        echo "ERROR: Failed to install GitHub CLI. Please install it manually by running: just gh"
+        exit 1
+    }
 fi
 
 # Check if extension is already installed

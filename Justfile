@@ -119,8 +119,17 @@ claude:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/claude/install
 
+copilot:
+    # Install/upgrade GitHub CLI (gh) and GitHub Copilot CLI
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/gh/install
+    ./bin/copilot-cli/install
+
 copilot-cli:
-    # Install/upgrade GitHub Copilot CLI
+    # Install/upgrade GitHub Copilot CLI (alias for copilot)
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
