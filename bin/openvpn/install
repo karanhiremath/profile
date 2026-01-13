@@ -8,6 +8,9 @@ shopt -s failglob
 if [ -z "${PROFILE_DIR:-}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
     export APP_BIN="${PROFILE_DIR}/bin"
 fi
 
