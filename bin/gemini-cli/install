@@ -25,8 +25,21 @@ ARCH="$(uname -m)"
 if command -v gemini >/dev/null 2>&1; then
     echo "Gemini CLI already installed. Checking for updates..."
     case "${MACHINE}" in
-        Darwin|Linux)
-            echo "Upgrading Gemini CLI..."
+        Darwin)
+            # Try Homebrew first if available
+            if ensure_brew_in_path 2>/dev/null && brew list gemini-cli >/dev/null 2>&1; then
+                echo "Upgrading Gemini CLI via Homebrew..."
+                brew upgrade gemini-cli
+            elif brew list gemini >/dev/null 2>&1; then
+                echo "Upgrading Gemini CLI via Homebrew..."
+                brew upgrade gemini
+            else
+                echo "Upgrading Gemini CLI via pip3..."
+                pip3 install --user --upgrade gemini-cli
+            fi
+            ;;
+        Linux)
+            echo "Upgrading Gemini CLI via pip3..."
             pip3 install --user --upgrade gemini-cli
             ;;
         *)
@@ -37,32 +50,49 @@ else
     install_messages "start" "$app_name"
 
     case "${MACHINE}" in
-        Darwin|Linux)
-            echo "Installing Gemini CLI..."
+        Darwin)
+            # Try Homebrew first if available
+            if ensure_brew_in_path 2>/dev/null && (brew info gemini-cli >/dev/null 2>&1 || brew info gemini >/dev/null 2>&1); then
+                echo "Installing Gemini CLI via Homebrew..."
+                brew install gemini-cli 2>/dev/null || brew install gemini 2>/dev/null || {
+                    echo "Homebrew formula not found, falling back to pip3..."
+                    if ! command -v pip3 >/dev/null 2>&1; then
+                        echo "pip3 not found. Installing Python3..."
+                        brew install python3
+                    fi
+                    pip3 install --user gemini-cli
+                }
+            else
+                echo "Installing Gemini CLI via pip3..."
+                # Check if pip3 is available
+                if ! command -v pip3 >/dev/null 2>&1; then
+                    echo "pip3 not found. Installing Python3 and pip..."
+                    ensure_brew_in_path || {
+                        echo "ERROR: Homebrew not found. Please install Homebrew first."
+                        exit 1
+                    }
+                    brew install python3
+                fi
+                
+                # Install gemini-cli package
+                pip3 install --user gemini-cli
+            fi
+            ;;
+        Linux)
+            echo "Installing Gemini CLI via pip3..."
             # Check if pip3 is available
             if ! command -v pip3 >/dev/null 2>&1; then
                 echo "pip3 not found. Installing Python3 and pip..."
-                case "${MACHINE}" in
-                    Darwin)
-                        ensure_brew_in_path || {
-                            echo "ERROR: Homebrew not found. Please install Homebrew first."
-                            exit 1
-                        }
-                        brew install python3
-                        ;;
-                    Linux)
-                        if command -v apt-get >/dev/null 2>&1; then
-                            sudo apt-get update && sudo apt-get install -y python3-pip
-                        elif command -v dnf >/dev/null 2>&1; then
-                            sudo dnf install -y python3-pip
-                        elif command -v yum >/dev/null 2>&1; then
-                            sudo yum install -y python3-pip
-                        else
-                            echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
-                            exit 1
-                        fi
-                        ;;
-                esac
+                if command -v apt-get >/dev/null 2>&1; then
+                    sudo apt-get update && sudo apt-get install -y python3-pip
+                elif command -v dnf >/dev/null 2>&1; then
+                    sudo dnf install -y python3-pip
+                elif command -v yum >/dev/null 2>&1; then
+                    sudo yum install -y python3-pip
+                else
+                    echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
+                    exit 1
+                fi
             fi
             
             # Install gemini-cli package

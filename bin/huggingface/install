@@ -25,8 +25,21 @@ ARCH="$(uname -m)"
 if command -v huggingface-cli >/dev/null 2>&1; then
     echo "Hugging Face CLI already installed. Checking for updates..."
     case "${MACHINE}" in
-        Darwin|Linux)
-            echo "Upgrading Hugging Face CLI..."
+        Darwin)
+            # Try Homebrew first if available
+            if ensure_brew_in_path 2>/dev/null && brew list huggingface-cli >/dev/null 2>&1; then
+                echo "Upgrading Hugging Face CLI via Homebrew..."
+                brew upgrade huggingface-cli
+            elif brew list huggingface >/dev/null 2>&1; then
+                echo "Upgrading Hugging Face CLI via Homebrew..."
+                brew upgrade huggingface
+            else
+                echo "Upgrading Hugging Face CLI via pip3..."
+                pip3 install --user --upgrade 'huggingface_hub[cli]'
+            fi
+            ;;
+        Linux)
+            echo "Upgrading Hugging Face CLI via pip3..."
             pip3 install --user --upgrade 'huggingface_hub[cli]'
             ;;
         *)
@@ -37,32 +50,49 @@ else
     install_messages "start" "$app_name"
 
     case "${MACHINE}" in
-        Darwin|Linux)
-            echo "Installing Hugging Face CLI..."
+        Darwin)
+            # Try Homebrew first if available
+            if ensure_brew_in_path 2>/dev/null && (brew info huggingface-cli >/dev/null 2>&1 || brew info huggingface >/dev/null 2>&1); then
+                echo "Installing Hugging Face CLI via Homebrew..."
+                brew install huggingface-cli 2>/dev/null || brew install huggingface 2>/dev/null || {
+                    echo "Homebrew formula not found, falling back to pip3..."
+                    if ! command -v pip3 >/dev/null 2>&1; then
+                        echo "pip3 not found. Installing Python3..."
+                        brew install python3
+                    fi
+                    pip3 install --user 'huggingface_hub[cli]'
+                }
+            else
+                echo "Installing Hugging Face CLI via pip3..."
+                # Check if pip3 is available
+                if ! command -v pip3 >/dev/null 2>&1; then
+                    echo "pip3 not found. Installing Python3 and pip..."
+                    ensure_brew_in_path || {
+                        echo "ERROR: Homebrew not found. Please install Homebrew first."
+                        exit 1
+                    }
+                    brew install python3
+                fi
+                
+                # Install huggingface_hub package which includes the CLI
+                pip3 install --user 'huggingface_hub[cli]'
+            fi
+            ;;
+        Linux)
+            echo "Installing Hugging Face CLI via pip3..."
             # Check if pip3 is available
             if ! command -v pip3 >/dev/null 2>&1; then
                 echo "pip3 not found. Installing Python3 and pip..."
-                case "${MACHINE}" in
-                    Darwin)
-                        ensure_brew_in_path || {
-                            echo "ERROR: Homebrew not found. Please install Homebrew first."
-                            exit 1
-                        }
-                        brew install python3
-                        ;;
-                    Linux)
-                        if command -v apt-get >/dev/null 2>&1; then
-                            sudo apt-get update && sudo apt-get install -y python3-pip
-                        elif command -v dnf >/dev/null 2>&1; then
-                            sudo dnf install -y python3-pip
-                        elif command -v yum >/dev/null 2>&1; then
-                            sudo yum install -y python3-pip
-                        else
-                            echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
-                            exit 1
-                        fi
-                        ;;
-                esac
+                if command -v apt-get >/dev/null 2>&1; then
+                    sudo apt-get update && sudo apt-get install -y python3-pip
+                elif command -v dnf >/dev/null 2>&1; then
+                    sudo dnf install -y python3-pip
+                elif command -v yum >/dev/null 2>&1; then
+                    sudo yum install -y python3-pip
+                else
+                    echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
+                    exit 1
+                fi
             fi
             
             # Install huggingface_hub package which includes the CLI
