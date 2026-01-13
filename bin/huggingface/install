@@ -34,13 +34,13 @@ if command -v huggingface-cli >/dev/null 2>&1; then
                 echo "Upgrading Hugging Face CLI via Homebrew..."
                 brew upgrade huggingface
             else
-                echo "Upgrading Hugging Face CLI via pip3..."
-                pip3 install --user --upgrade 'huggingface_hub[cli]'
+                echo "Upgrading Hugging Face CLI via pipx..."
+                pipx upgrade huggingface_hub
             fi
             ;;
         Linux)
-            echo "Upgrading Hugging Face CLI via pip3..."
-            pip3 install --user --upgrade 'huggingface_hub[cli]'
+            echo "Upgrading Hugging Face CLI via pipx..."
+            pipx upgrade huggingface_hub
             ;;
         *)
             echo "Hugging Face CLI is installed but upgrade not supported on: ${MACHINE}"
@@ -55,48 +55,53 @@ else
             if ensure_brew_in_path 2>/dev/null && (brew info huggingface-cli >/dev/null 2>&1 || brew info huggingface >/dev/null 2>&1); then
                 echo "Installing Hugging Face CLI via Homebrew..."
                 brew install huggingface-cli 2>/dev/null || brew install huggingface 2>/dev/null || {
-                    echo "Homebrew formula not found, falling back to pip3..."
-                    if ! command -v pip3 >/dev/null 2>&1; then
-                        echo "pip3 not found. Installing Python3..."
-                        brew install python3
+                    echo "Homebrew formula not found, falling back to pipx..."
+                    if ! command -v pipx >/dev/null 2>&1; then
+                        echo "pipx not found. Installing pipx..."
+                        brew install pipx
+                        pipx ensurepath
                     fi
-                    pip3 install --user 'huggingface_hub[cli]'
+                    pipx install 'huggingface_hub[cli]'
                 }
             else
-                echo "Installing Hugging Face CLI via pip3..."
-                # Check if pip3 is available
-                if ! command -v pip3 >/dev/null 2>&1; then
-                    echo "pip3 not found. Installing Python3 and pip..."
+                echo "Installing Hugging Face CLI via pipx..."
+                # Check if pipx is available
+                if ! command -v pipx >/dev/null 2>&1; then
+                    echo "pipx not found. Installing pipx..."
                     ensure_brew_in_path || {
                         echo "ERROR: Homebrew not found. Please install Homebrew first."
                         exit 1
                     }
-                    brew install python3
+                    brew install pipx
+                    pipx ensurepath
                 fi
                 
                 # Install huggingface_hub package which includes the CLI
-                pip3 install --user 'huggingface_hub[cli]'
+                pipx install 'huggingface_hub[cli]'
             fi
             ;;
         Linux)
-            echo "Installing Hugging Face CLI via pip3..."
-            # Check if pip3 is available
-            if ! command -v pip3 >/dev/null 2>&1; then
-                echo "pip3 not found. Installing Python3 and pip..."
+            echo "Installing Hugging Face CLI via pipx..."
+            # Check if pipx is available
+            if ! command -v pipx >/dev/null 2>&1; then
+                echo "pipx not found. Installing pipx..."
                 if command -v apt-get >/dev/null 2>&1; then
-                    sudo apt-get update && sudo apt-get install -y python3-pip
+                    sudo apt-get update && sudo apt-get install -y pipx
+                    pipx ensurepath
                 elif command -v dnf >/dev/null 2>&1; then
-                    sudo dnf install -y python3-pip
+                    sudo dnf install -y pipx
+                    pipx ensurepath
                 elif command -v yum >/dev/null 2>&1; then
-                    sudo yum install -y python3-pip
+                    sudo yum install -y pipx
+                    pipx ensurepath
                 else
-                    echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
+                    echo "ERROR: Could not install pipx. Please install pipx manually."
                     exit 1
                 fi
             fi
             
             # Install huggingface_hub package which includes the CLI
-            pip3 install --user 'huggingface_hub[cli]'
+            pipx install 'huggingface_hub[cli]'
             ;;
         *)
             echo "Unsupported platform: ${MACHINE}"

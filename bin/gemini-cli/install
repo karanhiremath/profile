@@ -34,13 +34,13 @@ if command -v gemini >/dev/null 2>&1; then
                 echo "Upgrading Gemini CLI via Homebrew..."
                 brew upgrade gemini
             else
-                echo "Upgrading Gemini CLI via pip3..."
-                pip3 install --user --upgrade gemini-cli
+                echo "Upgrading Gemini CLI via pipx..."
+                pipx upgrade gemini-cli
             fi
             ;;
         Linux)
-            echo "Upgrading Gemini CLI via pip3..."
-            pip3 install --user --upgrade gemini-cli
+            echo "Upgrading Gemini CLI via pipx..."
+            pipx upgrade gemini-cli
             ;;
         *)
             echo "Gemini CLI is installed but upgrade not supported on: ${MACHINE}"
@@ -79,24 +79,27 @@ else
             fi
             ;;
         Linux)
-            echo "Installing Gemini CLI via pip3..."
-            # Check if pip3 is available
-            if ! command -v pip3 >/dev/null 2>&1; then
-                echo "pip3 not found. Installing Python3 and pip..."
+            echo "Installing Gemini CLI via pipx..."
+            # Check if pipx is available
+            if ! command -v pipx >/dev/null 2>&1; then
+                echo "pipx not found. Installing pipx..."
                 if command -v apt-get >/dev/null 2>&1; then
-                    sudo apt-get update && sudo apt-get install -y python3-pip
+                    sudo apt-get update && sudo apt-get install -y pipx
+                    pipx ensurepath
                 elif command -v dnf >/dev/null 2>&1; then
-                    sudo dnf install -y python3-pip
+                    sudo dnf install -y pipx
+                    pipx ensurepath
                 elif command -v yum >/dev/null 2>&1; then
-                    sudo yum install -y python3-pip
+                    sudo yum install -y pipx
+                    pipx ensurepath
                 else
-                    echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
+                    echo "ERROR: Could not install pipx. Please install pipx manually."
                     exit 1
                 fi
             fi
             
             # Install gemini-cli package
-            pip3 install --user gemini-cli
+            pipx install gemini-cli
             ;;
         *)
             echo "Unsupported platform: ${MACHINE}"

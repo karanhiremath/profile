@@ -27,7 +27,7 @@ if command -v vllm >/dev/null 2>&1; then
     case "${MACHINE}" in
         Darwin|Linux)
             echo "Upgrading vLLM..."
-            pip3 install --user --upgrade vllm
+            pipx upgrade vllm
             
             # Check if CUDA is available on Linux
             if [[ "${MACHINE}" == "Linux" ]] && command -v nvidia-smi >/dev/null 2>&1; then
@@ -44,26 +44,30 @@ else
     case "${MACHINE}" in
         Darwin|Linux)
             echo "Installing vLLM..."
-            # Check if pip3 is available
-            if ! command -v pip3 >/dev/null 2>&1; then
-                echo "pip3 not found. Installing Python3 and pip..."
+            # Check if pipx is available
+            if ! command -v pipx >/dev/null 2>&1; then
+                echo "pipx not found. Installing pipx..."
                 case "${MACHINE}" in
                     Darwin)
                         ensure_brew_in_path || {
                             echo "ERROR: Homebrew not found. Please install Homebrew first."
                             exit 1
                         }
-                        brew install python3
+                        brew install pipx
+                        pipx ensurepath
                         ;;
                     Linux)
                         if command -v apt-get >/dev/null 2>&1; then
-                            sudo apt-get update && sudo apt-get install -y python3-pip
+                            sudo apt-get update && sudo apt-get install -y pipx
+                            pipx ensurepath
                         elif command -v dnf >/dev/null 2>&1; then
-                            sudo dnf install -y python3-pip
+                            sudo dnf install -y pipx
+                            pipx ensurepath
                         elif command -v yum >/dev/null 2>&1; then
-                            sudo yum install -y python3-pip
+                            sudo yum install -y pipx
+                            pipx ensurepath
                         else
-                            echo "ERROR: Could not install pip3. Please install Python3 and pip3 manually."
+                            echo "ERROR: Could not install pipx. Please install pipx manually."
                             exit 1
                         fi
                         ;;
@@ -76,12 +80,12 @@ else
                 Darwin)
                     # On macOS, install CPU-only version
                     echo "Installing vLLM for macOS (CPU-only)..."
-                    pip3 install --user vllm
+                    pipx install vllm
                     ;;
                 Linux)
                     # On Linux, install with CUDA support (for NVIDIA DGX)
                     echo "Installing vLLM for Linux with CUDA support..."
-                    pip3 install --user vllm
+                    pipx install vllm
                     
                     # Check if CUDA is available
                     if command -v nvidia-smi >/dev/null 2>&1; then
