@@ -25,7 +25,7 @@ ARCH="$(uname -m)"
 # Check if copilot-cli command already exists (installed via any method)
 if command -v copilot-cli >/dev/null 2>&1 || command -v github-copilot >/dev/null 2>&1; then
     echo "GitHub Copilot CLI already installed. Checking for updates..."
-    
+
     # Try to upgrade via Homebrew if installed that way
     if command -v brew >/dev/null 2>&1 && brew list copilot-cli >/dev/null 2>&1; then
         echo "Upgrading via Homebrew..."
@@ -41,6 +41,7 @@ if command -v copilot-cli >/dev/null 2>&1 || command -v github-copilot >/dev/nul
     else
         echo "GitHub Copilot CLI is already installed"
     fi
+    # Try to upgrade via npm if installed that way (add logic here if needed)
     exit 0
 fi
 
@@ -93,14 +94,3 @@ case "${MACHINE}" in
 esac
 
 install_messages "end" "$app_name"
-
-echo ""
-echo "GitHub Copilot CLI installed successfully!"
-echo "Usage:"
-echo "  github-copilot --help              - Show available commands"
-echo "  github-copilot suggest 'task'      - Suggest a command to accomplish a task"
-echo "  github-copilot explain 'command'   - Explain what a command does"
-echo ""
-echo "Note: You need to authenticate with GitHub and have Copilot access."
-echo "Run 'github-copilot auth' to authenticate."
-echo ""
