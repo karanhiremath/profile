@@ -14,14 +14,16 @@ telescope.setup {
         mappings = {
         },
     },
-    vimgrep_arguments = {
-        'rg',
-        '--with-filename',
-        '--line-number',
-        '--column',
-        '--smart-case',
-        '--ignore-file',
-        '.gitignore'
-    }
+    pickers = {
+        find_files = {
+            hidden = true
+        },
+        grep_string = {
+            additional_args = {"--hidden"}
+        },
+        live_grep = {
+            additional_args = {"--hidden"}
+        },
+    },
 }
 
