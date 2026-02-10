@@ -1,11 +1,19 @@
-local lsp = require("lsp-zero")
+local status_ok, lsp = pcall(require, "lsp-zero")
+if not status_ok then
+    return
+end
+
 local utils = require("utils")
 
 
 -- Fix Undefined global 'vim'
 -- lsp.nvim_workspace()
 
-local cmp = require("cmp")
+local cmp_ok, cmp = pcall(require, "cmp")
+if not cmp_ok then
+    return
+end
+
 local cmp_select = {behavior = cmp.SelectBehavior.Select}
 
 
