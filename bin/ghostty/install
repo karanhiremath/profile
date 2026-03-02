@@ -13,11 +13,15 @@ ARCH="$(uname -m)"
 
 install_messages "start" "$app_name"
 
-case "${MACHINE}" in
-    Linux)  echo "Linux specific install instructions here";;
-    Darwin)    brew install --cask ghostty;;
-    *)      echo "Generic install instructions here";;
-esac
+if command -v ghostty >/dev/null 2>&1; then
+    echo "ghostty already installed. Skipping install."
+else
+    case "${MACHINE}" in
+        Linux)  echo "Linux specific install instructions here";;
+        Darwin)    brew install --cask ghostty;;
+        *)      echo "Generic install instructions here";;
+    esac
+fi
 
 case "${ARCH}" in
     aarch64)  echo "aarch64 architecture specific install instructions here";;
