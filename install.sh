@@ -127,3 +127,7 @@ fi
 
 
 just nvim
+
+# ghostty
+mkdir -p ~/.config/ghostty
+ln -si "$medir/bin/ghostty/config" ~/.config/ghostty/config
