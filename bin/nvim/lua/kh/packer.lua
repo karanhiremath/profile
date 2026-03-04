@@ -42,7 +42,7 @@ return require('packer').startup(function(use)
 	use 'wbthomason/packer.nvim'
 
     use {
-      'nvim-telescope/telescope.nvim', tag = '0.1.5',
+      'nvim-telescope/telescope.nvim', branch = 'master',
       requires = { {'nvim-lua/plenary.nvim'} }
     }
 
@@ -65,7 +65,7 @@ return require('packer').startup(function(use)
             ts_update()
         end
     }
-    use("nvim-treesitter/playground")
+    -- use {"nvim-treesitter/playground", after = 'nvim-treesitter' }
     use("theprimeagen/harpoon")
     use("theprimeagen/refactoring.nvim")
     use("mbbill/undotree")
@@ -102,27 +102,20 @@ return require('packer').startup(function(use)
           {'L3MON4D3/LuaSnip'},
           {'rafamadriz/friendly-snippets'},
       }
-  }
-
-  -- use("folke/zen-mode.nvim")
-    use('rebelot/kanagawa.nvim')
-    use({
-      'rose-pine/neovim',
-      as = 'rose-pine',
-      config = function()
-          variant = 'moon'
-          vim.cmd('colorscheme rose-pine')
-          disable_background = true
-          disable_float_background = true
-
-          groups = {
-              background = '2b3e50'
-            }
-      end
-    })
+    }
 
     use 'github/copilot.vim'
 
+    use "nvim-lua/plenary.nvim"
+
+    use {
+        "Al0den/notion.nvim",
+        requires = { 'nvim-telescope/telescope.nvim', 'nvim-lua/plenary.nvim' },
+        after = { 'nvim-lua/plenary.nvim' },
+        config = function()
+            require"notion".setup()
+        end
+    }
 
     if packer_bootstrap then
         require('packer').sync()
