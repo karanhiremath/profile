@@ -1,4 +1,6 @@
-require("kh.packer")
+-- require("kh.packer")
+vim.g.mapleader = " "
+require("kh.lazy")
 require("kh.set")
 require("kh.remap")
 
