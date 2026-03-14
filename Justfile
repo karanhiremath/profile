@@ -119,6 +119,14 @@ claude:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/claude/install
 
+cmux:
+    # Install/upgrade cmux (Claude multiplexer)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/cmux/install
+
 copilot:
     # Install/upgrade GitHub Copilot CLI (standalone)
     #!/usr/bin/env bash

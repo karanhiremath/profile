@@ -70,6 +70,16 @@ else
 fi
 echo ""
 
+# cmux
+echo "==> Installing/upgrading cmux..."
+if "${APP_BIN}/cmux/install"; then
+    echo "✓ cmux completed successfully"
+else
+    echo "✗ cmux failed"
+    failed_installs+=("cmux")
+fi
+echo ""
+
 # GitHub Copilot CLI
 echo "==> Installing/upgrading GitHub Copilot CLI..."
 if "${APP_BIN}/copilot-cli/install"; then
