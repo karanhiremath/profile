@@ -151,6 +151,70 @@ vllm:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/vllm/install
 
+kubectl:
+    # Install/upgrade kubectl
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/kubectl/install
+
+helm:
+    # Install/upgrade Helm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/helm/install
+
+kubectx:
+    # Install/upgrade kubectx and kubens
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/kubectx/install
+
+k9s:
+    # Install/upgrade k9s
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/k9s/install
+
+stern:
+    # Install/upgrade stern
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/stern/install
+
+kind:
+    # Install/upgrade kind
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/kind/install
+
+kustomize:
+    # Install/upgrade kustomize (standalone)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/kustomize/install
+
+k8s-toolkit:
+    # Install/upgrade all Kubernetes toolkit tools (continues on failure)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/k8s-toolkit/install-all
+
 openvpn:
     # Install/upgrade OpenVPN
     #!/usr/bin/env bash

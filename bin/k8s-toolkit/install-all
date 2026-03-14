@@ -1,0 +1,103 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+echo "Installing/upgrading Kubernetes toolkit tools..."
+echo "Note: Installation will continue even if individual tools fail"
+echo ""
+
+failed_installs=()
+
+# kubectl
+echo "==> Installing/upgrading kubectl..."
+if "${APP_BIN}/kubectl/install"; then
+    echo "✓ kubectl completed successfully"
+else
+    echo "✗ kubectl failed"
+    failed_installs+=("kubectl")
+fi
+echo ""
+
+# helm
+echo "==> Installing/upgrading helm..."
+if "${APP_BIN}/helm/install"; then
+    echo "✓ helm completed successfully"
+else
+    echo "✗ helm failed"
+    failed_installs+=("helm")
+fi
+echo ""
+
+# kubectx/kubens
+echo "==> Installing/upgrading kubectx/kubens..."
+if "${APP_BIN}/kubectx/install"; then
+    echo "✓ kubectx/kubens completed successfully"
+else
+    echo "✗ kubectx/kubens failed"
+    failed_installs+=("kubectx")
+fi
+echo ""
+
+# k9s
+echo "==> Installing/upgrading k9s..."
+if "${APP_BIN}/k9s/install"; then
+    echo "✓ k9s completed successfully"
+else
+    echo "✗ k9s failed"
+    failed_installs+=("k9s")
+fi
+echo ""
+
+# stern
+echo "==> Installing/upgrading stern..."
+if "${APP_BIN}/stern/install"; then
+    echo "✓ stern completed successfully"
+else
+    echo "✗ stern failed"
+    failed_installs+=("stern")
+fi
+echo ""
+
+# kind
+echo "==> Installing/upgrading kind..."
+if "${APP_BIN}/kind/install"; then
+    echo "✓ kind completed successfully"
+else
+    echo "✗ kind failed"
+    failed_installs+=("kind")
+fi
+echo ""
+
+# kustomize
+echo "==> Installing/upgrading kustomize..."
+if "${APP_BIN}/kustomize/install"; then
+    echo "✓ kustomize completed successfully"
+else
+    echo "✗ kustomize failed"
+    failed_installs+=("kustomize")
+fi
+echo ""
+
+# Summary
+echo "========================================="
+echo "Kubernetes Toolkit Installation Summary"
+echo "========================================="
+if [ ${#failed_installs[@]} -eq 0 ]; then
+    echo "All tools installed/upgraded successfully!"
+else
+    echo "Failed installations: ${failed_installs[*]}"
+    echo "You can retry individual tools with: just <tool-name>"
+fi
+echo "========================================="
