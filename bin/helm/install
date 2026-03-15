@@ -1,0 +1,55 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="helm"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v helm >/dev/null 2>&1; then
+    echo "helm already installed!"
+    helm version --short
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing helm on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install helm
+            ;;
+        Linux)
+            echo "Installing helm on Linux..."
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "helm installed successfully!"
+helm version --short

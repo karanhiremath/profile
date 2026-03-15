@@ -1,0 +1,70 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="kubectx"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v kubectx >/dev/null 2>&1 && command -v kubens >/dev/null 2>&1; then
+    echo "kubectx and kubens already installed!"
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing kubectx on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install kubectx
+            ;;
+        Linux)
+            echo "Installing kubectx on Linux..."
+            case "${ARCH}" in
+                x86_64|amd64) KUBECTX_ARCH="x86_64" ;;
+                aarch64|arm64) KUBECTX_ARCH="arm64" ;;
+                *)
+                    echo "Unsupported architecture: ${ARCH}"
+                    exit 1
+                    ;;
+            esac
+            KUBECTX_VERSION="$(curl -s https://api.github.com/repos/ahmetb/kubectx/releases/latest | grep tag_name | cut -d '"' -f 4)"
+            curl -LO "https://github.com/ahmetb/kubectx/releases/download/${KUBECTX_VERSION}/kubectx_${KUBECTX_VERSION}_linux_${KUBECTX_ARCH}.tar.gz"
+            tar xzf "kubectx_${KUBECTX_VERSION}_linux_${KUBECTX_ARCH}.tar.gz" kubectx
+            sudo mv kubectx /usr/local/bin/kubectx
+            rm -f "kubectx_${KUBECTX_VERSION}_linux_${KUBECTX_ARCH}.tar.gz"
+
+            curl -LO "https://github.com/ahmetb/kubectx/releases/download/${KUBECTX_VERSION}/kubens_${KUBECTX_VERSION}_linux_${KUBECTX_ARCH}.tar.gz"
+            tar xzf "kubens_${KUBECTX_VERSION}_linux_${KUBECTX_ARCH}.tar.gz" kubens
+            sudo mv kubens /usr/local/bin/kubens
+            rm -f "kubens_${KUBECTX_VERSION}_linux_${KUBECTX_ARCH}.tar.gz"
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "kubectx/kubens installed successfully!"

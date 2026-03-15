@@ -1,0 +1,65 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="kind"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v kind >/dev/null 2>&1; then
+    echo "kind already installed!"
+    kind version
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing kind on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install kind
+            ;;
+        Linux)
+            echo "Installing kind on Linux..."
+            case "${ARCH}" in
+                x86_64|amd64) KIND_ARCH="amd64" ;;
+                aarch64|arm64) KIND_ARCH="arm64" ;;
+                *)
+                    echo "Unsupported architecture: ${ARCH}"
+                    exit 1
+                    ;;
+            esac
+            KIND_VERSION="$(curl -s https://api.github.com/repos/kubernetes-sigs/kind/releases/latest | grep tag_name | cut -d '"' -f 4)"
+            curl -Lo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-${KIND_ARCH}"
+            chmod +x kind
+            sudo mv kind /usr/local/bin/kind
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "kind installed successfully!"

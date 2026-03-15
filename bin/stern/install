@@ -1,0 +1,66 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="stern"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v stern >/dev/null 2>&1; then
+    echo "stern already installed!"
+    stern --version
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing stern on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install stern
+            ;;
+        Linux)
+            echo "Installing stern on Linux..."
+            case "${ARCH}" in
+                x86_64|amd64) STERN_ARCH="amd64" ;;
+                aarch64|arm64) STERN_ARCH="arm64" ;;
+                *)
+                    echo "Unsupported architecture: ${ARCH}"
+                    exit 1
+                    ;;
+            esac
+            STERN_VERSION="$(curl -s https://api.github.com/repos/stern/stern/releases/latest | grep tag_name | cut -d '"' -f 4)"
+            curl -LO "https://github.com/stern/stern/releases/download/${STERN_VERSION}/stern_${STERN_VERSION#v}_linux_${STERN_ARCH}.tar.gz"
+            tar xzf "stern_${STERN_VERSION#v}_linux_${STERN_ARCH}.tar.gz" stern
+            sudo mv stern /usr/local/bin/stern
+            rm -f "stern_${STERN_VERSION#v}_linux_${STERN_ARCH}.tar.gz"
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "stern installed successfully!"

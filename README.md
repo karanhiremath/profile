@@ -1,106 +1,106 @@
 # Profile
 
-A cross-platform development environment configuration repository with automated testing across multiple operating systems.
+Dotfiles and development environment setup, managed with [just](https://github.com/casey/just).
 
-## Using this profile
+## Quick Start
 
-### Automated Installation
-1. Clone this repository wherever you want
-2. Navigate to the repository
-3. Run the following to start the install script
-  
-  ```bash
-  ./install.sh
-  ```
+```bash
+git clone https://github.com/karanhiremath/profile.git
+cd profile
+./install.sh
+```
 
-4. Reload your bash profile using
- 
- ```bash
-  source ~/.bash_profile
-  ```
+This installs core tooling (zsh, vim/nvim, tmux, ghostty, cargo, just) and sources shell configs into `~/.zshrc`. On macOS it also installs Homebrew and runs the `mac` recipe.
 
-### Manual Installation
+After install, reload your shell:
 
-1. Clone this repository wherever you want
-2. Add the following line to your `~/.bash_profile`
-  
-  ```bash
-  source  [PATH TO REPO]/myprofile.sh
-  ```
+```bash
+source ~/.zshrc
+```
 
-3. Add the following line to your `~/.vimrc`
-  
-  ```bash
-  source [PATH TO REPO]/vimprofile.sh
-  ```
+## Available Recipes
 
-4. Add the following line to your `~/.tmux.conf`
+Run `just --list` for descriptions. Individual tools can be installed/upgraded independently.
 
-  ```bash
-  source-file [PATH TO REPO]/tmuxprofile.conf
-  ```
+### Shell & Editor
 
-5. Reload your bash profile using
-  
-  ```bash
-  source ~/.bash_profile
-  ```
+| Recipe | Description |
+|--------|-------------|
+| `just install` | Run full install script |
+| `just all` | Install shell, git, tmux, vim, nvim, bash, zsh |
+| `just vim` | Vim config + symlinks |
+| `just nvim` | Neovim install |
+| `just git` | Git config |
+| `just tmux` | Tmux install + config |
+| `just gh` | GitHub CLI |
+| `just ghostty` | Ghostty terminal |
+| `just zsh` | Zsh setup |
+| `just bash` | Bash setup |
+
+### macOS
+
+| Recipe | Description |
+|--------|-------------|
+| `just mac` | Full macOS setup (brew, gh, tmux, ghostty, speedtest, rectangle, alfred, opentofu, steampipe) |
+| `just alfred` | Alfred |
+| `just iterm` | iTerm2 |
+| `just raycast` | Raycast |
+
+### AI Toolkit
+
+Install everything with `just ai-toolkit`, or pick individual tools:
+
+| Recipe | Description |
+|--------|-------------|
+| `just claude` | Claude Code |
+| `just cmux` | cmux (Claude multiplexer) |
+| `just copilot` | GitHub Copilot CLI |
+| `just gemini-cli` | Gemini CLI |
+| `just ollama` | Ollama |
+| `just lmstudio` | LM Studio |
+| `just huggingface` | Hugging Face CLI |
+| `just vllm` | vLLM |
+
+### Kubernetes Toolkit
+
+Install everything with `just k8s-toolkit`, or pick individual tools:
+
+| Recipe | Description |
+|--------|-------------|
+| `just kubectl` | kubectl |
+| `just helm` | Helm |
+| `just kubectx` | kubectx + kubens |
+| `just k9s` | k9s |
+| `just stern` | stern (log tailing) |
+| `just kind` | kind (local clusters) |
+| `just kustomize` | kustomize |
+
+### Infrastructure
+
+| Recipe | Description |
+|--------|-------------|
+| `just opentofu` | OpenTofu |
+| `just steampipe` | Steampipe |
+| `just openvpn` | OpenVPN |
+| `just obsidian` | Obsidian |
+| `just btop` | btop (system monitor) |
 
 ## Testing
 
-This repository includes comprehensive container-based testing infrastructure to validate installations across multiple operating systems using Podman or Docker.
-
-### Quick Start
+Container-based testing with Podman/Docker across multiple OS variants.
 
 ```bash
-# Test on all supported OS variants
-./bin/test/run-tests.sh all
-
-# Test on specific OS
-./bin/test/run-tests.sh ubuntu
-./bin/test/run-tests.sh debian
-
-# Using just (if installed)
-just test
-just test-ubuntu
-just test-debian
+just test           # all OS variants
+just test-ubuntu    # specific OS
+just test-app tmux  # specific app
+just test-verbose   # verbose output
 ```
 
-### Supported Operating Systems
+Supported: Ubuntu 22.04, Debian Bookworm, RHEL 8, NixOS, Alpine Linux.
 
-- **Ubuntu 22.04** - Debian-based Linux distribution
-- **Debian Bookworm** - Stable Debian release
-- **RHEL 8** - Red Hat Enterprise Linux (using UBI base)
-- **NixOS** - NixOS with Nix package manager
-- **Alpine Linux** - Lightweight Linux (experimental)
-
-### Test Commands
-
-```bash
-# Run all tests
-./bin/test/run-tests.sh all
-
-# Test specific OS
-./bin/test/run-tests.sh ubuntu
-
-# Test with verbose output
-./bin/test/run-tests.sh -v ubuntu
-
-# Keep containers for debugging
-./bin/test/run-tests.sh -k ubuntu
-
-# Test specific app installation
-./bin/test/run-tests.sh -a tmux ubuntu
-
-# Validate installed apps
-./bin/test/validate-apps.sh git tmux vim
-```
-
-For detailed testing documentation, see [bin/test/README.md](bin/test/README.md).
+See [bin/test/README.md](bin/test/README.md) for details.
 
 ## Requirements
 
-- Podman or Docker (for testing, Podman preferred)
-- Bash
-- Git
-
+- Bash, Git
+- Podman or Docker (for testing only)

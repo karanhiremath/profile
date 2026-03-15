@@ -1,0 +1,66 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="k9s"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v k9s >/dev/null 2>&1; then
+    echo "k9s already installed!"
+    k9s version --short 2>/dev/null || k9s version
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing k9s on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install derailed/k9s/k9s
+            ;;
+        Linux)
+            echo "Installing k9s on Linux..."
+            case "${ARCH}" in
+                x86_64|amd64) K9S_ARCH="amd64" ;;
+                aarch64|arm64) K9S_ARCH="arm64" ;;
+                *)
+                    echo "Unsupported architecture: ${ARCH}"
+                    exit 1
+                    ;;
+            esac
+            K9S_VERSION="$(curl -s https://api.github.com/repos/derailed/k9s/releases/latest | grep tag_name | cut -d '"' -f 4)"
+            curl -LO "https://github.com/derailed/k9s/releases/download/${K9S_VERSION}/k9s_Linux_${K9S_ARCH}.tar.gz"
+            tar xzf "k9s_Linux_${K9S_ARCH}.tar.gz" k9s
+            sudo mv k9s /usr/local/bin/k9s
+            rm -f "k9s_Linux_${K9S_ARCH}.tar.gz"
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "k9s installed successfully!"

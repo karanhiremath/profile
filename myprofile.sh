@@ -86,3 +86,7 @@ alias vi="nvim"
 
 # use bob
 alias nvim="~/.local/share/bob/nvim-bin/nvim"
+
+# tmux session management
+function tl() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-load "$@"; }
+function ts() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-save "$@"; }

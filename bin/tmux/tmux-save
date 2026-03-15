@@ -1,0 +1,132 @@
+#!/bin/bash
+# Snapshot a running tmux session into a reusable layout script
+#
+# Usage:
+#   tmux-save                     # save current session
+#   tmux-save <session>           # save named session
+#   tmux-save <session> <output>  # save session as <output>.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SESSIONS_DIR="$SCRIPT_DIR/sessions"
+
+# Determine session to capture
+if [ -n "${1:-}" ]; then
+    SESSION="$1"
+elif [ -n "${TMUX:-}" ]; then
+    SESSION="$(tmux display-message -p '#S')"
+else
+    echo "Error: not in a tmux session and no session name provided."
+    echo "Usage: tmux-save [session-name] [output-name]"
+    exit 1
+fi
+
+# Verify session exists
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "Error: session '$SESSION' not found."
+    exit 1
+fi
+
+OUTPUT_NAME="${2:-$SESSION}"
+OUTPUT_FILE="$SESSIONS_DIR/${OUTPUT_NAME}.sh"
+
+mkdir -p "$SESSIONS_DIR"
+
+# Build the script
+{
+    cat <<'HEADER'
+#!/bin/bash
+# tmux session layout (auto-generated)
+
+set -euo pipefail
+
+HEADER
+
+    echo "SESSION_NAME=\"\${1:-${OUTPUT_NAME}}\""
+    echo ""
+
+    # Guard against duplicate sessions
+    cat <<'GUARD'
+# If session already exists, just attach
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    echo "Session '$SESSION_NAME' already exists. Attaching..."
+    if [ -n "${TMUX:-}" ]; then
+        tmux switch-client -t "$SESSION_NAME"
+    else
+        tmux attach-session -t "$SESSION_NAME"
+    fi
+    exit 0
+fi
+
+GUARD
+
+    # Iterate windows
+    first_window=""
+    first_iteration=true
+
+    while IFS='|' read -r widx wname wlayout; do
+        if [ -z "$first_window" ]; then
+            first_window="$wname"
+        fi
+
+        # Get panes for this window
+        pane_dirs=()
+        while IFS='|' read -r pidx pdir; do
+            pane_dirs+=("$pdir")
+        done < <(tmux list-panes -t "${SESSION}:${widx}" -F '#{pane_index}|#{pane_current_path}')
+
+        pane_count=${#pane_dirs[@]}
+        first_pane_dir="${pane_dirs[0]:-$HOME}"
+
+        if [ "$first_iteration" = true ]; then
+            echo "# Window: $wname"
+            echo "tmux new-session -d -s \"\$SESSION_NAME\" -n \"$wname\" -c \"$first_pane_dir\""
+            first_iteration=false
+        else
+            echo ""
+            echo "# Window: $wname"
+            echo "tmux new-window -t \"\$SESSION_NAME\" -n \"$wname\" -c \"$first_pane_dir\""
+        fi
+
+        # Create additional panes
+        if [ "$pane_count" -gt 1 ]; then
+            for ((i = 1; i < pane_count; i++)); do
+                echo "tmux split-window -t \"\$SESSION_NAME:$wname\" -c \"${pane_dirs[$i]:-$HOME}\""
+            done
+            # Apply the captured layout for exact geometry
+            echo "tmux select-layout -t \"\$SESSION_NAME:$wname\" \"$wlayout\""
+        fi
+
+        # Set working directories per pane
+        for ((i = 0; i < pane_count; i++)); do
+            dir="${pane_dirs[$i]:-$HOME}"
+            echo "tmux send-keys -t \"\$SESSION_NAME:$wname.$i\" \"cd $dir\" C-m"
+        done
+
+        # Clear the prompts
+        for ((i = 0; i < pane_count; i++)); do
+            echo "tmux send-keys -t \"\$SESSION_NAME:$wname.$i\" \"clear\" C-m"
+        done
+
+    done < <(tmux list-windows -t "$SESSION" -F '#{window_index}|#{window_name}|#{window_layout}')
+
+    echo ""
+    echo "# Select first window"
+    echo "tmux select-window -t \"\$SESSION_NAME:$first_window\""
+    echo ""
+
+    # Attach logic
+    cat <<'ATTACH'
+# Attach
+if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$SESSION_NAME"
+else
+    tmux attach-session -t "$SESSION_NAME"
+fi
+ATTACH
+
+} > "$OUTPUT_FILE"
+
+chmod +x "$OUTPUT_FILE"
+echo "Saved session '$SESSION' to $OUTPUT_FILE"

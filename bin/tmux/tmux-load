@@ -1,0 +1,69 @@
+#!/bin/bash
+# List and launch saved tmux session layouts
+#
+# Usage:
+#   tmux-load              # list layouts (fzf if available)
+#   tmux-load list         # explicitly list layouts
+#   tmux-load <name>       # load a layout
+#   tmux-load <name> <session>  # load with custom session name
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SESSIONS_DIR="$SCRIPT_DIR/sessions"
+
+if [ ! -d "$SESSIONS_DIR" ]; then
+    echo "No sessions directory found at $SESSIONS_DIR"
+    exit 1
+fi
+
+list_layouts() {
+    local layouts=()
+    for f in "$SESSIONS_DIR"/*.sh; do
+        [ -f "$f" ] || continue
+        name="$(basename "$f" .sh)"
+        desc=""
+        # Extract description comment if present
+        desc_line="$(grep '^# Description:' "$f" 2>/dev/null | head -1 || true)"
+        if [ -n "$desc_line" ]; then
+            desc=" - ${desc_line#*: }"
+        fi
+        layouts+=("${name}${desc}")
+    done
+
+    if [ ${#layouts[@]} -eq 0 ]; then
+        echo "No saved layouts found in $SESSIONS_DIR"
+        exit 0
+    fi
+
+    printf '%s\n' "${layouts[@]}"
+}
+
+# No args: list or fzf-select
+if [ $# -eq 0 ] || [ "${1:-}" = "list" ]; then
+    if [ $# -eq 0 ] && command -v fzf >/dev/null 2>&1 && [ -t 0 ]; then
+        # Use fzf to pick a layout
+        selected="$(list_layouts | fzf --prompt="tmux layout> " | cut -d' ' -f1)" || exit 0
+        if [ -n "$selected" ]; then
+            exec "$SESSIONS_DIR/${selected}.sh"
+        fi
+    else
+        echo "Available layouts:"
+        list_layouts | sed 's/^/  /'
+    fi
+    exit 0
+fi
+
+# Load a named layout
+LAYOUT="$1"
+LAYOUT_FILE="$SESSIONS_DIR/${LAYOUT}.sh"
+
+if [ ! -f "$LAYOUT_FILE" ]; then
+    echo "Error: layout '$LAYOUT' not found."
+    echo ""
+    echo "Available layouts:"
+    list_layouts | sed 's/^/  /'
+    exit 1
+fi
+
+exec "$LAYOUT_FILE" "${2:-}"

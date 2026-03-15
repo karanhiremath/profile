@@ -79,88 +79,168 @@ steampipe:
     # steampipe install
     ./bin/steampipe/install
 
+# Install/upgrade Ollama
 ollama:
-    # Install/upgrade Ollama
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/ollama/install
 
+# Install/upgrade LM Studio
 lmstudio:
-    # Install/upgrade LM Studio
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/lmstudio/install
 
+# Install/upgrade Hugging Face CLI
 huggingface:
-    # Install/upgrade Hugging Face CLI
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/huggingface/install
 
+# Install/upgrade Raycast
 raycast:
-    # Install/upgrade Raycast
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/raycast/install
 
+# Install/upgrade Claude Code
 claude:
-    # Install/upgrade Claude Code
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/claude/install
 
+# Install/upgrade cmux (Claude multiplexer)
+cmux:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/cmux/install
+
+# Install/upgrade GitHub Copilot CLI (standalone)
 copilot:
-    # Install/upgrade GitHub Copilot CLI (standalone)
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/copilot-cli/install
 
+# Install/upgrade GitHub Copilot CLI (alias for copilot)
 copilot-cli:
-    # Install/upgrade GitHub Copilot CLI (alias for copilot)
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/copilot-cli/install
 
+# Install/upgrade Gemini CLI
 gemini-cli:
-    # Install/upgrade Gemini CLI
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/gemini-cli/install
 
+# Install/upgrade vLLM
 vllm:
-    # Install/upgrade vLLM
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/vllm/install
 
+# Install/upgrade kubectl
+kubectl:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/kubectl/install
+
+# Install/upgrade Helm
+helm:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/helm/install
+
+# Install/upgrade kubectx and kubens
+kubectx:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/kubectx/install
+
+# Install/upgrade k9s
+k9s:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/k9s/install
+
+# Install/upgrade stern
+stern:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/stern/install
+
+# Install/upgrade kind
+kind:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/kind/install
+
+# Install/upgrade kustomize (standalone)
+kustomize:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/kustomize/install
+
+# Install/upgrade all Kubernetes toolkit tools (continues on failure)
+k8s-toolkit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/k8s-toolkit/install-all
+
+# Install/upgrade OpenVPN
 openvpn:
-    # Install/upgrade OpenVPN
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/openvpn/install
 
+# Install/upgrade btop
+btop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/btop/install
+
+# Install/upgrade all AI toolkit tools (continues on failure)
 ai-toolkit:
-    # Install/upgrade all AI toolkit tools (continues on failure)
     #!/usr/bin/env bash
     set -euo pipefail
     export PROFILE_DIR="$(pwd)"
