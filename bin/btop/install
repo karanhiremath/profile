@@ -1,0 +1,77 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="btop"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v btop >/dev/null 2>&1; then
+    echo "btop already installed!"
+    btop --version 2>/dev/null || true
+else
+    install_messages "start" "$app_name"
+
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing btop on Mac..."
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            brew install btop
+            ;;
+        Linux)
+            echo "Installing btop on Linux..."
+            if command -v apt-get >/dev/null 2>&1; then
+                sudo apt-get update && sudo apt-get install -y btop
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y btop
+            elif command -v pacman >/dev/null 2>&1; then
+                sudo pacman -S --noconfirm btop
+            elif command -v apk >/dev/null 2>&1; then
+                sudo apk add btop
+            else
+                echo "No supported package manager found. Installing from GitHub release..."
+                case "${ARCH}" in
+                    x86_64|amd64) BTOP_ARCH="x86_64" ;;
+                    aarch64|arm64) BTOP_ARCH="aarch64" ;;
+                    *)
+                        echo "Unsupported architecture: ${ARCH}"
+                        exit 1
+                        ;;
+                esac
+                BTOP_VERSION="$(curl -s https://api.github.com/repos/aristocratos/btop/releases/latest | grep tag_name | cut -d '"' -f 4)"
+                curl -LO "https://github.com/aristocratos/btop/releases/download/${BTOP_VERSION}/btop-${BTOP_ARCH}-linux-musl.tbz"
+                tar xjf "btop-${BTOP_ARCH}-linux-musl.tbz"
+                cd btop && sudo make install && cd ..
+                rm -rf btop "btop-${BTOP_ARCH}-linux-musl.tbz"
+            fi
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+
+    install_messages "end" "$app_name"
+fi
+
+echo ""
+echo "btop installed successfully!"
