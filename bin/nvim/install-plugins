@@ -17,7 +17,17 @@ fi
 
 # lazy.nvim auto-bootstraps via lua/kh/lazy.lua (clones itself on first run).
 # Just run nvim headless to trigger the bootstrap + plugin install.
-echo "Installing/updating plugins with lazy.nvim..."
-nvim --headless "+Lazy! sync" +qa
+# Find nvim: bob-managed location first, then PATH
+if [ -x "${HOME}/.local/share/bob/nvim-bin/nvim" ]; then
+    NVIM="${HOME}/.local/share/bob/nvim-bin/nvim"
+elif command -v nvim &>/dev/null; then
+    NVIM="nvim"
+else
+    echo "ERROR: nvim not found. Run the nvim installer first: just nvim" >&2
+    exit 1
+fi
+
+echo "Installing/updating plugins with lazy.nvim (using ${NVIM})..."
+"$NVIM" --headless "+Lazy! sync" +qa
 
 echo "✓ Nvim plugins installed successfully"
