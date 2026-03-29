@@ -133,4 +133,11 @@ esac
 echo "Installing nvim plugins..."
 "${PROFILE_DIR}/bin/nvim/install-plugins"
 
+# Symlink bob-managed nvim into ~/.local/bin for PATH access
+if [ -x "${bob_install_location}/nvim" ]; then
+    mkdir -p "${HOME}/.local/bin"
+    ln -sf "${bob_install_location}/nvim" "${HOME}/.local/bin/nvim"
+    echo "✓ Symlinked nvim → ~/.local/bin/nvim"
+fi
+
 install_messages "end" "$app_name"
