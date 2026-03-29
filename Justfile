@@ -16,27 +16,42 @@ alacritty:
     # alacritty install
 
 alfred:
-    # alfred install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/alfred/install.sh
 
 git:
-    # git install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/git/install
 
 gh:
-    # github cli install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/gh/install
 
 ghostty:
-    # ghostty install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/ghostty/install
-    ln -fns "{{APP_BIN}}"/ghostty/config "{{HOME}}"/.config/ghostty/config
+    ln -fns "${APP_BIN}"/ghostty/config "${HOME}"/.config/ghostty/config
 
 fish:
     # fish install
 
 tmux:
-    # tmux install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/tmux/install
 
 vim:
@@ -51,11 +66,17 @@ vim:
     ln -fns "{{APP_BIN}}"/nvim/after "{{HOME}}"/.config/nvim/after
 
 nvim:
-    # nvim install
-
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/nvim/install
 
 obsidian:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/obsidian/install
 
 python:
@@ -68,15 +89,24 @@ zsh:
     #zsh install
 
 iterm:
-    # iterm install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/iterm/install
 
 opentofu:
-    # opentofu install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/opentofu/install
 
 steampipe:
-    # steampipe install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/steampipe/install
 
 # Install/upgrade Ollama
