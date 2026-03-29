@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install neovim plugins using Packer
+# Install neovim plugins using lazy.nvim
 
 set -e
 
@@ -15,26 +15,19 @@ if [ -f "${SCRIPT_DIR}/.use-old-lspconfig" ]; then
     cp "${SCRIPT_DIR}/.use-old-lspconfig" "${HOME}/.config/nvim/.use-old-lspconfig"
 fi
 
-# Packer installation path
-PACKER_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/pack/packer/start/packer.nvim"
-
-# Install Packer if not already installed
-if [ ! -d "$PACKER_PATH" ]; then
-    echo "Installing Packer.nvim..."
-    git clone --depth 1 https://github.com/wbthomason/packer.nvim "$PACKER_PATH"
-    echo "Packer installed successfully"
+# lazy.nvim auto-bootstraps via lua/kh/lazy.lua (clones itself on first run).
+# Just run nvim headless to trigger the bootstrap + plugin install.
+# Find nvim: bob-managed location first, then PATH
+if [ -x "${HOME}/.local/share/bob/nvim-bin/nvim" ]; then
+    NVIM="${HOME}/.local/share/bob/nvim-bin/nvim"
+elif command -v nvim &>/dev/null; then
+    NVIM="nvim"
 else
-    echo "Packer already installed"
+    echo "ERROR: nvim not found. Run the nvim installer first: just nvim" >&2
+    exit 1
 fi
 
-# Install plugins using PackerSync
-# Use headless mode to run nvim without UI and quit after sync
-echo "Installing/updating plugins with PackerSync..."
-
-# Run nvim headless to install plugins
-# The --headless flag runs nvim without UI
-# -c 'autocmd User PackerComplete quitall' ensures nvim exits after sync completes
-# PackerSync installs/updates all plugins
-nvim --headless -c 'autocmd User PackerComplete quitall' -c 'PackerSync'
+echo "Installing/updating plugins with lazy.nvim (using ${NVIM})..."
+"$NVIM" --headless "+Lazy! sync" +qa
 
 echo "✓ Nvim plugins installed successfully"

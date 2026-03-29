@@ -1,0 +1,73 @@
+#!/bin/bash
+set -euo pipefail
+
+# Install claude-usage CLI tool and local OTEL stack for Claude Code cost tracking
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="claude-usage"
+install_messages start "$app_name"
+
+# 1. Symlink the CLI tool
+TOOL_DIR="${APP_BIN}/claude-usage"
+TARGET="${HOME}/.local/bin/claude-usage"
+
+mkdir -p "${HOME}/.local/bin"
+ln -sf "${TOOL_DIR}/claude-usage" "$TARGET"
+echo "✓ claude-usage symlinked to ${TARGET}"
+
+# 2. Install OTEL collector if not present
+if command -v otelcol-contrib &>/dev/null; then
+    echo "✓ otelcol-contrib already installed"
+else
+    echo "Installing otelcol-contrib..."
+    if command -v brew &>/dev/null; then
+        brew install open-telemetry/opentelemetry-collector-releases/otelcol-contrib
+    else
+        ARCH=$(uname -m)
+        [[ "$ARCH" == "arm64" ]] || ARCH="amd64"
+        VERSION="0.120.0"
+        curl -sL "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${VERSION}/otelcol-contrib_${VERSION}_$(uname -s | tr '[:upper:]' '[:lower:]')_${ARCH}.tar.gz" \
+            -o /tmp/otelcol.tar.gz
+        tar -xzf /tmp/otelcol.tar.gz -C /tmp otelcol-contrib
+        mv /tmp/otelcol-contrib /usr/local/bin/otelcol-contrib
+        rm /tmp/otelcol.tar.gz
+    fi
+    echo "✓ otelcol-contrib installed"
+fi
+
+# 3. Check uv is available (used by emitter for inline deps)
+if command -v uv &>/dev/null; then
+    echo "✓ uv $(uv --version 2>&1 | head -1)"
+else
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    echo "✓ uv installed"
+fi
+
+# 4. Install the OTEL stack config
+OTEL_DIR="${PROFILE_DIR}/bin/claude-usage/otel"
+echo "✓ OTEL stack configs at ${OTEL_DIR}/"
+
+# 5. Set up shell integration hint
+echo ""
+echo "Add to your shell profile:"
+echo '  export PATH="${HOME}/.local/bin:${PATH}"'
+echo ""
+echo "To enable OTEL telemetry for Claude Code sessions:"
+echo '  export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317'
+echo ""
+echo "Start the local collector:"
+echo "  claude-usage otel-start"
+echo ""
+
+install_messages end "$app_name"

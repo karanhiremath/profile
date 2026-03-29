@@ -1,0 +1,55 @@
+# Podman Compose stack for local OTEL observability
+# Usage: podman-compose up -d
+# This gives you Grafana dashboards for Claude Code usage tracking.
+
+version: "3.8"
+
+services:
+  otel-collector:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.120.0
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics endpoint
+    volumes:
+      - ./collector-config-container.yaml:/etc/otelcol/config.yaml:ro
+      - otel-data:/data
+    restart: unless-stopped
+
+  prometheus:
+    image: docker.io/prom/prometheus:v2.53.0
+    container_name: otel-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+    restart: unless-stopped
+
+  grafana:
+    image: docker.io/grafana/grafana:11.4.0
+    container_name: otel-grafana
+    ports:
+      - "3033:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
+
+volumes:
+  otel-data:
+  prometheus-data:
+  grafana-data:

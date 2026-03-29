@@ -1,0 +1,55 @@
+# OTEL collector config for containerized deployment
+# Writes to /data inside the container (mounted volume)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 100
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        action: upsert
+        value: "local"
+
+exporters:
+  file/traces:
+    path: /data/traces.jsonl
+    format: json
+    rotation:
+      max_megabytes: 50
+      max_days: 30
+      max_backups: 5
+
+  file/metrics:
+    path: /data/metrics.jsonl
+    format: json
+    rotation:
+      max_megabytes: 20
+      max_days: 30
+      max_backups: 5
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "claude"
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [file/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [file/metrics, prometheus]

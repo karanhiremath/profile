@@ -1,0 +1,1154 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# claude-usage — Token usage tracker and cost estimator for Claude Code
+# Parses ~/.claude session logs and stats to show spend, trends, and optimization tips.
+
+CLAUDE_DIR="${HOME}/.claude"
+STATS_FILE="${CLAUDE_DIR}/stats-cache.json"
+PROJECTS_DIR="${CLAUDE_DIR}/projects"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OTEL_DIR="${SCRIPT_DIR}/otel"
+OTEL_DATA_DIR="${HOME}/.local/share/claude-usage/otel"
+
+# Pricing is defined in the Python blocks below (per 1M tokens, USD).
+# Opus:  input=$15, output=$75, cache_read=$1.50, cache_write=$18.75
+# Sonnet: input=$3, output=$15, cache_read=$0.30, cache_write=$3.75
+
+usage() {
+    cat <<EOF
+claude-usage — Track Claude Code token spend and optimize usage
+
+USAGE:
+    claude-usage [command] [options]
+
+COMMANDS:
+    summary         Overall usage summary with cost estimate (default)
+    daily           Day-by-day breakdown with costs
+    sessions        Per-session breakdown (most expensive first)
+    projects        Per-project/repo breakdown
+    today           Today's usage so far
+    week            This week's usage
+    trends          Usage trends and patterns
+    budget          Budget tracking against a monthly target
+    optimize        Optimization recommendations
+    export          Export data as CSV
+    raw             Dump raw stats JSON
+    otel-start      Start local OTEL collector (native, no containers)
+    otel-stack      Start full observability stack (collector + Prometheus + Grafana)
+    otel-stop       Stop OTEL collector or full stack
+    otel-emit       Emit session data to OTEL collector
+    otel-status     Show OTEL stack status
+
+OPTIONS:
+    -d, --days N        Show last N days (default: 30)
+    -m, --model MODEL   Filter by model (opus, sonnet)
+    -b, --budget USD    Monthly budget in USD (default: \$500)
+    -p, --project NAME  Filter by project slug
+    --no-color          Disable color output
+    -h, --help          Show this help
+
+EXAMPLES:
+    claude-usage                    # Summary
+    claude-usage daily -d 7         # Last 7 days
+    claude-usage budget -b 300      # Track against \$300/mo budget
+    claude-usage sessions -d 1      # Today's sessions
+    claude-usage otel-start           # Start local OTEL collector
+    claude-usage otel-stack           # Full stack with Grafana at localhost:3033
+    claude-usage otel-emit            # Push session data to collector
+    claude-usage otel-emit --dry-run  # Preview what would be emitted
+    claude-usage projects           # Per-repo breakdown
+    claude-usage optimize           # Get optimization tips
+    claude-usage export > usage.csv # Export to CSV
+EOF
+}
+
+# --- Helpers ---
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+NO_COLOR=false
+
+color() {
+    if $NO_COLOR; then echo -n "$2"; else echo -ne "$1$2${NC}"; fi
+}
+
+fmt_tokens() {
+    local n=$1
+    if (( n >= 1000000 )); then
+        printf "%.1fM" "$(echo "$n / 1000000" | bc -l)"
+    elif (( n >= 1000 )); then
+        printf "%.1fK" "$(echo "$n / 1000" | bc -l)"
+    else
+        printf "%d" "$n"
+    fi
+}
+
+fmt_cost() {
+    printf "\$%.2f" "$1"
+}
+
+model_tier() {
+    local model="$1"
+    if [[ "$model" == *"opus"* ]]; then echo "opus"
+    elif [[ "$model" == *"sonnet"* ]]; then echo "sonnet"
+    else echo "sonnet"  # default
+    fi
+}
+
+# calc_cost is handled inline in Python blocks below
+
+# --- Data extraction ---
+
+get_stats() {
+    if [[ ! -f "$STATS_FILE" ]]; then
+        echo "No stats cache found. Run a Claude Code session first." >&2
+        exit 1
+    fi
+    cat "$STATS_FILE"
+}
+
+# Parse all JSONL session files and extract token usage per message
+parse_sessions() {
+    local days="${1:-30}" project_filter="${2:-}"
+
+    local cutoff_date
+    cutoff_date=$(date -v-${days}d +%Y-%m-%d 2>/dev/null || date -d "$days days ago" +%Y-%m-%d 2>/dev/null)
+
+    local find_path="$PROJECTS_DIR"
+    if [[ -n "$project_filter" ]]; then
+        find_path=$(find "$PROJECTS_DIR" -maxdepth 1 -type d -name "*${project_filter}*" | head -1)
+        if [[ -z "$find_path" ]]; then
+            echo "No project matching '$project_filter'" >&2
+            exit 1
+        fi
+    fi
+
+    find "$find_path" -name "*.jsonl" -print0 2>/dev/null | xargs -0 python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+from collections import defaultdict
+
+cutoff = '$cutoff_date'
+results = []
+
+for filepath in sys.argv[1:]:
+    # Extract project from path
+    parts = filepath.split('/projects/')
+    if len(parts) < 2:
+        continue
+    project_slug = parts[1].split('/')[0]
+    session_id = os.path.basename(filepath).replace('.jsonl', '')
+
+    try:
+        with open(filepath) as f:
+            for line in f:
+                try:
+                    d = json.loads(line.strip())
+                except:
+                    continue
+
+                if d.get('type') != 'assistant':
+                    continue
+                msg = d.get('message', {})
+                usage = msg.get('usage', {})
+                if not usage:
+                    continue
+
+                ts = d.get('timestamp', '')
+                if not ts:
+                    continue
+                date = ts[:10]
+                if date < cutoff:
+                    continue
+
+                model = msg.get('model', 'unknown')
+                input_t = usage.get('input_tokens', 0)
+                output_t = usage.get('output_tokens', 0)
+                cache_read = usage.get('cache_read_input_tokens', 0)
+                cache_write = usage.get('cache_creation_input_tokens', 0)
+
+                results.append({
+                    'date': date,
+                    'timestamp': ts,
+                    'model': model,
+                    'session': session_id,
+                    'project': project_slug,
+                    'input': input_t,
+                    'output': output_t,
+                    'cache_read': cache_read,
+                    'cache_write': cache_write,
+                })
+    except Exception as e:
+        pass
+
+for r in results:
+    print(json.dumps(r))
+" 2>/dev/null
+}
+
+# --- Commands ---
+
+cmd_summary() {
+    local days="${DAYS:-30}"
+    echo ""
+    color "$BOLD" "Claude Code Usage Summary"
+    echo ""
+    color "$DIM" "(last $days days)"
+    echo ""
+    echo ""
+
+    parse_sessions "$days" "$PROJECT_FILTER" | python3 -c "
+import json, sys
+from collections import defaultdict
+
+PRICES = {
+    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
+    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
+}
+
+def tier(model):
+    if 'opus' in model: return 'opus'
+    return 'sonnet'
+
+def cost(t, i, o, cr, cw):
+    p = PRICES[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+
+totals = defaultdict(lambda: {'input':0,'output':0,'cache_read':0,'cache_write':0,'cost':0,'msgs':0})
+daily = defaultdict(float)
+sessions = set()
+projects = defaultdict(float)
+
+for line in sys.stdin:
+    d = json.loads(line)
+    t = tier(d['model'])
+    c = cost(t, d['input'], d['output'], d['cache_read'], d['cache_write'])
+
+    totals[t]['input'] += d['input']
+    totals[t]['output'] += d['output']
+    totals[t]['cache_read'] += d['cache_read']
+    totals[t]['cache_write'] += d['cache_write']
+    totals[t]['cost'] += c
+    totals[t]['msgs'] += 1
+
+    daily[d['date']] += c
+    sessions.add(d['session'])
+    projects[d['project']] += c
+
+total_cost = sum(v['cost'] for v in totals.values())
+total_msgs = sum(v['msgs'] for v in totals.values())
+active_days = len(daily)
+avg_daily = total_cost / max(active_days, 1)
+
+print(f'  Total estimated cost:  \${total_cost:>10.2f}')
+print(f'  Active days:           {active_days:>10}')
+print(f'  Avg cost/active day:   \${avg_daily:>10.2f}')
+print(f'  Total sessions:        {len(sessions):>10}')
+print(f'  Total API messages:    {total_msgs:>10}')
+print()
+
+for t in ['opus', 'sonnet']:
+    if t not in totals or totals[t]['msgs'] == 0:
+        continue
+    v = totals[t]
+    print(f'  {t.upper()}:')
+    print(f'    Cost:        \${v[\"cost\"]:>10.2f}  ({v[\"cost\"]/max(total_cost,0.01)*100:.0f}% of total)')
+    print(f'    Input:       {v[\"input\"]:>10,} tokens')
+    print(f'    Output:      {v[\"output\"]:>10,} tokens')
+    print(f'    Cache read:  {v[\"cache_read\"]:>10,} tokens')
+    print(f'    Cache write: {v[\"cache_write\"]:>10,} tokens')
+    cache_hit = v['cache_read'] / max(v['cache_read']+v['cache_write']+v['input'], 1) * 100
+    print(f'    Cache hit:   {cache_hit:>9.1f}%')
+    print()
+
+if projects:
+    print('  Top projects by cost:')
+    for proj, c in sorted(projects.items(), key=lambda x: -x[1])[:5]:
+        short = proj.replace('-Users-karanhiremath-src-','').replace('-Users-karanhiremath-','~/')
+        bar = '█' * max(1, int(c / max(total_cost,0.01) * 30))
+        print(f'    {short:40s} \${c:>8.2f}  {bar}')
+    print()
+
+# Projection
+if active_days > 0:
+    import datetime
+    today = datetime.date.today()
+    days_in_month = 30
+    days_left = days_in_month - today.day
+    projected = avg_daily * days_in_month
+    print(f'  Monthly projection:    \${projected:>10.2f}  (at \${avg_daily:.2f}/day)')
+    print(f'  Remaining this month:  \${avg_daily * max(days_left, 0):>10.2f}  ({max(days_left,0)} days)')
+"
+}
+
+cmd_daily() {
+    local days="${DAYS:-14}"
+    echo ""
+    color "$BOLD" "Daily Usage Breakdown"
+    echo ""
+    color "$DIM" "(last $days days)"
+    echo ""
+    echo ""
+
+    parse_sessions "$days" "$PROJECT_FILTER" | python3 -c "
+import json, sys
+from collections import defaultdict
+
+PRICES = {
+    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
+    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
+}
+
+def tier(m):
+    return 'opus' if 'opus' in m else 'sonnet'
+
+def cost(t, i, o, cr, cw):
+    p = PRICES[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+
+daily = defaultdict(lambda: {'cost':0,'input':0,'output':0,'cache_read':0,'cache_write':0,'msgs':0,'sessions':set()})
+
+for line in sys.stdin:
+    d = json.loads(line)
+    t = tier(d['model'])
+    c = cost(t, d['input'], d['output'], d['cache_read'], d['cache_write'])
+    day = daily[d['date']]
+    day['cost'] += c
+    day['input'] += d['input']
+    day['output'] += d['output']
+    day['cache_read'] += d['cache_read']
+    day['cache_write'] += d['cache_write']
+    day['msgs'] += 1
+    day['sessions'].add(d['session'])
+
+max_cost = max((v['cost'] for v in daily.values()), default=1)
+
+print(f'  {\"Date\":<12} {\"Cost\":>8} {\"Msgs\":>6} {\"Sess\":>5} {\"Output\":>10} {\"Cache%\":>7}  Bar')
+print(f'  {\"─\"*12} {\"─\"*8} {\"─\"*6} {\"─\"*5} {\"─\"*10} {\"─\"*7}  {\"─\"*30}')
+
+for date in sorted(daily.keys()):
+    v = daily[date]
+    total_input = v['cache_read'] + v['cache_write'] + v['input']
+    cache_pct = v['cache_read'] / max(total_input, 1) * 100
+    bar_len = int(v['cost'] / max(max_cost, 0.01) * 30)
+    bar = '█' * max(1, bar_len)
+
+    # Color the bar based on cost
+    if v['cost'] > 30:
+        bar_color = '🔴'
+    elif v['cost'] > 15:
+        bar_color = '🟡'
+    else:
+        bar_color = '🟢'
+
+    print(f'  {date:<12} \${v[\"cost\"]:>7.2f} {v[\"msgs\"]:>6} {len(v[\"sessions\"]):>5} {v[\"output\"]:>10,} {cache_pct:>6.1f}%  {bar_color}{bar}')
+
+total_cost = sum(v['cost'] for v in daily.values())
+total_msgs = sum(v['msgs'] for v in daily.values())
+total_output = sum(v['output'] for v in daily.values())
+print(f'  {\"─\"*12} {\"─\"*8} {\"─\"*6} {\"─\"*5} {\"─\"*10} {\"─\"*7}')
+print(f'  {\"TOTAL\":<12} \${total_cost:>7.2f} {total_msgs:>6}       {total_output:>10,}')
+"
+}
+
+cmd_sessions() {
+    local days="${DAYS:-7}"
+    echo ""
+    color "$BOLD" "Sessions by Cost"
+    echo ""
+    color "$DIM" "(last $days days, most expensive first)"
+    echo ""
+    echo ""
+
+    parse_sessions "$days" "$PROJECT_FILTER" | python3 -c "
+import json, sys
+from collections import defaultdict
+
+PRICES = {
+    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
+    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
+}
+
+def tier(m):
+    return 'opus' if 'opus' in m else 'sonnet'
+
+def cost(t, i, o, cr, cw):
+    p = PRICES[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+
+sessions = defaultdict(lambda: {'cost':0,'msgs':0,'output':0,'model':'','project':'','first_ts':'','last_ts':'','cache_read':0,'total_input':0})
+
+for line in sys.stdin:
+    d = json.loads(line)
+    t = tier(d['model'])
+    c = cost(t, d['input'], d['output'], d['cache_read'], d['cache_write'])
+    s = sessions[d['session']]
+    s['cost'] += c
+    s['msgs'] += 1
+    s['output'] += d['output']
+    s['model'] = d['model']
+    s['project'] = d['project']
+    s['cache_read'] += d['cache_read']
+    s['total_input'] += d['cache_read'] + d['cache_write'] + d['input']
+    if not s['first_ts'] or d['timestamp'] < s['first_ts']:
+        s['first_ts'] = d['timestamp']
+    if not s['last_ts'] or d['timestamp'] > s['last_ts']:
+        s['last_ts'] = d['timestamp']
+
+sorted_sessions = sorted(sessions.items(), key=lambda x: -x[1]['cost'])
+
+print(f'  {\"Session\":<10} {\"Date\":<12} {\"Cost\":>8} {\"Msgs\":>5} {\"Output\":>9} {\"Cache%\":>7} Project')
+print(f'  {\"─\"*10} {\"─\"*12} {\"─\"*8} {\"─\"*5} {\"─\"*9} {\"─\"*7} {\"─\"*30}')
+
+for sid, v in sorted_sessions[:20]:
+    short_sid = sid[:8]
+    date = v['first_ts'][:10]
+    cache_pct = v['cache_read'] / max(v['total_input'], 1) * 100
+    proj = v['project'].replace('-Users-karanhiremath-src-','').replace('-Users-karanhiremath-','~/')
+    print(f'  {short_sid:<10} {date:<12} \${v[\"cost\"]:>7.2f} {v[\"msgs\"]:>5} {v[\"output\"]:>9,} {cache_pct:>6.1f}% {proj}')
+"
+}
+
+cmd_projects() {
+    local days="${DAYS:-30}"
+    echo ""
+    color "$BOLD" "Usage by Project/Repo"
+    echo ""
+    color "$DIM" "(last $days days)"
+    echo ""
+    echo ""
+
+    parse_sessions "$days" "" | python3 -c "
+import json, sys
+from collections import defaultdict
+
+PRICES = {
+    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
+    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
+}
+
+def tier(m):
+    return 'opus' if 'opus' in m else 'sonnet'
+
+def cost(t, i, o, cr, cw):
+    p = PRICES[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+
+projects = defaultdict(lambda: {'cost':0,'msgs':0,'sessions':set(),'output':0,'cache_read':0,'total_input':0,'models':set()})
+
+for line in sys.stdin:
+    d = json.loads(line)
+    t = tier(d['model'])
+    c = cost(t, d['input'], d['output'], d['cache_read'], d['cache_write'])
+    p = projects[d['project']]
+    p['cost'] += c
+    p['msgs'] += 1
+    p['sessions'].add(d['session'])
+    p['output'] += d['output']
+    p['cache_read'] += d['cache_read']
+    p['total_input'] += d['cache_read'] + d['cache_write'] + d['input']
+    p['models'].add(tier(d['model']))
+
+total_cost = sum(v['cost'] for v in projects.values())
+
+print(f'  {\"Project\":<42} {\"Cost\":>8} {\"Sess\":>5} {\"Msgs\":>6} {\"Model\":>7} {\"Share\":>6}')
+print(f'  {\"─\"*42} {\"─\"*8} {\"─\"*5} {\"─\"*6} {\"─\"*7} {\"─\"*6}')
+
+for proj, v in sorted(projects.items(), key=lambda x: -x[1]['cost']):
+    short = proj.replace('-Users-karanhiremath-src-','').replace('-Users-karanhiremath-','~/')
+    if len(short) > 40:
+        short = '...' + short[-37:]
+    share = v['cost'] / max(total_cost, 0.01) * 100
+    model = ','.join(sorted(v['models']))
+    cache_pct = v['cache_read'] / max(v['total_input'], 1) * 100
+    bar = '█' * max(1, int(share / 100 * 20))
+    print(f'  {short:<42} \${v[\"cost\"]:>7.2f} {len(v[\"sessions\"]):>5} {v[\"msgs\"]:>6} {model:>7} {share:>5.1f}% {bar}')
+
+print(f'  {\"─\"*42} {\"─\"*8}')
+print(f'  {\"TOTAL\":<42} \${total_cost:>7.2f}')
+"
+}
+
+cmd_today() {
+    DAYS=1
+    echo ""
+    color "$BOLD" "Today's Usage"
+    echo ""
+    echo ""
+
+    parse_sessions 1 "$PROJECT_FILTER" | python3 -c "
+import json, sys, datetime
+
+PRICES = {
+    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
+    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
+}
+
+def tier(m):
+    return 'opus' if 'opus' in m else 'sonnet'
+
+def cost(t, i, o, cr, cw):
+    p = PRICES[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+
+today = datetime.date.today().isoformat()
+total_cost = 0
+total_msgs = 0
+total_output = 0
+total_cache_read = 0
+total_input = 0
+sessions = set()
+
+for line in sys.stdin:
+    d = json.loads(line)
+    if d['date'] != today:
+        continue
+    t = tier(d['model'])
+    c = cost(t, d['input'], d['output'], d['cache_read'], d['cache_write'])
+    total_cost += c
+    total_msgs += 1
+    total_output += d['output']
+    total_cache_read += d['cache_read']
+    total_input += d['cache_read'] + d['cache_write'] + d['input']
+    sessions.add(d['session'])
+
+cache_pct = total_cache_read / max(total_input, 1) * 100
+
+print(f'  Date:          {today}')
+print(f'  Cost so far:   \${total_cost:.2f}')
+print(f'  Sessions:      {len(sessions)}')
+print(f'  API messages:  {total_msgs}')
+print(f'  Output tokens: {total_output:,}')
+print(f'  Cache hit:     {cache_pct:.1f}%')
+"
+}
+
+cmd_week() {
+    DAYS=7
+    cmd_daily
+}
+
+cmd_trends() {
+    local days="${DAYS:-30}"
+    echo ""
+    color "$BOLD" "Usage Trends"
+    echo ""
+    color "$DIM" "(last $days days)"
+    echo ""
+    echo ""
+
+    parse_sessions "$days" "$PROJECT_FILTER" | python3 -c "
+import json, sys
+from collections import defaultdict
+import datetime
+
+PRICES = {
+    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
+    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
+}
+
+def tier(m):
+    return 'opus' if 'opus' in m else 'sonnet'
+
+def cost(t, i, o, cr, cw):
+    p = PRICES[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+
+daily = defaultdict(lambda: {'cost':0,'output':0,'cache_read':0,'cache_write':0,'input':0,'msgs':0})
+hourly = defaultdict(float)
+model_cost = defaultdict(float)
+weekday = defaultdict(lambda: {'cost':0,'days':set()})
+
+for line in sys.stdin:
+    d = json.loads(line)
+    t = tier(d['model'])
+    c = cost(t, d['input'], d['output'], d['cache_read'], d['cache_write'])
+    day = daily[d['date']]
+    day['cost'] += c
+    day['output'] += d['output']
+    day['cache_read'] += d['cache_read']
+    day['cache_write'] += d['cache_write']
+    day['input'] += d['input']
+    day['msgs'] += 1
+    model_cost[t] += c
+
+    # Hour of day
+    try:
+        hour = int(d['timestamp'][11:13])
+        hourly[hour] += c
+    except:
+        pass
+
+    # Day of week
+    try:
+        dt = datetime.date.fromisoformat(d['date'])
+        wd = dt.strftime('%A')
+        weekday[wd]['cost'] += c
+        weekday[wd]['days'].add(d['date'])
+    except:
+        pass
+
+dates = sorted(daily.keys())
+if len(dates) < 2:
+    print('  Not enough data for trends')
+    sys.exit(0)
+
+costs = [daily[d]['cost'] for d in dates]
+avg = sum(costs) / len(costs)
+
+# Week-over-week
+mid = len(dates) // 2
+first_half = sum(costs[:mid]) / max(mid, 1)
+second_half = sum(costs[mid:]) / max(len(costs) - mid, 1)
+trend_pct = ((second_half - first_half) / max(first_half, 0.01)) * 100
+
+print('  COST TREND')
+if trend_pct > 10:
+    print(f'  📈 Spending is UP {trend_pct:.0f}% (recent vs earlier half)')
+elif trend_pct < -10:
+    print(f'  📉 Spending is DOWN {abs(trend_pct):.0f}% (recent vs earlier half)')
+else:
+    print(f'  ➡️  Spending is STABLE ({trend_pct:+.0f}%)')
+print(f'  Average: \${avg:.2f}/day')
+print()
+
+# Cache efficiency trend
+cache_data = [(d, daily[d]['cache_read'] / max(daily[d]['cache_read']+daily[d]['cache_write']+daily[d]['input'], 1) * 100) for d in dates]
+avg_cache = sum(c for _, c in cache_data) / len(cache_data)
+print(f'  CACHE EFFICIENCY')
+print(f'  Average cache hit rate: {avg_cache:.1f}%')
+if avg_cache < 80:
+    print(f'  ⚠️  Below 80% — consider longer sessions to build cache')
+else:
+    print(f'  ✅ Good cache utilization')
+print()
+
+# Output token ratio (this is where cost really lives for opus)
+total_output = sum(daily[d]['output'] for d in dates)
+total_cost = sum(costs)
+output_cost_share = sum(daily[d]['output'] * 75 / 1_000_000 for d in dates) / max(total_cost, 0.01) * 100
+print(f'  OUTPUT TOKENS')
+print(f'  Output tokens are {output_cost_share:.0f}% of your total cost')
+if output_cost_share > 60:
+    print(f'  💡 Output dominates cost — use sonnet for exploration, opus for final implementation')
+print()
+
+# Busiest hours
+print(f'  PEAK HOURS')
+sorted_hours = sorted(hourly.items(), key=lambda x: -x[1])[:5]
+for h, c in sorted_hours:
+    bar = '█' * max(1, int(c / max(sorted_hours[0][1], 0.01) * 15))
+    print(f'    {h:02d}:00  \${c:>7.2f}  {bar}')
+print()
+
+# Day of week
+print(f'  BUSIEST DAYS')
+day_order = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+for wd in day_order:
+    if wd in weekday:
+        avg_wd = weekday[wd]['cost'] / max(len(weekday[wd]['days']), 1)
+        bar = '█' * max(1, int(avg_wd / max(avg, 0.01) * 10))
+        print(f'    {wd:<10} \${avg_wd:>7.2f}/day  {bar}')
+"
+}
+
+cmd_budget() {
+    local budget="${BUDGET:-500}"
+    local days="${DAYS:-30}"
+
+    echo ""
+    color "$BOLD" "Budget Tracker"
+    echo ""
+    color "$DIM" "(monthly budget: \$$budget)"
+    echo ""
+    echo ""
+
+    parse_sessions "$days" "$PROJECT_FILTER" | python3 -c "
+import json, sys, datetime
+from collections import defaultdict
+
+budget = $budget
+
+PRICES = {
+    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
+    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
+}
+
+def tier(m):
+    return 'opus' if 'opus' in m else 'sonnet'
+
+def cost(t, i, o, cr, cw):
+    p = PRICES[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+
+today = datetime.date.today()
+month_start = today.replace(day=1)
+days_in_month = 30
+days_elapsed = (today - month_start).days + 1
+days_remaining = max(days_in_month - days_elapsed, 0)
+
+monthly_cost = 0
+daily_costs = defaultdict(float)
+
+for line in sys.stdin:
+    d = json.loads(line)
+    if d['date'] < month_start.isoformat():
+        continue
+    t = tier(d['model'])
+    c = cost(t, d['input'], d['output'], d['cache_read'], d['cache_write'])
+    monthly_cost += c
+    daily_costs[d['date']] += c
+
+used_pct = monthly_cost / budget * 100
+remaining = budget - monthly_cost
+daily_budget_remaining = remaining / max(days_remaining, 1)
+
+# Progress bar
+bar_width = 40
+filled = int(used_pct / 100 * bar_width)
+bar = '█' * min(filled, bar_width) + '░' * max(bar_width - filled, 0)
+
+if used_pct > 90:
+    status = '🔴 CRITICAL'
+elif used_pct > 75:
+    status = '🟡 WARNING'
+elif used_pct > 50:
+    status = '🟠 MODERATE'
+else:
+    status = '🟢 ON TRACK'
+
+print(f'  Status: {status}')
+print(f'  [{bar}] {used_pct:.1f}%')
+print()
+print(f'  Budget:          \${budget:>10.2f}')
+print(f'  Spent (MTD):     \${monthly_cost:>10.2f}')
+print(f'  Remaining:       \${remaining:>10.2f}')
+print()
+print(f'  Days elapsed:    {days_elapsed:>10}')
+print(f'  Days remaining:  {days_remaining:>10}')
+print(f'  Daily allowance: \${daily_budget_remaining:>10.2f}/day')
+print()
+
+# Projection
+active_days = len(daily_costs)
+if active_days > 0:
+    avg_daily = monthly_cost / active_days
+    projected = avg_daily * days_in_month
+    over_under = projected - budget
+
+    print(f'  PROJECTION')
+    print(f'  Avg daily spend: \${avg_daily:>10.2f}')
+    print(f'  Month-end proj:  \${projected:>10.2f}')
+    if over_under > 0:
+        print(f'  ⚠️  Projected OVER budget by \${over_under:.2f}')
+        safe_daily = remaining / max(days_remaining, 1)
+        print(f'  To stay on budget: \${safe_daily:.2f}/day max for remaining {days_remaining} days')
+    else:
+        print(f'  ✅ Projected UNDER budget by \${abs(over_under):.2f}')
+"
+}
+
+cmd_optimize() {
+    local days="${DAYS:-14}"
+    echo ""
+    color "$BOLD" "Optimization Recommendations"
+    echo ""
+    echo ""
+
+    parse_sessions "$days" "$PROJECT_FILTER" | python3 -c "
+import json, sys
+from collections import defaultdict
+
+PRICES = {
+    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
+    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
+}
+
+def tier(m):
+    return 'opus' if 'opus' in m else 'sonnet'
+
+def cost(t, i, o, cr, cw):
+    p = PRICES[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+
+# Gather stats
+total = {'input':0, 'output':0, 'cache_read':0, 'cache_write':0, 'msgs':0}
+by_model = defaultdict(lambda: {'cost':0, 'msgs':0, 'output':0})
+sessions = defaultdict(lambda: {'cost':0, 'msgs':0, 'output':0, 'cache_read':0, 'total_input':0})
+short_sessions = 0
+
+for line in sys.stdin:
+    d = json.loads(line)
+    t = tier(d['model'])
+    c = cost(t, d['input'], d['output'], d['cache_read'], d['cache_write'])
+    total['input'] += d['input']
+    total['output'] += d['output']
+    total['cache_read'] += d['cache_read']
+    total['cache_write'] += d['cache_write']
+    total['msgs'] += 1
+    by_model[t]['cost'] += c
+    by_model[t]['msgs'] += 1
+    by_model[t]['output'] += d['output']
+    s = sessions[d['session']]
+    s['cost'] += c
+    s['msgs'] += 1
+    s['output'] += d['output']
+    s['cache_read'] += d['cache_read']
+    s['total_input'] += d['cache_read'] + d['cache_write'] + d['input']
+
+total_cost = sum(v['cost'] for v in by_model.values())
+recs = []
+
+# 1. Model mix
+opus_cost = by_model.get('opus', {}).get('cost', 0)
+opus_share = opus_cost / max(total_cost, 0.01) * 100
+if opus_share > 80:
+    sonnet_equiv = opus_cost * (15/75)  # rough output-dominated estimate
+    savings = opus_cost - sonnet_equiv
+    recs.append({
+        'priority': '🔴 HIGH',
+        'title': 'Switch exploration/research to Sonnet',
+        'detail': f'Opus is {opus_share:.0f}% of spend (\${opus_cost:.2f}). Using Sonnet for exploration could save ~\${savings:.2f}.',
+        'action': 'Use --model sonnet for code review, exploration, and Q&A. Reserve Opus for complex implementation.',
+        'savings': savings,
+    })
+
+# 2. Cache efficiency
+cache_total = total['cache_read'] + total['cache_write'] + total['input']
+cache_pct = total['cache_read'] / max(cache_total, 1) * 100
+if cache_pct < 80:
+    recs.append({
+        'priority': '🟡 MEDIUM',
+        'title': 'Improve cache hit rate',
+        'detail': f'Cache hit rate is {cache_pct:.1f}%. Target >85%.',
+        'action': 'Use longer sessions instead of many short ones. Use --continue to resume. Avoid switching repos mid-task.',
+        'savings': 0,
+    })
+
+# 3. Short sessions (< 5 messages)
+for sid, sv in sessions.items():
+    if sv['msgs'] < 5:
+        short_sessions += 1
+if short_sessions > len(sessions) * 0.3:
+    recs.append({
+        'priority': '🟡 MEDIUM',
+        'title': 'Consolidate short sessions',
+        'detail': f'{short_sessions}/{len(sessions)} sessions have <5 messages. Each new session pays cache warmup cost.',
+        'action': 'Batch related tasks. Use /continue. Fewer, longer sessions = better cache = lower cost.',
+        'savings': 0,
+    })
+
+# 4. Output token dominance
+output_cost = total['output'] * 75 / 1_000_000  # opus pricing
+output_share = output_cost / max(total_cost, 0.01) * 100
+if output_share > 50:
+    recs.append({
+        'priority': '🟡 MEDIUM',
+        'title': 'Reduce output token volume',
+        'detail': f'Output tokens are ~{output_share:.0f}% of cost.',
+        'action': 'Be specific in prompts. Ask for diffs not full files. Use \"be concise\" in CLAUDE.md system prompt.',
+        'savings': 0,
+    })
+
+# 5. Worktree sprawl
+worktree_sessions = [s for s in sessions.keys() if 'worktree' in s.lower()]
+if len(sessions) > 10:
+    recs.append({
+        'priority': '🟢 LOW',
+        'title': 'Review session count',
+        'detail': f'{len(sessions)} sessions in this period. Each session warms up context independently.',
+        'action': 'Use --continue and --name to maintain context across sessions on the same task.',
+        'savings': 0,
+    })
+
+# 6. Effort level
+recs.append({
+    'priority': '🟢 TIP',
+    'title': 'Use --effort for routine tasks',
+    'detail': 'Claude Code supports --effort low|medium|high|max.',
+    'action': 'Use low effort for simple edits, git ops, file lookups. Save high/max for complex implementations.',
+    'savings': 0,
+})
+
+# 7. Max budget flag
+recs.append({
+    'priority': '🟢 TIP',
+    'title': 'Set --max-budget-usd for automated runs',
+    'detail': 'Prevents runaway costs in --print mode and agent spawning.',
+    'action': 'Add --max-budget-usd 5 for scripted/automated Claude Code invocations.',
+    'savings': 0,
+})
+
+if not recs:
+    print('  ✅ No major optimization opportunities found!')
+else:
+    for i, r in enumerate(recs, 1):
+        print(f'  {r[\"priority\"]} #{i}: {r[\"title\"]}')
+        print(f'     {r[\"detail\"]}')
+        print(f'     → {r[\"action\"]}')
+        if r['savings'] > 0:
+            print(f'     💰 Potential savings: ~\${r[\"savings\"]:.2f}')
+        print()
+
+# Summary
+print(f'  QUICK WINS:')
+print(f'    • Add to settings.json: \"model\": \"sonnet\" for default, override with --model opus when needed')
+print(f'    • Add to CLAUDE.md: \"Be concise. Show diffs not full files. Minimize output tokens.\"')
+print(f'    • Use claude --continue instead of starting new sessions')
+print(f'    • Use claude --effort low for simple tasks')
+"
+}
+
+cmd_export() {
+    local days="${DAYS:-30}"
+    parse_sessions "$days" "$PROJECT_FILTER" | python3 -c "
+import json, sys
+print('date,timestamp,session,project,model,input_tokens,output_tokens,cache_read,cache_write')
+for line in sys.stdin:
+    d = json.loads(line)
+    proj = d['project'].replace('-Users-karanhiremath-src-','').replace('-Users-karanhiremath-','~/')
+    print(f'{d[\"date\"]},{d[\"timestamp\"]},{d[\"session\"][:8]},{proj},{d[\"model\"]},{d[\"input\"]},{d[\"output\"]},{d[\"cache_read\"]},{d[\"cache_write\"]}')
+"
+}
+
+cmd_raw() {
+    get_stats | python3 -m json.tool
+}
+
+# --- OTEL Stack Commands ---
+
+cmd_otel_start() {
+    echo ""
+    color "$BOLD" "Starting Local OTEL Collector"
+    echo ""
+    echo ""
+
+    mkdir -p "$OTEL_DATA_DIR"
+
+    local PID_FILE="${OTEL_DATA_DIR}/.collector.pid"
+    local LOG_FILE="${OTEL_DATA_DIR}/.collector.log"
+
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "  OTEL collector already running (PID $(cat "$PID_FILE"))"
+        return 0
+    fi
+
+    if ! command -v otelcol-contrib &>/dev/null; then
+        echo "  Error: otelcol-contrib not found." >&2
+        echo "  Install with: brew install open-telemetry/opentelemetry-collector-releases/otelcol-contrib" >&2
+        return 1
+    fi
+
+    export OTEL_DATA_DIR
+    nohup otelcol-contrib --config "${OTEL_DIR}/collector-config.yaml" > "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    echo "  ✓ OTEL collector started (PID $!)"
+    echo "  Traces → ${OTEL_DATA_DIR}/traces.jsonl"
+    echo "  Metrics → ${OTEL_DATA_DIR}/metrics.jsonl"
+    echo "  Prometheus → http://localhost:8889/metrics"
+    echo ""
+    echo "  Set in your shell:"
+    echo "    export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317"
+}
+
+cmd_otel_stack() {
+    echo ""
+    color "$BOLD" "Starting Full Observability Stack"
+    echo ""
+    echo ""
+
+    if ! command -v podman &>/dev/null; then
+        echo "  Error: podman required for full stack." >&2
+        echo "  Install with: brew install podman" >&2
+        return 1
+    fi
+
+    mkdir -p "$OTEL_DATA_DIR"
+
+    local COMPOSE_CMD="podman-compose"
+    if ! command -v podman-compose &>/dev/null; then
+        COMPOSE_CMD="podman compose"
+    fi
+
+    cd "${OTEL_DIR}"
+    $COMPOSE_CMD -f podman-compose.yaml up -d
+
+    echo ""
+    echo "  ✓ Stack started:"
+    echo "    OTEL Collector  → localhost:4317 (gRPC) / localhost:4318 (HTTP)"
+    echo "    Prometheus      → http://localhost:9090"
+    echo "    Grafana         → http://localhost:3033 (admin/admin)"
+    echo ""
+    echo "  Emit session data:"
+    echo "    claude-usage otel-emit"
+    echo ""
+    echo "  Stop with:"
+    echo "    claude-usage otel-stop --stack"
+}
+
+cmd_otel_stop() {
+    echo ""
+    color "$BOLD" "Stopping OTEL"
+    echo ""
+    echo ""
+
+    # Stop native collector
+    local PID_FILE="${OTEL_DATA_DIR}/.collector.pid"
+    if [[ -f "$PID_FILE" ]]; then
+        local PID
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"
+            echo "  ✓ OTEL collector stopped (PID $PID)"
+        else
+            echo "  Collector not running (stale PID)"
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    # Stop container stack if --stack flag or containers running
+    if [[ "${OTEL_STOP_STACK:-false}" == "true" ]]; then
+        local COMPOSE_CMD="podman-compose"
+        if ! command -v podman-compose &>/dev/null; then
+            COMPOSE_CMD="podman compose"
+        fi
+        cd "${OTEL_DIR}" 2>/dev/null && $COMPOSE_CMD -f podman-compose.yaml down 2>/dev/null && \
+            echo "  ✓ Container stack stopped" || \
+            echo "  No container stack running"
+    fi
+}
+
+cmd_otel_emit() {
+    echo ""
+    color "$BOLD" "Emitting Session Data to OTEL"
+    echo ""
+    echo ""
+
+    local emitter="${SCRIPT_DIR}/claude-usage-emitter"
+    local days="${DAYS:-7}"
+    local extra_args=()
+
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        extra_args+=(--dry-run)
+    fi
+
+    uv run "$emitter" --days "$days" "${extra_args[@]}"
+}
+
+cmd_otel_status() {
+    echo ""
+    color "$BOLD" "OTEL Stack Status"
+    echo ""
+    echo ""
+
+    # Native collector
+    local PID_FILE="${OTEL_DATA_DIR}/.collector.pid"
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "  Native collector:  ✅ running (PID $(cat "$PID_FILE"))"
+    else
+        echo "  Native collector:  ⬚ stopped"
+    fi
+
+    # Container stack
+    if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "otel-collector"; then
+        echo "  Container stack:   ✅ running"
+        podman ps --filter name=otel- --format "    {{.Names}}: {{.Status}}" 2>/dev/null
+    else
+        echo "  Container stack:   ⬚ stopped"
+    fi
+
+    # Data files
+    echo ""
+    echo "  Data directory: ${OTEL_DATA_DIR}"
+    if [[ -d "$OTEL_DATA_DIR" ]]; then
+        for f in traces.jsonl metrics.jsonl; do
+            if [[ -f "${OTEL_DATA_DIR}/$f" ]]; then
+                local sz
+                sz=$(du -sh "${OTEL_DATA_DIR}/$f" 2>/dev/null | cut -f1)
+                local lines
+                lines=$(wc -l < "${OTEL_DATA_DIR}/$f" 2>/dev/null || echo 0)
+                echo "    $f: ${sz} (${lines} records)"
+            fi
+        done
+    else
+        echo "    (not created yet — run otel-start first)"
+    fi
+
+    # Emitter state
+    local state_file="${HOME}/.claude/.otel-emitter-state.json"
+    if [[ -f "$state_file" ]]; then
+        local file_count
+        file_count=$(python3 -c "import json; d=json.load(open('$state_file')); print(len(d.get('last_processed',{})))" 2>/dev/null || echo "?")
+        echo ""
+        echo "  Emitter: ${file_count} session files tracked"
+    fi
+
+    # Quick endpoint checks
+    echo ""
+    echo "  Endpoints:"
+    for port_name in "4317:OTLP-gRPC" "4318:OTLP-HTTP" "8889:Prometheus" "9090:Prometheus-UI" "3033:Grafana"; do
+        local port="${port_name%%:*}"
+        local name="${port_name##*:}"
+        if nc -z localhost "$port" 2>/dev/null; then
+            echo "    ${name} (${port}): ✅"
+        else
+            echo "    ${name} (${port}): ⬚"
+        fi
+    done
+}
+
+# --- Main ---
+
+COMMAND="${1:-summary}"
+shift 2>/dev/null || true
+
+DAYS=30
+BUDGET=500
+PROJECT_FILTER=""
+MODEL_FILTER=""
+
+DRY_RUN=false
+OTEL_STOP_STACK=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d|--days) DAYS="$2"; shift 2 ;;
+        -b|--budget) BUDGET="$2"; shift 2 ;;
+        -p|--project) PROJECT_FILTER="$2"; shift 2 ;;
+        -m|--model) MODEL_FILTER="$2"; shift 2 ;;
+        --no-color) NO_COLOR=true; shift ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        --stack) OTEL_STOP_STACK=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1"; usage; exit 1 ;;
+    esac
+done
+
+case "$COMMAND" in
+    summary)     cmd_summary ;;
+    daily)       cmd_daily ;;
+    sessions)    cmd_sessions ;;
+    projects)    cmd_projects ;;
+    today)       cmd_today ;;
+    week)        cmd_week ;;
+    trends)      cmd_trends ;;
+    budget)      cmd_budget ;;
+    optimize)    cmd_optimize ;;
+    export)      cmd_export ;;
+    raw)         cmd_raw ;;
+    otel-start)  cmd_otel_start ;;
+    otel-stack)  cmd_otel_stack ;;
+    otel-stop)   cmd_otel_stop ;;
+    otel-emit)   cmd_otel_emit ;;
+    otel-status) cmd_otel_status ;;
+    -h|--help|help) usage ;;
+    *) echo "Unknown command: $COMMAND"; usage; exit 1 ;;
+esac

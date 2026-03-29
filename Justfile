@@ -4,79 +4,100 @@ APP_BIN := "$(pwd)/bin"
 HOME := "$(echo $HOME)"
 
 
-all: shell git fish tmux vim nvim python bash zsh
+# Install core tools
+all: git tmux nvim
 
 install:
     ./install.sh
-
-shell:
-    # shell install
 
 alacritty:
     # alacritty install
 
 alfred:
-    # alfred install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/alfred/install.sh
 
 git:
-    # git install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/git/install
 
 gh:
-    # github cli install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/gh/install
 
 ghostty:
-    # ghostty install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/ghostty/install
-    ln -fns "{{APP_BIN}}"/ghostty/config "{{HOME}}"/.config/ghostty/config
+    ln -fns "${APP_BIN}"/ghostty/config "${HOME}"/.config/ghostty/config
 
-fish:
-    # fish install
 
 tmux:
-    # tmux install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/tmux/install
 
-vim:
-    # vim install
-    touch "{{HOME}}/.netrc"
-    mkdir -p "{{HOME}}/.cache/nvim/undo"
-    mkdir -p "{{HOME}}/.config/nvim/"
-    ln -fns "{{APP_BIN}}"/vim "{{HOME}}"/.vim
-    ln -fs "{{APP_BIN}}"/vim/.vimrc "{{HOME}}"/.vimrc
-    ln -fns "{{APP_BIN}}"/nvim/init.lua "{{HOME}}"/.config/nvim/init.lua
-    ln -fns "{{APP_BIN}}"/nvim/lua "{{HOME}}"/.config/nvim/lua
-    ln -fns "{{APP_BIN}}"/nvim/after "{{HOME}}"/.config/nvim/after
 
 nvim:
-    # nvim install
-
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/nvim/install
 
 obsidian:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/obsidian/install
 
-python:
-    # python install
+zsh:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/zsh/install
 
 bash:
-    # bash install
-
-zsh:
-    #zsh install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/bash/install
 
 iterm:
-    # iterm install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/iterm/install
 
 opentofu:
-    # opentofu install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/opentofu/install
 
 steampipe:
-    # steampipe install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/steampipe/install
 
 # Install/upgrade Ollama
@@ -215,6 +236,14 @@ kustomize:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/kustomize/install
 
+# Install/upgrade micromamba
+micromamba:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/micromamba/install
+
 # Install/upgrade all Kubernetes toolkit tools (continues on failure)
 k8s-toolkit:
     #!/usr/bin/env bash
@@ -238,6 +267,14 @@ btop:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/btop/install
+
+# Install claude-usage CLI and local OTEL stack
+claude-usage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/claude-usage/install
 
 # Install/upgrade all AI toolkit tools (continues on failure)
 ai-toolkit:
