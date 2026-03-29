@@ -4,13 +4,11 @@ APP_BIN := "$(pwd)/bin"
 HOME := "$(echo $HOME)"
 
 
-all: shell git fish tmux vim nvim python bash zsh
+# Install core tools
+all: git tmux nvim
 
 install:
     ./install.sh
-
-shell:
-    # shell install
 
 alacritty:
     # alacritty install
@@ -44,8 +42,6 @@ ghostty:
     ./bin/ghostty/install
     ln -fns "${APP_BIN}"/ghostty/config "${HOME}"/.config/ghostty/config
 
-fish:
-    # fish install
 
 tmux:
     #!/usr/bin/env bash
@@ -54,16 +50,6 @@ tmux:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/tmux/install
 
-vim:
-    # vim install
-    touch "{{HOME}}/.netrc"
-    mkdir -p "{{HOME}}/.cache/nvim/undo"
-    mkdir -p "{{HOME}}/.config/nvim/"
-    ln -fns "{{APP_BIN}}"/vim "{{HOME}}"/.vim
-    ln -fs "{{APP_BIN}}"/vim/.vimrc "{{HOME}}"/.vimrc
-    ln -fns "{{APP_BIN}}"/nvim/init.lua "{{HOME}}"/.config/nvim/init.lua
-    ln -fns "{{APP_BIN}}"/nvim/lua "{{HOME}}"/.config/nvim/lua
-    ln -fns "{{APP_BIN}}"/nvim/after "{{HOME}}"/.config/nvim/after
 
 nvim:
     #!/usr/bin/env bash
@@ -79,14 +65,19 @@ obsidian:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/obsidian/install
 
-python:
-    # python install
+zsh:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/zsh/install
 
 bash:
-    # bash install
-
-zsh:
-    #zsh install
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/bash/install
 
 iterm:
     #!/usr/bin/env bash

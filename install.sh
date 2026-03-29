@@ -4,130 +4,96 @@ set -euo pipefail
 
 shopt -s failglob
 
-medir=$( pwd "$0" )
-export PROFILE_DIR="${medir}"
+export PROFILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export APP_BIN="${PROFILE_DIR}/bin"
 
-. $PROFILE_DIR/bin/sh/shell_fns --source-only
+. "${APP_BIN}/sh/shell_fns" --source-only
 
 generate_config_vars
 
-echo "${MACHINE} ${ARCH}"
+echo "Machine: ${MACHINE} | Arch: ${ARCH}"
+echo "Profile: ${PROFILE_DIR}"
+echo ""
 
-"${APP_BIN}"/zsh/install
-"${APP_BIN}"/zsh/install
+# --- Shell setup ---
 
-# confirm .zprofile and .zshrc are setup appropriately
-if grep -q "$medir/zsh_profile.sh" ~/.zshrc; then
-    echo "zsh_profile.sh already sourced in ~/.zshrc"
+# Ensure .zshrc exists
+touch ~/.zshrc
+
+# Source shell profiles
+for profile_file in zsh_profile.sh myprofile.sh; do
+    if grep -q "${PROFILE_DIR}/${profile_file}" ~/.zshrc 2>/dev/null; then
+        echo "✓ ${profile_file} already sourced in ~/.zshrc"
+    else
+        echo "Adding ${profile_file} to ~/.zshrc"
+        echo "source ${PROFILE_DIR}/${profile_file}" >> ~/.zshrc
+    fi
+done
+
+# Ensure ~/.local/bin is in PATH via .zshrc
+if grep -q '\.local/bin' ~/.zshrc 2>/dev/null; then
+    echo "✓ ~/.local/bin already in PATH"
 else
-    echo "Sourcing $medir/zsh_profile.sh in ~/.zshrc"
-    echo "source $medir/zsh_profile.sh" >> ~/.zshrc
+    echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> ~/.zshrc
+    echo "Added ~/.local/bin to PATH in ~/.zshrc"
 fi
 
-if grep -q "$medir/myprofile.sh" ~/.zshrc; then
-    echo "myprofile.sh already sourced in ~/.zshrc"
-else
-    echo "Sourcing $medir/myprofile.sh in ~/.zshrc"
-    echo "source $medir/myprofile.sh" >> ~/.zshrc
-fi
+# --- Prerequisites ---
 
-# NVIM
-curl -fLo "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/autoload/plug.vim --create-dirs \
-   https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
-
-ln -si "$medir/vimprofile.sh" ~/.vimrc
-if [[ ! -e ~/.config/nvim ]]; then
-    mkdir -p ~/.config/nvim
-fi
-ln -si "$medir/vimprofile.sh" ~/.config/nvim/init.vim
-echo "Symlinking $medir/vimprofile.sh in ~/.vimrc"
-
-if [[ ! -e ~/.vim/undodir ]]; then
-    # if ~/.vim/undodir not present, create ~/.vim/undodir
-    mkdir -p ~/.vim/undodir
-else
-    echo "~/.vim/undodir already exists"
-fi
-
-if [[ ! -e ~/.vim/autoload/plug.vim ]]; then
-    # install plug.vim
-    curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
-        https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
-else
-    echo "~/.vim/autoload/plug.vim already exists"
-fi
-
-# tmux.conf is managed by bin/tmux/install which creates a symlink
-# No need to manually source it here
-
-if [[ ! -e ~/.tmux/plugins/tpm/ ]]; then
-  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-else
-    echo "~/.tmux/plugins/tmp exists!"
-fi
-
-# install cargo and then just so we can use Justfile to do the rest
+# Install cargo (needed for bob-nvim)
 install_app "cargo"
-
-# source cargo for use in other installation steps
 . "$HOME/.cargo/env"
 
+# Install just (task runner)
 install_app "just"
 
-# On Mac, install brew early so it's available for all recipes
-if [[ $machine == "Mac" ]]; then
-    echo "Installing Homebrew early for Mac..."
+# On Mac, install brew early
+if [[ "${MACHINE}" == "Mac" ]]; then
+    echo ""
+    echo "Installing Homebrew..."
     install_app "brew"
-    
-    # Ensure brew is in PATH for subsequent commands
+
+    # Ensure brew is in PATH
     if [ -f /opt/homebrew/bin/brew ]; then
         export PATH="/opt/homebrew/bin:$PATH"
         eval "$(/opt/homebrew/bin/brew shellenv)"
     elif [ -f /usr/local/bin/brew ]; then
         export PATH="/usr/local/bin:$PATH"
         eval "$(/usr/local/bin/brew shellenv)"
+    fi
+
+    # Add brew to .zshrc if not present
+    if ! grep -q "/opt/homebrew/bin" ~/.zshrc 2>/dev/null; then
+        echo 'export PATH="/opt/homebrew/bin:$PATH"' >> ~/.zshrc
+        echo "Added Homebrew to PATH in ~/.zshrc"
     fi
 fi
 
-just all
+# --- Core tools ---
 
-if [[ $machine == "Mac" ]]; then
-    # Ensure brew is still in PATH (in case shell changed)
-    if [ -f /opt/homebrew/bin/brew ]; then
-        export PATH="/opt/homebrew/bin:$PATH"
-        eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [ -f /usr/local/bin/brew ]; then
-        export PATH="/usr/local/bin:$PATH"
-        eval "$(/usr/local/bin/brew shellenv)"
-    fi
+echo ""
+echo "Installing core tools..."
+just git
+just tmux
+just nvim
+
+# --- Platform-specific ---
+
+if [[ "${MACHINE}" == "Mac" ]]; then
+    echo ""
+    echo "Running Mac-specific setup..."
     just mac
 fi
 
-if [[ ! -e ~/.zshrc ]]; then
-    # Setup Oh My ZSH and any plugins:
-#    git clone https://github.com/ohmyzsh/ohmyzsh.git ~/.dotfiles/.oh-my-zsh
-#    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-#    git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
-    echo "No oh-my-zsh"
+# --- tmux plugin manager ---
+
+if [[ ! -d ~/.tmux/plugins/tpm ]]; then
+    echo "Installing tmux plugin manager..."
+    git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 else
-    echo "ZSH Profile found at ~/.zshrc"
+    echo "✓ tmux plugin manager already installed"
 fi
 
-# add brew to `/.zshrc
-if [[ $machine == "Mac" ]]; then
-    if grep -q "/opt/homebrew/bin" ~/.zshrc; then
-        echo "homebrew bin added to ~/.zshrc"
-    else
-        echo "adding brew to ~/.zshrc PATH"
-        echo "export PATH=/opt/homebrew/bin:$PATH" >> ~/.zshrc
-    fi
-fi
-
-
-
-just nvim
-
-# ghostty
-mkdir -p ~/.config/ghostty
-ln -si "$medir/bin/ghostty/config" ~/.config/ghostty/config
+echo ""
+echo "✓ Profile installation complete"
+echo "  Run 'source ~/.zshrc' or start a new shell to activate"
