@@ -45,13 +45,13 @@ else
     echo "✓ otelcol-contrib installed"
 fi
 
-# 3. Install Python OTEL SDK (for the emitter)
-if python3 -c "import opentelemetry" 2>/dev/null; then
-    echo "✓ opentelemetry Python SDK already installed"
+# 3. Check uv is available (used by emitter for inline deps)
+if command -v uv &>/dev/null; then
+    echo "✓ uv $(uv --version 2>&1 | head -1)"
 else
-    echo "Installing opentelemetry Python packages..."
-    pip3 install --quiet opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-grpc
-    echo "✓ opentelemetry Python SDK installed"
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    echo "✓ uv installed"
 fi
 
 # 4. Install the OTEL stack config

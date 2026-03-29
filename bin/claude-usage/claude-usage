@@ -1040,7 +1040,7 @@ cmd_otel_emit() {
         extra_args+=(--dry-run)
     fi
 
-    python3 "$emitter" --days "$days" "${extra_args[@]}"
+    uv run "$emitter" --days "$days" "${extra_args[@]}"
 }
 
 cmd_otel_status() {
