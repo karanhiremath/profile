@@ -215,6 +215,14 @@ kustomize:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/kustomize/install
 
+# Install/upgrade micromamba
+micromamba:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/micromamba/install
+
 # Install/upgrade all Kubernetes toolkit tools (continues on failure)
 k8s-toolkit:
     #!/usr/bin/env bash
@@ -238,6 +246,14 @@ btop:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/btop/install
+
+# Install claude-usage CLI and local OTEL stack
+claude-usage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/claude-usage/install
 
 # Install/upgrade all AI toolkit tools (continues on failure)
 ai-toolkit:

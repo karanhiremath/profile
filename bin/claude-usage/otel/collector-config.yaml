@@ -1,0 +1,73 @@
+# Local-first OTEL collector config for Claude Code usage tracking
+# Receives OTLP traces/metrics from Claude Code sessions and the claude-usage emitter.
+# Exports to local JSONL files and optionally to Prometheus for Grafana dashboards.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "localhost:4317"
+      http:
+        endpoint: "localhost:4318"
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 100
+
+  # Add resource attributes for easier querying
+  resource:
+    attributes:
+      - key: host.name
+        action: upsert
+        value: "${HOSTNAME}"
+      - key: deployment.environment
+        action: upsert
+        value: "local"
+
+  # Filter to only keep claude-related telemetry
+  filter/claude:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["service.name"] != "claude-usage"'
+
+exporters:
+  # Primary: local JSONL files (always on, no infra needed)
+  file/traces:
+    path: "${OTEL_DATA_DIR}/traces.jsonl"
+    format: json
+    rotation:
+      max_megabytes: 50
+      max_days: 30
+      max_backups: 5
+
+  file/metrics:
+    path: "${OTEL_DATA_DIR}/metrics.jsonl"
+    format: json
+    rotation:
+      max_megabytes: 20
+      max_days: 30
+      max_backups: 5
+
+  # Optional: Prometheus endpoint for Grafana
+  prometheus:
+    endpoint: "localhost:8889"
+    namespace: "claude"
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Debug: console output (disable in production)
+  # debug:
+  #   verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [file/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [file/metrics, prometheus]
