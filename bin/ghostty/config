@@ -7,6 +7,21 @@ selection-foreground = #fefefe
 
 cursor-click-to-move = false
 
+# Font
+font-size = 14
+
+# Window management
+window-save-state = always
+window-new-tab-position = end
+
+# Keybindings — tmux-connect host picker
+keybind = super+shift+k=new_tab:tmux-connect
+# Quick-connect to frequent hosts (opens in new Ghostty tab)
+keybind = super+1=new_tab:tmux-connect local
+keybind = super+2=new_tab:tmux-connect togetherai
+keybind = super+3=new_tab:tmux-connect mini
+keybind = super+4=new_tab:tmux-connect tgk2-c1
+
 palette = 0=#2f3b4e
 palette = 1=#aa4031
 palette = 2=#5eae63

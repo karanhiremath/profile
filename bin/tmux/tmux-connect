@@ -1,0 +1,151 @@
+#!/bin/bash
+# tmux-connect — SSH to a host and attach/create a tmux session
+#
+# Usage:
+#   tmux-connect                        # fzf picker from host registry
+#   tmux-connect <host>                 # connect with default session
+#   tmux-connect <host> <session>       # connect with specific session
+#   tmux-connect --list                 # list registered hosts
+#   tmux-connect --status               # check which hosts have active sessions
+#   tmux-connect --help                 # show help
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REGISTRY="${SCRIPT_DIR}/hosts/registry.conf"
+
+usage() {
+    sed -n '2,9p' "$0" | sed 's/^# //'
+}
+
+# Parse registry into arrays
+load_registry() {
+    local entries=()
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        entries+=("$line")
+    done < "$REGISTRY"
+    printf '%s\n' "${entries[@]}"
+}
+
+get_host_field() {
+    local name="$1" field="$2"
+    while IFS='|' read -r h_name h_ssh h_session h_desc; do
+        [[ -z "$h_name" || "$h_name" == \#* ]] && continue
+        if [[ "$h_name" == "$name" ]]; then
+            case "$field" in
+                ssh) echo "$h_ssh" ;;
+                session) echo "$h_session" ;;
+                desc) echo "$h_desc" ;;
+            esac
+            return 0
+        fi
+    done < "$REGISTRY"
+    return 1
+}
+
+cmd_list() {
+    printf "  %-16s %-20s %-10s %s\n" "NAME" "SSH TARGET" "SESSION" "DESCRIPTION"
+    printf "  %-16s %-20s %-10s %s\n" "────" "──────────" "───────" "───────────"
+    while IFS='|' read -r name ssh session desc; do
+        [[ -z "$name" || "$name" == \#* ]] && continue
+        printf "  %-16s %-20s %-10s %s\n" "$name" "$ssh" "$session" "$desc"
+    done < "$REGISTRY"
+}
+
+cmd_status() {
+    echo "  Checking host status..."
+    echo ""
+    printf "  %-16s %-8s %s\n" "HOST" "STATUS" "SESSIONS"
+    printf "  %-16s %-8s %s\n" "────" "──────" "────────"
+
+    while IFS='|' read -r name ssh session desc; do
+        [[ -z "$name" || "$name" == \#* ]] && continue
+
+        if [[ "$ssh" == "local" ]]; then
+            sessions=$(tmux list-sessions -F '#S' 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
+            printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
+        else
+            # Quick SSH check with timeout
+            if ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" 2>/dev/null; then
+                sessions=$(ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" | tr '\n' ', ' | sed 's/,$//')
+                printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
+            else
+                printf "  %-16s %-8s %s\n" "$name" "⬚" "-"
+            fi
+        fi
+    done < "$REGISTRY"
+}
+
+connect_host() {
+    local name="$1"
+    local session="${2:-}"
+
+    local ssh_target
+    ssh_target=$(get_host_field "$name" "ssh") || {
+        echo "Unknown host: $name"
+        echo "Run 'tmux-connect --list' to see available hosts"
+        exit 1
+    }
+
+    if [[ -z "$session" ]]; then
+        session=$(get_host_field "$name" "session")
+    fi
+
+    echo "Connecting to $name ($ssh_target) → tmux session: $session"
+
+    if [[ "$ssh_target" == "local" ]]; then
+        # Local: attach or create
+        if tmux has-session -t "$session" 2>/dev/null; then
+            if [[ -n "${TMUX:-}" ]]; then
+                tmux switch-client -t "$session"
+            else
+                tmux attach-session -t "$session"
+            fi
+        else
+            # Check for a layout script
+            local layout="${SCRIPT_DIR}/sessions/${session}.sh"
+            if [[ -x "$layout" ]]; then
+                exec "$layout" "$session"
+            else
+                tmux new-session -s "$session"
+            fi
+        fi
+    else
+        # Remote: SSH with tmux attach-or-create
+        exec ssh -t "$ssh_target" "tmux new-session -A -s ${session}"
+    fi
+}
+
+cmd_picker() {
+    if ! command -v fzf &>/dev/null; then
+        echo "fzf not installed — listing hosts instead:"
+        echo ""
+        cmd_list
+        echo ""
+        echo "Usage: tmux-connect <host> [session]"
+        return
+    fi
+
+    local selection
+    selection=$(
+        while IFS='|' read -r name ssh session desc; do
+            [[ -z "$name" || "$name" == \#* ]] && continue
+            printf "%-16s  %-20s  %s\n" "$name" "($ssh → $session)" "$desc"
+        done < "$REGISTRY" | fzf --prompt="Connect to > " --header="HOST                TARGET                DESCRIPTION" --reverse
+    ) || exit 0
+
+    local host
+    host=$(echo "$selection" | awk '{print $1}')
+    connect_host "$host"
+}
+
+# --- Main ---
+
+case "${1:-}" in
+    -h|--help|help)   usage ;;
+    -l|--list|list)   cmd_list ;;
+    -s|--status|status) cmd_status ;;
+    "")               cmd_picker ;;
+    *)                connect_host "$1" "${2:-}" ;;
+esac
