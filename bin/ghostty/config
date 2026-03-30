@@ -14,13 +14,20 @@ font-size = 14
 window-save-state = always
 window-new-tab-position = end
 
-# Keybindings — tmux-connect host picker
-keybind = super+shift+k=new_tab:tmux-connect
-# Quick-connect to frequent hosts (opens in new Ghostty tab)
-keybind = super+1=new_tab:tmux-connect local
-keybind = super+2=new_tab:tmux-connect togetherai
-keybind = super+3=new_tab:tmux-connect mini
-keybind = super+4=new_tab:tmux-connect tgk2-c1
+# Host picker — ⌘⇧K opens new tab, types tc to launch fzf picker
+keybind = super+shift+k=new_tab
+keybind = super+shift+k=text:tc\x0a
+
+# Command palette entries for host connections (⌘⇧P → type host name)
+command-palette-entry = title:"Connect: Together AI",description:"SSH + tmux to Together AI dev node",action:"new_window:/bin/zsh -ic 'tc togetherai'"
+command-palette-entry = title:"Connect: Mac Mini",description:"SSH + tmux to home Mac Mini",action:"new_window:/bin/zsh -ic 'tc mini'"
+command-palette-entry = title:"Connect: Local",description:"Attach local tmux session",action:"new_window:/bin/zsh -ic 'tc local'"
+command-palette-entry = title:"Connect: Training",description:"SSH + tmux to training bastion",action:"new_window:/bin/zsh -ic 'tc training'"
+command-palette-entry = title:"Connect: TGK2 C1",description:"SSH + tmux to TGK2 controller 1",action:"new_window:/bin/zsh -ic 'tc tgk2-c1'"
+command-palette-entry = title:"Connect: TGK2 C2",description:"SSH + tmux to TGK2 controller 2",action:"new_window:/bin/zsh -ic 'tc tgk2-c2'"
+command-palette-entry = title:"Connect: CXIS Dev",description:"SSH + tmux to CXIS dev node",action:"new_window:/bin/zsh -ic 'tc cxis-dev'"
+command-palette-entry = title:"Connect: CXIS Login",description:"SSH + tmux to CXIS login node",action:"new_window:/bin/zsh -ic 'tc cxis-login'"
+command-palette-entry = title:"Host Status",description:"Check which hosts are reachable",action:"new_window:/bin/zsh -ic 'tc --status; read'"
 
 palette = 0=#2f3b4e
 palette = 1=#aa4031
