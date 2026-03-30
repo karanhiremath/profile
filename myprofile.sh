@@ -91,3 +91,21 @@ alias nvim="~/.local/share/bob/nvim-bin/nvim"
 function tl() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-load "$@"; }
 function ts() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-save "$@"; }
 function tc() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-connect "$@"; }
+
+# tc completions — dynamically reads host registry
+_tc_completions() {
+    local registry="${PROFILE_DIR:-$HOME/profile}/bin/tmux/hosts/registry.conf"
+    local -a hosts flags
+    flags=("--list" "--status" "--help")
+    if [[ -f "$registry" ]]; then
+        hosts=(${(f)"$(grep -v '^#' "$registry" | grep -v '^$' | cut -d'|' -f1)"})
+    fi
+    if (( CURRENT == 2 )); then
+        _describe 'host' hosts -- flags
+    elif (( CURRENT == 3 )); then
+        # Second arg: session name — complete from local tmux sessions or common names
+        local -a sessions=("dev" "mac" "gpu" "work")
+        _describe 'session' sessions
+    fi
+}
+compdef _tc_completions tc
