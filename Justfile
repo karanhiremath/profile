@@ -10,6 +10,26 @@ all: git tmux nvim
 install:
     ./install.sh
 
+# Bootstrap a personal node (profile + notes)
+setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SRC_DIR="${HOME}/src"
+    mkdir -p "$SRC_DIR"
+    echo "▸ profile already here"
+    if [ -d "$SRC_DIR/notes/.git" ]; then
+        echo "▸ notes — pulling"
+        cd "$SRC_DIR/notes" && git pull --ff-only 2>/dev/null || true
+    else
+        echo "▸ cloning notes"
+        git clone "https://github.com/karanhiremath/notes.git" "$SRC_DIR/notes"
+    fi
+    just install
+    echo ""
+    echo "Done. Repos:"
+    echo "  ~/src/profile  (personal tooling)"
+    echo "  ~/src/notes    (personal KB)"
+
 alacritty:
     # alacritty install
 
