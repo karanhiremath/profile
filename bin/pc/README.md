@@ -2,9 +2,7 @@
 
 `pc` is a Rust CLI for opening a **project-centric tmux workspace** around `pi`.
 
-It is intended to be the personal/local counterpart to `tc`:
-- `tc` → cluster / host attachment
-- `pc` → local coding workspace orchestration
+It is a Rust CLI for local/project-centric coding workspace orchestration around `pi`.
 
 Source lives in:
 - `~/src/profile/bin/pc/`
@@ -167,7 +165,7 @@ Expected helpers:
 - `pc` → main CLI
 - `db` → dashboard jump helper (planned)
 
-`tc` remains cluster-focused and comes from `karan.hiremath` shell extensions.
+Work-cluster installation and rollout of `pc` are tracked in `~/src/karan.hiremath`.
 
 ---
 
