@@ -106,8 +106,58 @@ _tc_completions() {
         _describe 'host' hosts -- flags
     elif (( CURRENT == 3 )); then
         # Second arg: session name — complete from local tmux sessions or common names
-        local -a sessions=("dev" "mac" "gpu" "work")
+        local -a sessions=("dev" "mac" "gpu" "work" "fips" "ops" "home")
         _describe 'session' sessions
     fi
 }
 compdef _tc_completions tc
+
+# ── Cluster shortcuts ──────────────────────────────────────────
+# Training cluster:  tc (crusoe default), tc tg (together)
+# Inference cluster: ic (together default), ic us, ic eu, ic uk, ic ap, ic au
+#
+# These wrap `tc` (tmux-connect). No args = default landing pad.
+
+function train() {
+    case "${1:-}" in
+        tg|together)  tc tg-train "${2:-}" ;;
+        "")           tc cxis-devlarge "${2:-}" ;;
+        *)            tc "$@" ;;  # passthrough to tmux-connect
+    esac
+}
+
+function ic() {
+    case "${1:-}" in
+        tg|"")        tc ic-tg-prod "${2:-}" ;;
+        staging)      tc ic-tg-staging "${2:-}" ;;
+        us)           tc ic-us "${2:-}" ;;
+        eu)           tc ic-eu "${2:-}" ;;
+        uk)           tc ic-uk "${2:-}" ;;
+        ap)           tc ic-ap "${2:-}" ;;
+        au)           tc ic-au "${2:-}" ;;
+        *)            echo "ic: unknown region '$1' (tg|us|eu|uk|ap|au)" ;;
+    esac
+}
+
+_train_completions() {
+    if (( CURRENT == 2 )); then
+        local -a clusters=("tg" "together")
+        _describe 'cluster' clusters
+    elif (( CURRENT == 3 )); then
+        local -a sessions=("dev" "fips" "ops" "home")
+        _describe 'session' sessions
+    fi
+}
+
+_ic_completions() {
+    if (( CURRENT == 2 )); then
+        local -a regions=("tg" "staging" "us" "eu" "uk" "ap" "au")
+        _describe 'region' regions
+    elif (( CURRENT == 3 )); then
+        local -a sessions=("ops" "dev" "home")
+        _describe 'session' sessions
+    fi
+}
+
+compdef _train_completions train
+compdef _ic_completions ic
