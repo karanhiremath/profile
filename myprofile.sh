@@ -92,21 +92,32 @@ alias nvim="~/.local/share/bob/nvim-bin/nvim"
 # tmux session management
 function tl() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-load "$@"; }
 function ts() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-save "$@"; }
-function tc() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-connect "$@"; }
+function _tmux_connect() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-connect "$@"; }
 
-# tc completions — dynamically reads host registry
+# tc = training cluster (default: crusoe devlarge)
+# tc tg = together AI training
+# tc <any registered host> = passthrough to tmux-connect
+function tc() {
+    case "${1:-}" in
+        "")           _tmux_connect cxis-devlarge "${2:-}" ;;
+        tg|together)  _tmux_connect tg-train "${2:-}" ;;
+        -*)           _tmux_connect "$@" ;;  # flags like --list, --status
+        *)            _tmux_connect "$@" ;;  # any host name
+    esac
+}
+
 _tc_completions() {
     local registry="${PROFILE_DIR:-$HOME/profile}/bin/tmux/hosts/registry.conf"
-    local -a hosts flags
+    local -a hosts flags clusters
     flags=("--list" "--status" "--help")
+    clusters=("tg" "together")
     if [[ -f "$registry" ]]; then
         hosts=(${(f)"$(grep -v '^#' "$registry" | grep -v '^$' | cut -d'|' -f1)"})
     fi
     if (( CURRENT == 2 )); then
-        _describe 'host' hosts -- flags
+        _describe 'cluster' clusters -- hosts -- flags
     elif (( CURRENT == 3 )); then
-        # Second arg: session name — complete from local tmux sessions or common names
-        local -a sessions=("dev" "mac" "gpu" "work" "fips" "ops" "home")
+        local -a sessions=("dev" "mac" "gpu" "fips" "ops" "home")
         _describe 'session' sessions
     fi
 }
@@ -118,41 +129,22 @@ compdef _tc_completions tc
 #
 # These wrap `tc` (tmux-connect). No args = default landing pad.
 
-function train() {
-    case "${1:-}" in
-        tg|together)  tc tg-train "${2:-}" ;;
-        "")           tc cxis-devlarge "${2:-}" ;;
-        *)            tc "$@" ;;  # passthrough to tmux-connect
-    esac
-}
-
 function ic() {
     case "${1:-}" in
         tg|"")        tc ic-tg-prod "${2:-}" ;;
         staging)      tc ic-tg-staging "${2:-}" ;;
-        us-w|usw)     tc ic-us-west "${2:-}" ;;
-        us-e|use)     tc ic-us-east "${2:-}" ;;
+        us|usw|us-w)  tc ic-us-west "${2:-}" ;;
         eu)           tc ic-eu "${2:-}" ;;
         uk)           tc ic-uk "${2:-}" ;;
         ap)           tc ic-ap "${2:-}" ;;
         au)           tc ic-au "${2:-}" ;;
-        *)            echo "ic: unknown region '$1' (tg|staging|us-w|us-e|eu|uk|ap|au)" ;;
+        *)            echo "ic: unknown region '$1' (tg|staging|us|eu|uk|ap|au)" ;;
     esac
-}
-
-_train_completions() {
-    if (( CURRENT == 2 )); then
-        local -a clusters=("tg" "together")
-        _describe 'cluster' clusters
-    elif (( CURRENT == 3 )); then
-        local -a sessions=("dev" "fips" "ops" "home")
-        _describe 'session' sessions
-    fi
 }
 
 _ic_completions() {
     if (( CURRENT == 2 )); then
-        local -a regions=("tg" "staging" "us-w" "us-e" "eu" "uk" "ap" "au")
+        local -a regions=("tg" "staging" "us" "eu" "uk" "ap" "au")
         _describe 'region' regions
     elif (( CURRENT == 3 )); then
         local -a sessions=("ops" "dev" "home")
@@ -160,5 +152,4 @@ _ic_completions() {
     fi
 }
 
-compdef _train_completions train
 compdef _ic_completions ic
