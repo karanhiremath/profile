@@ -66,8 +66,9 @@ impl Config {
             .clamp(10, 60);
 
         // Open nvim with telescope-pc project picker on startup
+        // Note: tmux passes commands through the shell, so avoid bare parentheses.
         let nvim_open_cmd = env::var("PC_NVIM_CMD")
-            .unwrap_or_else(|_| r#"+lua require('kh.telescope-pc').pick_project()"#.to_string());
+            .unwrap_or_else(|_| "+lua require('kh.telescope-pc').pick_project()".to_string());
 
         let db_top_cmd = env::var("PC_DB_TOP").unwrap_or_else(|_| "btop".into());
 

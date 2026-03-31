@@ -116,35 +116,28 @@ impl<'a> Tmux<'a> {
         Ok(())
     }
 
-    /// Split a pane horizontally (right) and run a command.
-    pub fn split_right(&self, target: &str, dir: &str, pct: u8, cmd: &str) -> Result<()> {
-        self.run(&[
-            "split-window",
-            "-t",
-            target,
-            "-h",
-            "-l",
-            &format!("{pct}%"),
-            "-c",
-            dir,
-            cmd,
-        ])?;
+    /// Split a pane. direction is "-h" (right) or "-v" (below). Spawns a plain shell.
+    pub fn split_pane(&self, target: &str, dir: &str, direction: &str) -> Result<()> {
+        self.run(&["split-window", direction, "-t", target, "-c", dir])?;
         Ok(())
     }
 
-    /// Split a pane vertically (bottom) and run a command.
-    pub fn split_bottom(&self, target: &str, dir: &str, pct: u8, cmd: &str) -> Result<()> {
-        self.run(&[
-            "split-window",
-            "-t",
-            target,
-            "-v",
-            "-l",
-            &format!("{pct}%"),
-            "-c",
-            dir,
-            cmd,
-        ])?;
+    /// Apply a tmux layout (e.g. "main-vertical", "main-horizontal", "tiled",
+    /// or a raw layout string from `list-windows -F '#{window_layout}'`).
+    pub fn apply_layout(&self, target: &str, layout: &str) -> Result<()> {
+        self.run(&["select-layout", "-t", target, layout])?;
+        Ok(())
+    }
+
+    /// Send keys (a command) to a pane, followed by Enter.
+    pub fn send_keys(&self, target: &str, keys: &str) -> Result<()> {
+        self.run(&["send-keys", "-t", target, keys, "Enter"])?;
+        Ok(())
+    }
+
+    /// Respawn a pane with a new command (kills current process, starts fresh).
+    pub fn respawn_pane(&self, target: &str, dir: &str, cmd: &str) -> Result<()> {
+        self.run(&["respawn-pane", "-k", "-t", target, "-c", dir, cmd])?;
         Ok(())
     }
 
@@ -176,31 +169,19 @@ impl<'a> Tmux<'a> {
         Ok(())
     }
 
-    /// Create a new window at a specific index (pushes existing windows down).
-    pub fn new_window_at(
-        &self,
-        session: &str,
-        name: &str,
-        dir: &str,
-        cmd: &str,
-        index: usize,
-    ) -> Result<()> {
-        let target = format!("{session}:{index}");
-        // -b = insert before, -d = don't switch to it yet
-        self.run(&[
-            "new-window", "-b", "-d", "-t", &target, "-n", name, "-c", dir, cmd,
-        ])?;
-        Ok(())
-    }
-
-    /// Check if a window exists.
-    pub fn has_window(&self, target: &str) -> bool {
-        Command::new("tmux")
-            .args(["select-window", "-t", target])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+    /// Check if a window exists by name in a session (read-only).
+    pub fn has_window(&self, session: &str, window: &str) -> bool {
+        let output = Command::new("tmux")
+            .args(["list-windows", "-t", session, "-F", "#{window_name}"])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|l| l == window)
+            }
+            _ => false,
+        }
     }
 
     /// Select a window by target.

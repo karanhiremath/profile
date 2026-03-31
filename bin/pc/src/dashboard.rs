@@ -56,20 +56,20 @@ fn build_bottom_panels(cfg: &Config, tmux: &Tmux, target: &str, dir: &str) -> Re
     panels.truncate(3);
 
     // ── Build bottom row ───────────────────────────────
-    // First panel: split bottom from btop (pane 0)
-    let first = &panels[0];
-    tmux.split_bottom(&format!("{target}.0"), dir, 45, &first.cmd)?;
+    // Split pane 0 (btop) to create bottom panes, then send commands.
+    tmux.split_pane(&format!("{target}.0"), dir, "-v")?; // pane 1
 
-    // Remaining panels: split right from the previous
-    for (i, panel) in panels.iter().skip(1).enumerate() {
-        let pane_idx = i + 1;
-        let remaining = panels.len() - i - 1;
-        let pct = match remaining {
-            0 => 50,
-            _ => 100 / (remaining as u8 + 1),
-        };
-        let pct = pct.max(30).min(60);
-        tmux.split_right(&format!("{target}.{pane_idx}"), dir, pct, &panel.cmd)?;
+    for _ in 1..panels.len() {
+        tmux.split_pane(&format!("{target}.1"), dir, "-h")?; // pane 2, 3, ...
+    }
+
+    // Apply tiled layout to the bottom row
+    // (main-horizontal keeps btop on top, tiles the rest below)
+    tmux.apply_layout(target, "main-horizontal")?;
+
+    // Send commands to bottom panes (pane 0 = btop already running)
+    for (i, panel) in panels.iter().enumerate() {
+        tmux.send_keys(&format!("{target}.{}", i + 1), &panel.cmd)?;
     }
 
     Ok(())

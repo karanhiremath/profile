@@ -6,23 +6,22 @@ use crate::dashboard;
 use crate::error::PcError;
 use crate::tmux::Tmux;
 
-/// Launch or attach to a pc workspace.
+/// Launch a pc workspace for a project.
 ///
-/// **Inside tmux:** adds "pc" and "db" windows to the current session.
-/// **Outside tmux:** creates a new session `pi_<project>` and attaches.
+/// **Inside tmux:** adds coding + dashboard windows to current session.
+/// **Outside tmux:** creates a new session and attaches.
 ///
-/// Window "<project>" (coding):        Window "<project>-db" (dashboard):
+/// Coding window "<project>":          Dashboard "<project>-db":
 /// ┌──────────┬──────────┐             ┌────────────────────┐
 /// │  NVIM    │          │             │       BTOP          │
 /// │(telescope│   PI     │             ├──────┬──────┬───────┤
 /// ├──────────┤          │             │ k9s  │slurm │dd-logs│
 /// │  ZSH     │          │             └──────┴──────┴───────┘
-/// └──────────┴──────────┘             (auto-detected panels)
+/// └──────────┴──────────┘
 ///
-/// Panes in coding window: 0=nvim 1=pi 2=zsh
+/// Pane 0: nvim, Pane 1: pi, Pane 2: zsh
 pub fn launch(cfg: &Config, tmux: &Tmux, project: &str, pi_args: &[String]) -> Result<()> {
     let dir = cfg.project_dir(project);
-
     if !dir.exists() {
         return Err(PcError::ProjectNotFound(
             project.into(),
@@ -30,7 +29,6 @@ pub fn launch(cfg: &Config, tmux: &Tmux, project: &str, pi_args: &[String]) -> R
         )
         .into());
     }
-
     let dir_str = dir.to_string_lossy();
 
     if tmux.is_inside_tmux() {
@@ -40,7 +38,46 @@ pub fn launch(cfg: &Config, tmux: &Tmux, project: &str, pi_args: &[String]) -> R
     }
 }
 
-/// Inside tmux: add windows to the current session, switch to the pc window.
+/// Build the coding window layout: 3 panes, send commands, apply layout.
+fn build_coding_window(
+    cfg: &Config,
+    tmux: &Tmux,
+    target: &str, // session:window
+    dir: &str,
+    pi_args: &[String],
+) -> Result<()> {
+    // Create 2 more panes (window already has pane 0)
+    tmux.split_pane(&format!("{target}.0"), dir, "-h")?; // pane 1: right
+    tmux.split_pane(&format!("{target}.0"), dir, "-v")?; // pane 2: below pane 0
+
+    // Apply layout: nvim (top-left), pi (right full), zsh (bottom-left)
+    tmux.apply_layout(target, "main-vertical")?;
+
+    // Now pane indices are stable. Send commands.
+    // Pane 0: nvim with telescope
+    let nvim_cmd = format!(
+        "{} '+lua require(\"kh.telescope-pc\").pick_project()'",
+        cfg.nvim_bin
+    );
+    tmux.send_keys(&format!("{target}.0"), &nvim_cmd)?;
+
+    // Pane 1: pi
+    let mut pi_cmd = cfg.pi_bin.clone();
+    for arg in pi_args {
+        pi_cmd.push(' ');
+        pi_cmd.push_str(arg);
+    }
+    tmux.send_keys(&format!("{target}.1"), &pi_cmd)?;
+
+    // Pane 2: zsh (already running, just clear)
+    tmux.send_keys(&format!("{target}.2"), "clear")?;
+
+    // Focus nvim pane
+    tmux.select_pane(&format!("{target}.0"))?;
+
+    Ok(())
+}
+
 fn launch_in_session(
     cfg: &Config,
     tmux: &Tmux,
@@ -50,59 +87,34 @@ fn launch_in_session(
 ) -> Result<()> {
     let pc_win = Config::pc_window_name(project);
     let db_win = Config::db_window_name(project);
+    let sess = tmux.current_session().ok_or(PcError::NotInSession)?;
+    let pc_target = format!("{sess}:{pc_win}");
 
-    let current_sess = tmux
-        .current_session()
-        .ok_or(PcError::NotInSession)?;
-
-    let pc_target = format!("{current_sess}:{pc_win}");
-
-    // If the pc window already exists, just switch to it
-    if tmux.has_window(&pc_target) {
-        eprintln!(
-            "{} to existing window {}",
-            "Switching".cyan(),
-            pc_win.bold()
-        );
+    if tmux.has_window(&sess, &pc_win) {
+        eprintln!("{} to window {}", "Switching".cyan(), pc_win.bold());
         tmux.select_window(&pc_target)?;
         return Ok(());
     }
 
     eprintln!(
-        "{} workspace {} in session {}",
+        "{} workspace {} → {}",
         "Creating".green(),
         project.bold(),
-        current_sess.dimmed()
+        dir.dimmed()
     );
 
-    let pi_cmd = build_pi_cmd(cfg, pi_args);
-    let nvim_cmd = format!("{} {}", cfg.nvim_bin, cfg.nvim_open_cmd);
+    // Create coding window (plain shell), then build layout
+    tmux.new_window(&sess, &pc_win, dir, "zsh")?;
+    build_coding_window(cfg, tmux, &pc_target, dir, pi_args)?;
 
-    // ── Coding window ──────────────────────────────────
-    // New window at position 0 (first)
-    tmux.new_window_at(&current_sess, &pc_win, dir, &nvim_cmd, 0)?;
+    // Dashboard
+    dashboard::create_dashboard_in_session(cfg, tmux, &sess, &db_win, dir)?;
 
-    let pc_target = format!("{current_sess}:{pc_win}");
-
-    // Split pane 0 right → pane 1 (pi, full-height)
-    tmux.split_right(&format!("{pc_target}.0"), dir, cfg.pi_split_pct, &pi_cmd)?;
-
-    // Split pane 0 bottom → pane 2 (zsh)
-    tmux.split_bottom(&format!("{pc_target}.0"), dir, cfg.zsh_split_pct, "zsh")?;
-
-    // Focus nvim
-    tmux.select_pane(&format!("{pc_target}.0"))?;
-
-    // ── Dashboard window ───────────────────────────────
-    dashboard::create_dashboard_in_session(cfg, tmux, &current_sess, &db_win, dir)?;
-
-    // Switch to the coding window
+    // Switch to coding window
     tmux.select_window(&pc_target)?;
-
     Ok(())
 }
 
-/// Outside tmux: create a new session and attach.
 fn launch_new_session(
     cfg: &Config,
     tmux: &Tmux,
@@ -114,13 +126,8 @@ fn launch_new_session(
     let pc_win = Config::pc_window_name(project);
     let db_win = Config::db_window_name(project);
 
-    // If session exists, just attach
     if tmux.has_session(&sess) {
-        eprintln!(
-            "{} to existing session {}",
-            "Attaching".cyan(),
-            project.bold()
-        );
+        eprintln!("{} to session {}", "Attaching".cyan(), project.bold());
         return tmux.attach_session(&sess);
     }
 
@@ -131,39 +138,17 @@ fn launch_new_session(
         dir.dimmed()
     );
 
-    let pi_cmd = build_pi_cmd(cfg, pi_args);
-    let nvim_cmd = format!("{} {}", cfg.nvim_bin, cfg.nvim_open_cmd);
-
-    // ── Coding window (first window in new session) ────
-    tmux.create_session(&sess, dir, &nvim_cmd)?;
+    // Create session with a plain shell, rename window, build layout
+    tmux.create_session(&sess, dir, "zsh")?;
     tmux.rename_window(&format!("{sess}:0"), &pc_win)?;
 
     let pc_target = format!("{sess}:{pc_win}");
+    build_coding_window(cfg, tmux, &pc_target, dir, pi_args)?;
 
-    // Split pane 0 right → pane 1 (pi, full-height)
-    tmux.split_right(&format!("{pc_target}.0"), dir, cfg.pi_split_pct, &pi_cmd)?;
-
-    // Split pane 0 bottom → pane 2 (zsh)
-    tmux.split_bottom(&format!("{pc_target}.0"), dir, cfg.zsh_split_pct, "zsh")?;
-
-    // Focus nvim
-    tmux.select_pane(&format!("{pc_target}.0"))?;
-
-    // ── Dashboard window ───────────────────────────────
+    // Dashboard
     dashboard::create_dashboard_in_session(cfg, tmux, &sess, &db_win, dir)?;
 
-    // Select the coding window
+    // Select coding window and attach
     tmux.select_window(&pc_target)?;
-
-    // Attach
     tmux.attach_session(&sess)
-}
-
-fn build_pi_cmd(cfg: &Config, pi_args: &[String]) -> String {
-    let mut cmd = cfg.pi_bin.clone();
-    for arg in pi_args {
-        cmd.push(' ');
-        cmd.push_str(arg);
-    }
-    cmd
 }
