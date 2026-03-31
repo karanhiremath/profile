@@ -18,6 +18,23 @@ window-new-tab-position = end
 keybind = super+shift+k=new_tab
 keybind = super+shift+k=text:tc\x0a
 
+# Pane navigation — opt+shift+hjkl
+keybind = alt+shift+h=goto_split:left
+keybind = alt+shift+j=goto_split:bottom
+keybind = alt+shift+k=goto_split:top
+keybind = alt+shift+l=goto_split:right
+
+# Pane picker — opt+shift+q then number (goto_split:N is 0-indexed)
+keybind = alt+shift+q>1=goto_split:0
+keybind = alt+shift+q>2=goto_split:1
+keybind = alt+shift+q>3=goto_split:2
+keybind = alt+shift+q>4=goto_split:3
+keybind = alt+shift+q>5=goto_split:4
+keybind = alt+shift+q>6=goto_split:5
+keybind = alt+shift+q>7=goto_split:6
+keybind = alt+shift+q>8=goto_split:7
+keybind = alt+shift+q>9=goto_split:8
+
 # Command palette entries for host connections (⌘⇧P → type host name)
 command-palette-entry = title:"Connect: Together AI",description:"SSH + tmux to Together AI dev node",action:"new_window:/bin/zsh -ic 'tc togetherai'"
 command-palette-entry = title:"Connect: Mac Mini",description:"SSH + tmux to home Mac Mini",action:"new_window:/bin/zsh -ic 'tc mini'"
