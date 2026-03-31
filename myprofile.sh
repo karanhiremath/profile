@@ -130,12 +130,13 @@ function ic() {
     case "${1:-}" in
         tg|"")        tc ic-tg-prod "${2:-}" ;;
         staging)      tc ic-tg-staging "${2:-}" ;;
-        us)           tc ic-us "${2:-}" ;;
+        us-w|usw)     tc ic-us-west "${2:-}" ;;
+        us-e|use)     tc ic-us-east "${2:-}" ;;
         eu)           tc ic-eu "${2:-}" ;;
         uk)           tc ic-uk "${2:-}" ;;
         ap)           tc ic-ap "${2:-}" ;;
         au)           tc ic-au "${2:-}" ;;
-        *)            echo "ic: unknown region '$1' (tg|us|eu|uk|ap|au)" ;;
+        *)            echo "ic: unknown region '$1' (tg|staging|us-w|us-e|eu|uk|ap|au)" ;;
     esac
 }
 
@@ -151,7 +152,7 @@ _train_completions() {
 
 _ic_completions() {
     if (( CURRENT == 2 )); then
-        local -a regions=("tg" "staging" "us" "eu" "uk" "ap" "au")
+        local -a regions=("tg" "staging" "us-w" "us-e" "eu" "uk" "ap" "au")
         _describe 'region' regions
     elif (( CURRENT == 3 )); then
         local -a sessions=("ops" "dev" "home")
