@@ -13,44 +13,63 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="${SCRIPT_DIR}/hosts/registry.conf"
+# Work-specific host registries (loaded in order, later entries win)
+EXTRA_REGISTRIES="${TMUX_CONNECT_EXTRA_REGISTRIES:-}"
 
 usage() {
     sed -n '2,9p' "$0" | sed 's/^# //'
 }
 
-# Parse registry into arrays
+# All registry files (base + extras)
+all_registries() {
+    echo "$REGISTRY"
+    if [ -n "$EXTRA_REGISTRIES" ]; then
+        echo "$EXTRA_REGISTRIES" | tr ':' '\n'
+    fi
+}
+
+# Parse all registries into entries
 load_registry() {
     local entries=()
-    while IFS= read -r line; do
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        entries+=("$line")
-    done < "$REGISTRY"
+    for reg in $(all_registries); do
+        [ -f "$reg" ] || continue
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            entries+=("$line")
+        done < "$reg"
+    done
     printf '%s\n' "${entries[@]}"
 }
 
 get_host_field() {
     local name="$1" field="$2"
-    while IFS='|' read -r h_name h_ssh h_session h_desc; do
-        [[ -z "$h_name" || "$h_name" == \#* ]] && continue
-        if [[ "$h_name" == "$name" ]]; then
-            case "$field" in
-                ssh) echo "$h_ssh" ;;
-                session) echo "$h_session" ;;
-                desc) echo "$h_desc" ;;
-            esac
-            return 0
-        fi
-    done < "$REGISTRY"
+    for reg in $(all_registries); do
+        [ -f "$reg" ] || continue
+        while IFS='|' read -r h_name h_ssh h_session h_desc; do
+            [[ -z "$h_name" || "$h_name" == \#* ]] && continue
+            if [[ "$h_name" == "$name" ]]; then
+                case "$field" in
+                    ssh) echo "$h_ssh" ;;
+                    session) echo "$h_session" ;;
+                    desc) echo "$h_desc" ;;
+                esac
+                return 0
+            fi
+        done < "$reg"
+    done
     return 1
 }
 
 cmd_list() {
     printf "  %-16s %-20s %-10s %s\n" "NAME" "SSH TARGET" "SESSION" "DESCRIPTION"
     printf "  %-16s %-20s %-10s %s\n" "────" "──────────" "───────" "───────────"
-    while IFS='|' read -r name ssh session desc; do
-        [[ -z "$name" || "$name" == \#* ]] && continue
-        printf "  %-16s %-20s %-10s %s\n" "$name" "$ssh" "$session" "$desc"
-    done < "$REGISTRY"
+    for reg in $(all_registries); do
+        [ -f "$reg" ] || continue
+        while IFS='|' read -r name ssh session desc; do
+            [[ -z "$name" || "$name" == \#* ]] && continue
+            printf "  %-16s %-20s %-10s %s\n" "$name" "$ssh" "$session" "$desc"
+        done < "$reg"
+    done
 }
 
 cmd_status() {
@@ -59,22 +78,24 @@ cmd_status() {
     printf "  %-16s %-8s %s\n" "HOST" "STATUS" "SESSIONS"
     printf "  %-16s %-8s %s\n" "────" "──────" "────────"
 
-    while IFS='|' read -r name ssh session desc; do
-        [[ -z "$name" || "$name" == \#* ]] && continue
+    for reg in $(all_registries); do
+        [ -f "$reg" ] || continue
+        while IFS='|' read -r name ssh session desc; do
+            [[ -z "$name" || "$name" == \#* ]] && continue
 
-        if [[ "$ssh" == "local" ]]; then
-            sessions=$(tmux list-sessions -F '#S' 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
-            printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
-        else
-            # Quick SSH check with timeout
-            if ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" 2>/dev/null; then
-                sessions=$(ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" | tr '\n' ', ' | sed 's/,$//')
+            if [[ "$ssh" == "local" ]]; then
+                sessions=$(tmux list-sessions -F '#S' 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
                 printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
             else
-                printf "  %-16s %-8s %s\n" "$name" "⬚" "-"
+                if ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" 2>/dev/null; then
+                    sessions=$(ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" | tr '\n' ', ' | sed 's/,$//')
+                    printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
+                else
+                    printf "  %-16s %-8s %s\n" "$name" "⬚" "-"
+                fi
             fi
-        fi
-    done < "$REGISTRY"
+        done < "$reg"
+    done
 }
 
 connect_host() {

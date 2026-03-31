@@ -92,64 +92,25 @@ alias nvim="~/.local/share/bob/nvim-bin/nvim"
 # tmux session management
 function tl() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-load "$@"; }
 function ts() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-save "$@"; }
-function _tmux_connect() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-connect "$@"; }
+function tc() { "${PROFILE_DIR:-$HOME/profile}"/bin/tmux/tmux-connect "$@"; }
 
-# tc = training cluster (default: crusoe devlarge)
-# tc tg = together AI training
-# tc <any registered host> = passthrough to tmux-connect
-function tc() {
-    case "${1:-}" in
-        "")           _tmux_connect cxis-devlarge "${2:-}" ;;
-        tg|together)  _tmux_connect tg-train "${2:-}" ;;
-        -*)           _tmux_connect "$@" ;;  # flags like --list, --status
-        *)            _tmux_connect "$@" ;;  # any host name
-    esac
-}
-
+# tc completions — dynamically reads host registry
 _tc_completions() {
     local registry="${PROFILE_DIR:-$HOME/profile}/bin/tmux/hosts/registry.conf"
-    local -a hosts flags clusters
+    local -a hosts flags
     flags=("--list" "--status" "--help")
-    clusters=("tg" "together")
     if [[ -f "$registry" ]]; then
         hosts=(${(f)"$(grep -v '^#' "$registry" | grep -v '^$' | cut -d'|' -f1)"})
     fi
     if (( CURRENT == 2 )); then
-        _describe 'cluster' clusters -- hosts -- flags
+        _describe 'host' hosts -- flags
     elif (( CURRENT == 3 )); then
-        local -a sessions=("dev" "mac" "gpu" "fips" "ops" "home")
+        local -a sessions=("dev" "mac" "gpu" "work")
         _describe 'session' sessions
     fi
 }
 compdef _tc_completions tc
 
-# ── Cluster shortcuts ──────────────────────────────────────────
-# Training cluster:  tc (crusoe default), tc tg (together)
-# Inference cluster: ic (together default), ic us, ic eu, ic uk, ic ap, ic au
-#
-# These wrap `tc` (tmux-connect). No args = default landing pad.
-
-function ic() {
-    case "${1:-}" in
-        tg|"")        tc ic-tg-prod "${2:-}" ;;
-        staging)      tc ic-tg-staging "${2:-}" ;;
-        us|usw|us-w)  tc ic-us-west "${2:-}" ;;
-        eu)           tc ic-eu "${2:-}" ;;
-        uk)           tc ic-uk "${2:-}" ;;
-        ap)           tc ic-ap "${2:-}" ;;
-        au)           tc ic-au "${2:-}" ;;
-        *)            echo "ic: unknown region '$1' (tg|staging|us|eu|uk|ap|au)" ;;
-    esac
-}
-
-_ic_completions() {
-    if (( CURRENT == 2 )); then
-        local -a regions=("tg" "staging" "us" "eu" "uk" "ap" "au")
-        _describe 'region' regions
-    elif (( CURRENT == 3 )); then
-        local -a sessions=("ops" "dev" "home")
-        _describe 'session' sessions
-    fi
-}
-
-compdef _ic_completions ic
+# Source work-specific extensions if present
+# karan.hiremath provides: tc/ic cluster overrides, host registry, dashboard
+[ -f "$HOME/src/karan.hiremath/scripts/shell-ext.sh" ] && source "$HOME/src/karan.hiremath/scripts/shell-ext.sh"
