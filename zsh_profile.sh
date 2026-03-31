@@ -1,7 +1,5 @@
 source ~/.config/.vars
 
-source "${PROFILE_DIR}/myprofile.sh"
-
 alias reload="source ~/.zshrc && echo 'ZSH Profile Reloaded'"
 alias relaod="reload"
 
@@ -12,6 +10,8 @@ autoload -Uz promptinit && promptinit
 # initialize completio
 autoload -Uz compinit
 compinit
+
+source "${PROFILE_DIR}/myprofile.sh"
 
 # Load version control information
 autoload -Uz vcs_info

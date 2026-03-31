@@ -3,6 +3,7 @@ vim.g.mapleader = " "
 require("kh.lazy")
 require("kh.set")
 require("kh.remap")
+require("kh.telescope-pc").setup()
 
 
 local augroup = vim.api.nvim_create_augroup

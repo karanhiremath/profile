@@ -5,7 +5,7 @@ HOME := "$(echo $HOME)"
 
 
 # Install core tools
-all: git tmux nvim
+all: git tmux nvim pc
 
 install:
     ./install.sh
@@ -77,6 +77,22 @@ nvim:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/nvim/install
+
+# Build and install pc (pi-code session manager)
+pc:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Building pc..."
+    cd bin/pc && cargo build --release
+    mkdir -p "$HOME/.local/bin"
+    cp target/release/pc "$HOME/.local/bin/pc"
+    echo "✓ Installed pc to ~/.local/bin/pc"
+    # Install Datadog MCP extension if DD env is set
+    if [ -n "${DD_API_KEY:-}" ]; then
+        mkdir -p "$HOME/.pi/agent/extensions"
+        ln -fns "$(pwd)/extensions/datadog-mcp.ts" "$HOME/.pi/agent/extensions/datadog-mcp.ts"
+        echo "✓ Linked Datadog MCP extension"
+    fi
 
 obsidian:
     #!/usr/bin/env bash

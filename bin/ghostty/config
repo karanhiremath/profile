@@ -14,9 +14,8 @@ font-size = 14
 window-save-state = always
 window-new-tab-position = end
 
-# Host picker — ⌘⇧K opens new tab, types tc to launch fzf picker
-keybind = super+shift+k=new_tab
-keybind = super+shift+k=text:tc\x0a
+# Pi session picker — ⌘⇧P opens new tab with pc (fzf project picker)
+keybind = super+shift+p=new_tab:pc
 
 # Pane navigation — opt+shift+hjkl
 keybind = alt+shift+h=goto_split:left
@@ -24,27 +23,29 @@ keybind = alt+shift+j=goto_split:bottom
 keybind = alt+shift+k=goto_split:top
 keybind = alt+shift+l=goto_split:right
 
-# Pane picker — opt+shift+q then number (goto_split:N is 0-indexed)
-keybind = alt+shift+q>1=goto_split:0
-keybind = alt+shift+q>2=goto_split:1
-keybind = alt+shift+q>3=goto_split:2
-keybind = alt+shift+q>4=goto_split:3
-keybind = alt+shift+q>5=goto_split:4
-keybind = alt+shift+q>6=goto_split:5
-keybind = alt+shift+q>7=goto_split:6
-keybind = alt+shift+q>8=goto_split:7
-keybind = alt+shift+q>9=goto_split:8
+# Pane picker — NOT SUPPORTED: Ghostty doesn't support key sequences (>) or numeric goto_split
+# Use directional navigation (alt+shift+hjkl above) or goto_split:previous / goto_split:next
+# keybind = alt+shift+q>1=goto_split:0
+# keybind = alt+shift+q>2=goto_split:1
+# keybind = alt+shift+q>3=goto_split:2
+# keybind = alt+shift+q>4=goto_split:3
+# keybind = alt+shift+q>5=goto_split:4
+# keybind = alt+shift+q>6=goto_split:5
+# keybind = alt+shift+q>7=goto_split:6
+# keybind = alt+shift+q>8=goto_split:7
+# keybind = alt+shift+q>9=goto_split:8
 
-# Command palette entries for host connections (⌘⇧P → type host name)
-command-palette-entry = title:"Connect: Together AI",description:"SSH + tmux to Together AI dev node",action:"new_window:/bin/zsh -ic 'tc togetherai'"
-command-palette-entry = title:"Connect: Mac Mini",description:"SSH + tmux to home Mac Mini",action:"new_window:/bin/zsh -ic 'tc mini'"
-command-palette-entry = title:"Connect: Local",description:"Attach local tmux session",action:"new_window:/bin/zsh -ic 'tc local'"
-command-palette-entry = title:"Connect: Training",description:"SSH + tmux to training bastion",action:"new_window:/bin/zsh -ic 'tc training'"
-command-palette-entry = title:"Connect: TGK2 C1",description:"SSH + tmux to TGK2 controller 1",action:"new_window:/bin/zsh -ic 'tc tgk2-c1'"
-command-palette-entry = title:"Connect: TGK2 C2",description:"SSH + tmux to TGK2 controller 2",action:"new_window:/bin/zsh -ic 'tc tgk2-c2'"
-command-palette-entry = title:"Connect: CXIS Dev",description:"SSH + tmux to CXIS dev node",action:"new_window:/bin/zsh -ic 'tc cxis-dev'"
-command-palette-entry = title:"Connect: CXIS Login",description:"SSH + tmux to CXIS login node",action:"new_window:/bin/zsh -ic 'tc cxis-login'"
-command-palette-entry = title:"Host Status",description:"Check which hosts are reachable",action:"new_window:/bin/zsh -ic 'tc --status; read'"
+# Command palette entries — NOT SUPPORTED: Ghostty doesn't support custom command-palette-entry
+# Use the keybind above (⌘⇧K) to open a new tab with `tc` for host picking instead.
+# command-palette-entry = title:"Connect: Together AI",description:"SSH + tmux to Together AI dev node",action:"new_window:/bin/zsh -ic 'tc togetherai'"
+# command-palette-entry = title:"Connect: Mac Mini",description:"SSH + tmux to home Mac Mini",action:"new_window:/bin/zsh -ic 'tc mini'"
+# command-palette-entry = title:"Connect: Local",description:"Attach local tmux session",action:"new_window:/bin/zsh -ic 'tc local'"
+# command-palette-entry = title:"Connect: Training",description:"SSH + tmux to training bastion",action:"new_window:/bin/zsh -ic 'tc training'"
+# command-palette-entry = title:"Connect: TGK2 C1",description:"SSH + tmux to TGK2 controller 1",action:"new_window:/bin/zsh -ic 'tc tgk2-c1'"
+# command-palette-entry = title:"Connect: TGK2 C2",description:"SSH + tmux to TGK2 controller 2",action:"new_window:/bin/zsh -ic 'tc tgk2-c2'"
+# command-palette-entry = title:"Connect: CXIS Dev",description:"SSH + tmux to CXIS dev node",action:"new_window:/bin/zsh -ic 'tc cxis-dev'"
+# command-palette-entry = title:"Connect: CXIS Login",description:"SSH + tmux to CXIS login node",action:"new_window:/bin/zsh -ic 'tc cxis-login'"
+# command-palette-entry = title:"Host Status",description:"Check which hosts are reachable",action:"new_window:/bin/zsh -ic 'tc --status; read'"
 
 palette = 0=#2f3b4e
 palette = 1=#aa4031
