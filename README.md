@@ -84,6 +84,7 @@ Install everything with `just k8s-toolkit`, or pick individual tools:
 | `just openvpn` | OpenVPN |
 | `just obsidian` | Obsidian |
 | `just btop` | btop (system monitor) |
+| `just micromamba` | micromamba (conda package manager) |
 
 ## Testing
 

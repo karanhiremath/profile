@@ -32,6 +32,17 @@ autocmd({"BufWritePre"}, {
     command = [[%s/\s\+$//e]],
 })
 
+autocmd({"TextChanged", "TextChangedI"}, {
+    group = khgroup,
+    pattern = "*/claude-prompt-*.md",
+    callback = function()
+        local backup = vim.fn.expand("~/.claude/prompt-backups/")
+        vim.fn.mkdir(backup, "p")
+        local fname = vim.fn.expand("%:t")
+        vim.fn.writefile(vim.fn.getline(1, "$"), backup .. fname)
+    end,
+})
+
 vim.g.netrw_browse_split = 0
 vim.g.netrw_banner = 0
 vim.g.netrw_winsize = 25

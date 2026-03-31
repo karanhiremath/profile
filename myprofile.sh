@@ -1,4 +1,6 @@
 export MYSQL_PS1="\R:\m:\s\ \u\ [db\ \d]\ >\ "
+export EDITOR=nvim
+export VISUAL=nvim
 
 alias ls='ls -GFh'
 
