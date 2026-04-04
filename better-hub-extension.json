@@ -1,0 +1,10 @@
+{
+  "$schema": "https://better-hub.com/schemas/theme-manifest.schema.json",
+  "name": "Nighttide",
+  "description": "Dark blue-gray and teal theme inspired by a Ghostty terminal palette",
+  "version": "1.0.0",
+  "type": "theme",
+  "main": "theme.json",
+  "icon": "icon.png",
+  "license": "MIT"
+}
