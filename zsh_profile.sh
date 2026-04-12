@@ -46,5 +46,5 @@ source "${PROFILE_DIR}"/.iterm2_shell_integration.zsh
 path+=('~/.cargo/bin')
 export PATH
 
-# doesnt seem to have an arm64 build for mac
-# eval "$(starship init zsh)"
+export VISUAL="nvim"
+export EDITOR="$VISUAL"
