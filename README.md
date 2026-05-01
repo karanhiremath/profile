@@ -55,6 +55,8 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 | `just claude` | Claude Code |
 | `just cmux` | cmux (Claude multiplexer) |
 | `just copilot` | GitHub Copilot CLI |
+| `just cursor-cli` | Cursor Agent CLI |
+| `just devin` | Devin for Terminal |
 | `just gemini-cli` | Gemini CLI |
 | `just ollama` | Ollama |
 | `just lmstudio` | LM Studio |
