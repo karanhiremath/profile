@@ -1,0 +1,120 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+usage() {
+    cat <<'EOF'
+Usage: bin/devin/install [--help]
+
+Install or upgrade Devin for Terminal.
+
+Official installer: https://cli.devin.ai/install.sh
+Installs the `devin` binary into ~/.local/bin and may run Devin's local setup flow.
+No API keys or credentials are read or printed by this wrapper.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="devin"
+
+MACHINE="$(uname -s)"
+INSTALL_URL="https://cli.devin.ai/install.sh"
+
+ensure_download_prereqs() {
+    local missing=()
+    for cmd in curl tar; do
+        if ! command -v "${cmd}" >/dev/null 2>&1; then
+            missing+=("${cmd}")
+        fi
+    done
+
+    if [ ${#missing[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    echo "Installing prerequisites: ${missing[*]}"
+    case "${MACHINE}" in
+        Darwin)
+            ensure_brew_in_path || {
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+            }
+            for cmd in "${missing[@]}"; do
+                brew install "${cmd}"
+            done
+            ;;
+        Linux)
+            if command -v apt-get >/dev/null 2>&1; then
+                sudo apt-get update
+                sudo apt-get install -y "${missing[@]}"
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y "${missing[@]}"
+            elif command -v yum >/dev/null 2>&1; then
+                sudo yum install -y "${missing[@]}"
+            else
+                echo "ERROR: Could not install prerequisites (${missing[*]}). Please install them manually."
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+}
+
+install_messages "start" "$app_name"
+ensure_download_prereqs
+
+if command -v devin >/dev/null 2>&1; then
+    echo "Devin for Terminal already installed at $(command -v devin). Checking for updates..."
+else
+    echo "Installing Devin for Terminal..."
+fi
+
+echo "Running official Devin installer: ${INSTALL_URL}"
+set +e
+curl -fsSL "${INSTALL_URL}" | bash
+installer_status=$?
+set -e
+
+if ! command -v devin >/dev/null 2>&1; then
+    echo "ERROR: devin was not found in PATH after installation. Ensure ~/.local/bin is in PATH."
+    exit 1
+fi
+
+if [ "${installer_status}" -ne 0 ]; then
+    echo "WARNING: Devin installer exited with status ${installer_status} after installing the binary."
+    echo "This commonly happens when the post-install login/setup flow is canceled or non-interactive."
+    echo "Run 'devin setup' or just start 'devin' in an interactive terminal to finish authentication."
+fi
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "Devin for Terminal installed successfully!"
+echo "Binary: $(command -v devin)"
+echo "Version: $(devin --version 2>/dev/null || echo 'version command unavailable')"
+echo "Usage:"
+echo "  devin --help"
+echo "  devin -- <prompt>"
+echo ""

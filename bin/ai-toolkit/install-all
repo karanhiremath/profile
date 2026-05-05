@@ -90,6 +90,26 @@ else
 fi
 echo ""
 
+# Cursor Agent CLI
+echo "==> Installing/upgrading Cursor Agent CLI..."
+if "${APP_BIN}/cursor-cli/install"; then
+    echo "✓ Cursor Agent CLI completed successfully"
+else
+    echo "✗ Cursor Agent CLI failed"
+    failed_installs+=("cursor-cli")
+fi
+echo ""
+
+# Devin for Terminal
+echo "==> Installing/upgrading Devin for Terminal..."
+if "${APP_BIN}/devin/install"; then
+    echo "✓ Devin for Terminal completed successfully"
+else
+    echo "✗ Devin for Terminal failed"
+    failed_installs+=("devin")
+fi
+echo ""
+
 # Gemini CLI
 echo "==> Installing/upgrading Gemini CLI..."
 if "${APP_BIN}/gemini-cli/install"; then

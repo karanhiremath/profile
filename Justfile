@@ -200,6 +200,22 @@ copilot-cli:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/copilot-cli/install
 
+# Install/upgrade Cursor Agent CLI
+cursor-cli:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/cursor-cli/install
+
+# Install/upgrade Devin for Terminal
+devin:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/devin/install
+
 # Install/upgrade Gemini CLI
 gemini-cli:
     #!/usr/bin/env bash
