@@ -130,6 +130,16 @@ else
 fi
 echo ""
 
+# herdr
+echo "==> Installing/upgrading herdr..."
+if "${APP_BIN}/herdr/install"; then
+    echo "✓ herdr completed successfully"
+else
+    echo "✗ herdr failed"
+    failed_installs+=("herdr")
+fi
+echo ""
+
 # vLLM
 echo "==> Installing/upgrading vLLM..."
 if "${APP_BIN}/vllm/install"; then
