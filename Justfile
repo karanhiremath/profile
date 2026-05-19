@@ -240,6 +240,14 @@ kubectl:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/kubectl/install
 
+# Install/upgrade herdr (agent multiplexer; runs inside tmux)
+herdr:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/herdr/install
+
 # Install/upgrade Helm
 helm:
     #!/usr/bin/env bash
