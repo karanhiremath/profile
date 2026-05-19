@@ -58,6 +58,7 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 | `just cursor-cli` | Cursor Agent CLI |
 | `just devin` | Devin for Terminal |
 | `just gemini-cli` | Gemini CLI |
+| `just herdr` | herdr (agent multiplexer; runs inside tmux) |
 | `just ollama` | Ollama |
 | `just lmstudio` | LM Studio |
 | `just huggingface` | Hugging Face CLI |
