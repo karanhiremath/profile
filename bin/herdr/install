@@ -1,0 +1,127 @@
+#!/bin/bash
+# Install/upgrade herdr — agent multiplexer that lives in the terminal.
+# Runs inside tmux; integrates with pi, claude code, codex, opencode, hermes.
+# https://github.com/ogulcancelik/herdr  (AGPL-3.0)
+#
+# Usage: install [--help]
+
+set -euo pipefail
+
+shopt -s failglob
+
+usage() {
+    sed -n '2,8p' "$0" | sed 's/^# //'
+}
+
+case "${1:-}" in
+    -h|--help|help) usage; exit 0 ;;
+esac
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="herdr"
+REPO="ogulcancelik/herdr"
+INSTALL_DIR="${HERDR_INSTALL_DIR:-$HOME/.local/bin}"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+case "${MACHINE}" in
+    Darwin) os="macos" ;;
+    Linux)  os="linux" ;;
+    *) echo "ERROR: herdr only supports linux/macos (got ${MACHINE})"; exit 1 ;;
+esac
+
+case "${ARCH}" in
+    x86_64|amd64)  arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *) echo "ERROR: unsupported architecture: ${ARCH}"; exit 1 ;;
+esac
+
+ASSET="herdr-${os}-${arch}"
+URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+
+# Fetch upstream latest version (best-effort; falls back gracefully)
+latest_version() {
+    if command -v gh >/dev/null 2>&1; then
+        gh release view --repo "${REPO}" --json tagName --jq .tagName 2>/dev/null || true
+    else
+        curl -fsSL --connect-timeout 5 --max-time 10 \
+            "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1 || true
+    fi
+}
+
+local_version() {
+    if command -v herdr >/dev/null 2>&1; then
+        herdr --version 2>/dev/null | awk 'NR==1 {print $NF}' || true
+    fi
+}
+
+if command -v herdr >/dev/null 2>&1; then
+    have="$(local_version)"
+    want="$(latest_version)"
+    if [ -n "$have" ] && [ -n "$want" ] && [ "v${have#v}" = "v${want#v}" ]; then
+        echo "✓ herdr ${have} already up to date"
+        exit 0
+    fi
+    echo "Upgrading herdr: ${have:-unknown} → ${want:-latest}"
+else
+    install_messages "start" "$app_name"
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo "ERROR: curl required to install herdr"
+    exit 1
+fi
+
+mkdir -p "${INSTALL_DIR}"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+echo "Downloading ${ASSET}..."
+if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 \
+        "${URL}" -o "${TMP}/herdr"; then
+    echo "ERROR: download failed from ${URL}"
+    echo "       check https://github.com/${REPO}/releases"
+    exit 1
+fi
+
+chmod +x "${TMP}/herdr"
+mv "${TMP}/herdr" "${INSTALL_DIR}/herdr"
+
+# PATH check
+case ":${PATH}:" in
+    *":${INSTALL_DIR}:"*) ;;
+    *)
+        echo ""
+        echo "WARN: ${INSTALL_DIR} not in PATH — add to shell config:"
+        echo "      export PATH=\"${INSTALL_DIR}:\$PATH\""
+        echo ""
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "herdr installed at ${INSTALL_DIR}/herdr"
+if command -v herdr >/dev/null 2>&1; then
+    echo "Version: $(herdr --version 2>&1 | head -1)"
+fi
+echo ""
+echo "Quick start:"
+echo "  herdr                          # start herdr"
+echo "  herdr workspace create <name>  # create a workspace"
+echo "  herdr --remote ssh://host      # remote attach"
+echo ""
