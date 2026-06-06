@@ -42,13 +42,13 @@ previous_agent = "k"
 next_agent = "j"
 
 [keys.indexed]
-agents = "alt"
+agents = ""
 
 [ui]
 mouse_capture = true
 ```
 
-With that config: prefix then `j`/`k` cycles agents; `alt+1`..`alt+9` jumps by index.
+With that config: prefix then `j`/`k` cycles agents. Keep indexed agent shortcuts disabled so ordinary modifier-number keys do not switch panes unexpectedly.
 
 The container includes baseline tooling for:
 
