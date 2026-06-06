@@ -38,8 +38,8 @@ Useful keyboard config:
 
 ```toml
 [keys]
-previous_agent = "k"
-next_agent = "j"
+previous_agent = ""
+next_agent = ""
 
 [keys.indexed]
 agents = ""
@@ -48,7 +48,7 @@ agents = ""
 mouse_capture = true
 ```
 
-With that config: prefix then `j`/`k` cycles agents. Keep indexed agent shortcuts disabled so ordinary modifier-number keys do not switch panes unexpectedly.
+Herdr agent focus bindings are currently disabled here because they can fire as global pane/window focus shortcuts instead of waiting for the prefix. Use the sidebar/mouse or explicit `herdr agent focus <target>` until a prefix-only binding is validated.
 
 The container includes baseline tooling for:
 
