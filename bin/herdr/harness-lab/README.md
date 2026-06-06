@@ -51,12 +51,12 @@ next_agent = ""
 open_notification_target = "a"
 
 [[keys.command]]
-key = "]"
+key = "o"
 type = "shell"
 command = "<profile_root>/bin/herdr/focus-agent next --scope all"
 
 [[keys.command]]
-key = "["
+key = "i"
 type = "shell"
 command = "<profile_root>/bin/herdr/focus-agent previous --scope all"
 
@@ -67,7 +67,7 @@ agents = ""
 mouse_capture = true
 ```
 
-With that config: prefix then `a` jumps to the latest notification target; prefix then `]` focuses the next agent across all workspaces; prefix then `[` focuses the previous agent. Built-in `previous_agent`/`next_agent` and indexed agent shortcuts stay disabled because they can behave as global focus shortcuts in this setup.
+With that config: prefix then `a` jumps to the latest notification target; prefix then `o` focuses the next agent across all workspaces; prefix then `i` focuses the previous agent. Built-in `previous_agent`/`next_agent` and indexed agent shortcuts stay disabled because they can behave as global focus shortcuts in this setup. If an attached Herdr client does not pick up custom keys after `server reload-config`, detach and reattach the client.
 
 The container includes baseline tooling for:
 
