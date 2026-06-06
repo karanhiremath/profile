@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Validate the generic herdr harness lab manifest with shell-only checks.
+# Usage: validate-manifest [manifest]
+
+set -euo pipefail
+
+usage() {
+  sed -n '2,4p' "$0" | sed 's/^# //'
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MANIFEST="${1:-$LAB_DIR/manifests/base.yaml}"
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+esac
+
+if [ ! -f "$MANIFEST" ]; then
+  echo "ERROR: manifest not found: $MANIFEST" >&2
+  exit 1
+fi
+
+required=(schema harness policy runtimes tools smoke forbidden_mounts forbidden_behaviors)
+for key in "${required[@]}"; do
+  if ! grep -Eq "(^|[[:space:]])${key}:" "$MANIFEST"; then
+    echo "ERROR: missing manifest key: $key" >&2
+    exit 1
+  fi
+done
+
+if grep -Eq '(/Users/|/home/[A-Za-z0-9._-]+|Google Drive|MacBook|Mac Mini)' "$MANIFEST"; then
+  echo "ERROR: manifest contains operator-local path or machine name" >&2
+  exit 1
+fi
+
+if grep -Eiq '(api[_-]?key|token|secret):[[:space:]]*[A-Za-z0-9_./+=-]{12,}' "$MANIFEST"; then
+  echo "ERROR: manifest appears to contain secret material" >&2
+  exit 1
+fi
+
+echo "manifest ok: $MANIFEST"
