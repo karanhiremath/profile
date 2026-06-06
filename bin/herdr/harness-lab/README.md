@@ -32,7 +32,23 @@ bin/herdr/open-url --copy
 bin/herdr/open-url --pane <pane_id>
 ```
 
-Set `mouse_capture = false` under `[ui]` in `~/.config/herdr/config.toml` to let the outer terminal handle normal URL clicks.
+Keep `mouse_capture = true` if you want Herdr mouse scrollback. Use `bin/herdr/open-url` for URLs instead of disabling mouse capture.
+
+Useful keyboard config:
+
+```toml
+[keys]
+previous_agent = "k"
+next_agent = "j"
+
+[keys.indexed]
+agents = "alt"
+
+[ui]
+mouse_capture = true
+```
+
+With that config: prefix then `j`/`k` cycles agents; `alt+1`..`alt+9` jumps by index.
 
 The container includes baseline tooling for:
 
