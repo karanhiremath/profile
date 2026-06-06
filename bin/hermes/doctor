@@ -7,13 +7,15 @@ NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
 BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
 PRIVATE_DIR="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}"
-export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
+SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
+export PATH="$SHIM_DIR:$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
 
 printf 'toolchain=%s\n' "$HERMES_TOOLCHAIN_HOME"
 printf 'npm_prefix=%s\n' "$NPM_PREFIX"
 printf 'python_venv=%s\n' "$VENV"
 printf 'bun_home=%s\n' "$BUN_HOME"
 printf 'private_dir=%s\n' "$PRIVATE_DIR"
+printf 'shim_dir=%s\n' "$SHIM_DIR"
 
 for bin in hermes hermes-agent herm; do
   path="$NPM_PREFIX/bin/$bin"
@@ -24,7 +26,15 @@ for bin in hermes hermes-agent herm; do
   fi
 done
 
-if command -v hermes >/dev/null 2>&1; then
+for shim in hermes hermes-agent herm; do
+  if [ -x "$SHIM_DIR/$shim" ]; then
+    printf 'shim_%s=present\n' "$shim"
+  else
+    printf 'shim_%s=missing\n' "$shim"
+  fi
+done
+
+if command -v hermes >/dev/null 2>&1 && hermes --help >/dev/null 2>&1; then
   printf 'hermes_help=ok\n'
 else
   printf 'hermes_help=missing\n'

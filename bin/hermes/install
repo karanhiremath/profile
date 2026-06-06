@@ -18,6 +18,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
 NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
+SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 
 for bin in node npm uv git; do
   if ! command -v "$bin" >/dev/null 2>&1; then
@@ -26,7 +28,7 @@ for bin in node npm uv git; do
   fi
 done
 
-mkdir -p "$HERMES_TOOLCHAIN_HOME" "$NPM_PREFIX"
+mkdir -p "$HERMES_TOOLCHAIN_HOME" "$NPM_PREFIX" "$SHIM_DIR"
 uv venv --allow-existing --seed "$VENV"
 uv pip install --python "$VENV/bin/python" pip setuptools wheel
 
@@ -39,6 +41,23 @@ chmod +x \
   "$NPM_PREFIX/lib/node_modules/hermes-agent/bin/hermes-agent.js" \
   2>/dev/null || true
 
+write_shim() {
+  local name="$1"
+  local target="$2"
+  cat > "$SHIM_DIR/$name" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HERMES_TOOLCHAIN_HOME="$HERMES_TOOLCHAIN_HOME"
+export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:\$PATH"
+exec "$target" "\$@"
+EOF
+  chmod 0755 "$SHIM_DIR/$name"
+}
+
+write_shim hermes "$NPM_PREFIX/bin/hermes"
+write_shim hermes-agent "$NPM_PREFIX/bin/hermes-agent"
+write_shim herm "$NPM_PREFIX/bin/herm"
+
 if [ "$SKIP_PRIVATE_SYNC" -eq 0 ]; then
   "$SCRIPT_DIR/private-sync"
 fi
@@ -46,10 +65,12 @@ fi
 cat <<EOF
 Hermes toolchain installed.
 
-Add to shell config if desired:
-  source <($SCRIPT_DIR/env)
+User-local shims:
+  $SHIM_DIR/hermes
+  $SHIM_DIR/hermes-agent
+  $SHIM_DIR/herm
 
-Binaries:
+Toolchain binaries:
   $NPM_PREFIX/bin/hermes
   $NPM_PREFIX/bin/hermes-agent
   $NPM_PREFIX/bin/herm

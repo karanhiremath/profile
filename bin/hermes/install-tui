@@ -18,6 +18,7 @@ HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/sh
 BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
 NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 REPO="oven-sh/bun"
 
 for bin in curl unzip shasum npm; do
@@ -55,7 +56,7 @@ tmp="$(mktemp -d)"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 
-mkdir -p "$BUN_HOME/bin" "$NPM_PREFIX"
+mkdir -p "$BUN_HOME/bin" "$NPM_PREFIX" "$SHIM_DIR"
 
 curl -fsSL "$base_url/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt"
 curl -fsSL "$base_url/$asset" -o "$tmp/$asset"
@@ -82,10 +83,20 @@ export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
 export npm_config_prefix="$NPM_PREFIX"
 npm install -g --prefix "$NPM_PREFIX" herm-tui
 
+cat > "$SHIM_DIR/herm" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HERMES_TOOLCHAIN_HOME="$HERMES_TOOLCHAIN_HOME"
+export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:\$PATH"
+exec "$NPM_PREFIX/bin/herm" "\$@"
+EOF
+chmod 0755 "$SHIM_DIR/herm"
+
 cat <<EOF
 Hermes TUI runtime installed.
 
 bun=$BUN_HOME/bin/bun
 herm=$NPM_PREFIX/bin/herm
+shim=$SHIM_DIR/herm
 version=$($BUN_HOME/bin/bun --version)
 EOF
