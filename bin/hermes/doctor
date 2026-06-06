@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Show non-secret Hermes toolchain status.
+set -euo pipefail
+
+HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
+VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+PRIVATE_DIR="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}"
+export PATH="$NPM_PREFIX/bin:$VENV/bin:$PATH"
+
+printf 'toolchain=%s\n' "$HERMES_TOOLCHAIN_HOME"
+printf 'npm_prefix=%s\n' "$NPM_PREFIX"
+printf 'python_venv=%s\n' "$VENV"
+printf 'private_dir=%s\n' "$PRIVATE_DIR"
+
+for bin in hermes hermes-agent herm; do
+  path="$NPM_PREFIX/bin/$bin"
+  if [ -x "$path" ]; then
+    printf '%s=%s\n' "$bin" "$path"
+  else
+    printf '%s=missing\n' "$bin"
+  fi
+done
+
+if command -v hermes >/dev/null 2>&1; then
+  printf 'hermes_help=ok\n'
+else
+  printf 'hermes_help=missing\n'
+fi
+if command -v bun >/dev/null 2>&1; then
+  printf 'bun=present\n'
+else
+  printf 'bun=missing_optional_for_herm_tui\n'
+fi
+
+if [ -d "$PRIVATE_DIR/.git" ]; then
+  printf 'private_repo=present\n'
+  git -C "$PRIVATE_DIR" status --short --branch
+else
+  printf 'private_repo=missing\n'
+fi
