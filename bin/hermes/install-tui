@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Install the Hermes TUI runtime (Bun) into the isolated Hermes toolchain.
+# Usage: install-tui [--bun-version bun-vX.Y.Z]
+set -euo pipefail
+
+usage() { sed -n '2,3p' "$0" | sed 's/^# //'; }
+
+BUN_VERSION="${HERMES_BUN_VERSION:-latest}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bun-version) BUN_VERSION="${2:?missing version}"; shift 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
+NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
+VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+REPO="oven-sh/bun"
+
+for bin in curl unzip shasum npm; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "ERROR: required binary not found: $bin" >&2
+    exit 127
+  fi
+done
+
+os=""
+case "$(uname -s)" in
+  Darwin) os="darwin" ;;
+  Linux) os="linux" ;;
+  *) echo "ERROR: unsupported OS: $(uname -s)" >&2; exit 2 ;;
+esac
+
+arch=""
+case "$(uname -m)" in
+  arm64|aarch64) arch="aarch64" ;;
+  x86_64|amd64) arch="x64" ;;
+  *) echo "ERROR: unsupported arch: $(uname -m)" >&2; exit 2 ;;
+esac
+
+if [ "$BUN_VERSION" = "latest" ]; then
+  if command -v gh >/dev/null 2>&1; then
+    BUN_VERSION="$(gh release view --repo "$REPO" --json tagName --jq .tagName)"
+  else
+    BUN_VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+  fi
+fi
+
+asset="bun-${os}-${arch}.zip"
+base_url="https://github.com/$REPO/releases/download/$BUN_VERSION"
+tmp="$(mktemp -d)"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+mkdir -p "$BUN_HOME/bin" "$NPM_PREFIX"
+
+curl -fsSL "$base_url/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt"
+curl -fsSL "$base_url/$asset" -o "$tmp/$asset"
+expected="$(awk -v asset="$asset" '$2 == asset {print $1}' "$tmp/SHASUMS256.txt")"
+if [ -z "$expected" ]; then
+  echo "ERROR: checksum not found for $asset in $BUN_VERSION" >&2
+  exit 1
+fi
+actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"
+if [ "$actual" != "$expected" ]; then
+  echo "ERROR: checksum mismatch for $asset" >&2
+  exit 1
+fi
+
+unzip -q "$tmp/$asset" -d "$tmp/unpack"
+found_bun="$(find "$tmp/unpack" -type f -name bun -perm -111 | head -1)"
+if [ -z "$found_bun" ]; then
+  echo "ERROR: bun binary not found in $asset" >&2
+  exit 1
+fi
+install -m 0755 "$found_bun" "$BUN_HOME/bin/bun"
+
+export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
+export npm_config_prefix="$NPM_PREFIX"
+npm install -g --prefix "$NPM_PREFIX" herm-tui
+
+cat <<EOF
+Hermes TUI runtime installed.
+
+bun=$BUN_HOME/bin/bun
+herm=$NPM_PREFIX/bin/herm
+version=$($BUN_HOME/bin/bun --version)
+EOF

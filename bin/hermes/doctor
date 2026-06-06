@@ -5,12 +5,14 @@ set -euo pipefail
 HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
 NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
 PRIVATE_DIR="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}"
-export PATH="$NPM_PREFIX/bin:$VENV/bin:$PATH"
+export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
 
 printf 'toolchain=%s\n' "$HERMES_TOOLCHAIN_HOME"
 printf 'npm_prefix=%s\n' "$NPM_PREFIX"
 printf 'python_venv=%s\n' "$VENV"
+printf 'bun_home=%s\n' "$BUN_HOME"
 printf 'private_dir=%s\n' "$PRIVATE_DIR"
 
 for bin in hermes hermes-agent herm; do
@@ -28,9 +30,17 @@ else
   printf 'hermes_help=missing\n'
 fi
 if command -v bun >/dev/null 2>&1; then
-  printf 'bun=present\n'
+  printf 'bun=%s\n' "$(command -v bun)"
+  printf 'bun_version=%s\n' "$(bun --version 2>/dev/null || true)"
 else
   printf 'bun=missing_optional_for_herm_tui\n'
+fi
+if command -v herm >/dev/null 2>&1 && command -v bun >/dev/null 2>&1; then
+  if herm --help >/dev/null 2>&1; then
+    printf 'herm_help=ok\n'
+  else
+    printf 'herm_help=failed\n'
+  fi
 fi
 
 if [ -d "$PRIVATE_DIR/.git" ]; then
