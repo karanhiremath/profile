@@ -52,8 +52,29 @@ done
 real_home="${HOME}"
 repo_path="${HERMES_META_REPO_PATH:-${real_home}/src/hermes}"
 repo_url="${HERMES_META_REPO_URL:-git@github.com:karanhiremath/hermes.git}"
+case "$repo_path" in
+  ~/*) repo_path="${real_home}/${repo_path#~/}" ;;
+  /*) ;;
+  *) echo "dream: HERMES_META_REPO_PATH must be absolute, got: $repo_path" >&2; exit 64 ;;
+esac
+if [ -d "$repo_path" ]; then
+  repo_path="$(cd -- "$repo_path" && pwd -P)"
+else
+  repo_parent="$(dirname -- "$repo_path")"
+  repo_base="$(basename -- "$repo_path")"
+  repo_parent="$(mkdir -p "$repo_parent" && cd -- "$repo_parent" && pwd -P)"
+  repo_path="${repo_parent}/${repo_base}"
+fi
 profile_name="${HERMES_PROFILE_NAME:-hdream-sandbox}"
 dream_root="${DREAM_ROOT:-${repo_path}/workflows/dream-sandbox}"
+case "$dream_root" in
+  ~/*) dream_root="${real_home}/${dream_root#~/}" ;;
+  /*) ;;
+  *) echo "dream: DREAM_ROOT must be absolute, got: $dream_root" >&2; exit 64 ;;
+esac
+if [ -d "$dream_root" ]; then
+  dream_root="$(cd -- "$dream_root" && pwd -P)"
+fi
 tmux_session="${DREAM_TMUX_SESSION:-dream-sandbox}"
 image_tag="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/dream-python-node:dev}"
 
