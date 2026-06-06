@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Open the newest URL from a Herdr pane.
+# Usage: open-url [--pane PANE_ID] [--workspace WORKSPACE_ID] [--lines N] [--source visible|recent|recent-unwrapped] [--print] [--copy] [--all]
+set -euo pipefail
+
+usage() {
+  sed -n '2,3p' "$0" | sed 's/^# //'
+}
+
+PANE_ID=""
+WORKSPACE_ID=""
+LINES="200"
+SOURCE="recent-unwrapped"
+PRINT_ONLY=0
+COPY_ONLY=0
+ALL=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pane) PANE_ID="${2:?missing pane id}"; shift 2 ;;
+    --workspace) WORKSPACE_ID="${2:?missing workspace id}"; shift 2 ;;
+    --lines) LINES="${2:?missing line count}"; shift 2 ;;
+    --source) SOURCE="${2:?missing source}"; shift 2 ;;
+    --print) PRINT_ONLY=1; shift ;;
+    --copy) COPY_ONLY=1; shift ;;
+    --all) ALL=1; shift ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$SOURCE" in
+  visible|recent|recent-unwrapped) ;;
+  *) echo "ERROR: invalid --source: $SOURCE" >&2; exit 2 ;;
+esac
+
+if ! command -v herdr >/dev/null 2>&1; then
+  echo "ERROR: herdr not found on PATH" >&2
+  exit 127
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 required" >&2
+  exit 127
+fi
+
+if [ -z "$PANE_ID" ]; then
+  list_args=(pane list)
+  if [ -n "$WORKSPACE_ID" ]; then
+    list_args+=(--workspace "$WORKSPACE_ID")
+  fi
+  PANE_ID="$(herdr "${list_args[@]}" | python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+panes = payload.get("result", {}).get("panes", [])
+focused = [p for p in panes if p.get("focused")]
+chosen = (focused or panes)[:1]
+if chosen:
+    print(chosen[0]["pane_id"])
+')"
+fi
+
+if [ -z "$PANE_ID" ]; then
+  echo "ERROR: no Herdr pane found" >&2
+  exit 1
+fi
+
+text="$(herdr pane read "$PANE_ID" --source "$SOURCE" --lines "$LINES" --format text)"
+urls="$(printf '%s\n' "$text" | python3 -c '
+import re, sys
+text = sys.stdin.read()
+seen = []
+for match in re.findall(r"https?://[^\\s<>\\\"]+", text):
+    url = match.rstrip(".,;:)\\]}\u201d\u2019\x1b")
+    if url and url not in seen:
+        seen.append(url)
+for url in seen:
+    print(url)
+')"
+
+if [ -z "$urls" ]; then
+  echo "ERROR: no URL found in pane $PANE_ID" >&2
+  exit 1
+fi
+
+if [ "$ALL" -eq 1 ]; then
+  selected="$urls"
+else
+  selected="$(printf '%s\n' "$urls" | tail -1)"
+fi
+
+if [ "$PRINT_ONLY" -eq 1 ]; then
+  printf '%s\n' "$selected"
+  exit 0
+fi
+
+if [ "$COPY_ONLY" -eq 1 ]; then
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf '%s\n' "$selected" | pbcopy
+  elif command -v wl-copy >/dev/null 2>&1; then
+    printf '%s\n' "$selected" | wl-copy
+  elif command -v xclip >/dev/null 2>&1; then
+    printf '%s\n' "$selected" | xclip -selection clipboard
+  else
+    echo "ERROR: no clipboard tool found" >&2
+    exit 127
+  fi
+  printf '%s\n' "$selected"
+  exit 0
+fi
+
+open_one() {
+  if command -v open >/dev/null 2>&1; then
+    open "$1"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$1" >/dev/null 2>&1 &
+  else
+    echo "ERROR: no URL opener found; use --print" >&2
+    exit 127
+  fi
+}
+
+while IFS= read -r url; do
+  [ -n "$url" ] || continue
+  open_one "$url"
+  printf '%s\n' "$url"
+done <<< "$selected"

@@ -21,6 +21,19 @@ bin/herdr/harness-lab/scripts/smoke
 bin/herdr/harness-lab/scripts/shell
 ```
 
+## Operator URL helper
+
+Herdr can capture mouse events, so normal terminal URL clicks may not work inside the TUI. Use the helper to open the newest URL from the focused pane:
+
+```bash
+bin/herdr/open-url
+bin/herdr/open-url --print
+bin/herdr/open-url --copy
+bin/herdr/open-url --pane <pane_id>
+```
+
+Set `mouse_capture = false` under `[ui]` in `~/.config/herdr/config.toml` to let the outer terminal handle normal URL clicks.
+
 The container includes baseline tooling for:
 
 - herdr/tmux-style terminal agent orchestration experiments
