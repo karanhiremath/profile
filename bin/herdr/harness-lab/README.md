@@ -32,6 +32,13 @@ bin/herdr/open-url --copy
 bin/herdr/open-url --pane <pane_id>
 ```
 
+Agent focus helper:
+
+```bash
+bin/herdr/focus-agent next --scope current
+bin/herdr/focus-agent previous --scope current
+```
+
 Keep `mouse_capture = true` if you want Herdr mouse scrollback. Use `bin/herdr/open-url` for URLs instead of disabling mouse capture.
 
 Useful keyboard config:
@@ -41,6 +48,16 @@ Useful keyboard config:
 previous_agent = ""
 next_agent = ""
 
+[[keys.command]]
+key = "a"
+type = "shell"
+command = "<profile_root>/bin/herdr/focus-agent next --scope current"
+
+[[keys.command]]
+key = "z"
+type = "shell"
+command = "<profile_root>/bin/herdr/focus-agent previous --scope current"
+
 [keys.indexed]
 agents = ""
 
@@ -48,7 +65,7 @@ agents = ""
 mouse_capture = true
 ```
 
-Herdr agent focus bindings are currently disabled here because they can fire as global pane/window focus shortcuts instead of waiting for the prefix. Use the sidebar/mouse or explicit `herdr agent focus <target>` until a prefix-only binding is validated.
+With that config: prefix then `a` focuses the next agent in the current workspace; prefix then `z` focuses the previous agent. Built-in `previous_agent`/`next_agent` and indexed agent shortcuts stay disabled because they can behave as global focus shortcuts in this setup.
 
 The container includes baseline tooling for:
 

@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Focus next/previous Herdr agent safely via explicit command.
+# Usage: focus-agent next|previous [--scope current|all] [--print]
+set -euo pipefail
+
+usage() {
+  sed -n '2,3p' "$0" | sed 's/^# //'
+}
+
+DIR="${1:-}"
+SCOPE="current"
+PRINT_ONLY=0
+case "$DIR" in
+  next|previous|prev) shift ;;
+  -h|--help|help|"") usage; exit 0 ;;
+  *) echo "ERROR: first arg must be next or previous" >&2; usage >&2; exit 2 ;;
+esac
+[ "$DIR" = "prev" ] && DIR="previous"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --scope) SCOPE="${2:?missing scope}"; shift 2 ;;
+    --print) PRINT_ONLY=1; shift ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$SCOPE" in
+  current|all) ;;
+  *) echo "ERROR: invalid --scope: $SCOPE" >&2; exit 2 ;;
+esac
+
+if ! command -v herdr >/dev/null 2>&1; then
+  echo "ERROR: herdr not found on PATH" >&2
+  exit 127
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 required" >&2
+  exit 127
+fi
+
+target="$(herdr agent list | DIRECTION="$DIR" SCOPE="$SCOPE" python3 -c '
+import json
+import os
+import sys
+
+direction = os.environ["DIRECTION"]
+scope = os.environ["SCOPE"]
+payload = json.load(sys.stdin)
+agents = payload.get("result", {}).get("agents", [])
+if not agents:
+    sys.exit(1)
+
+focused_idx = next((i for i, agent in enumerate(agents) if agent.get("focused")), None)
+if focused_idx is None:
+    chosen = agents[0]
+else:
+    focused = agents[focused_idx]
+    candidates = agents
+    candidate_focused_idx = focused_idx
+    if scope == "current":
+        workspace_id = focused.get("workspace_id")
+        candidates = [agent for agent in agents if agent.get("workspace_id") == workspace_id]
+        candidate_focused_idx = next(
+            (i for i, agent in enumerate(candidates) if agent.get("pane_id") == focused.get("pane_id")),
+            0,
+        )
+    step = 1 if direction == "next" else -1
+    chosen = candidates[(candidate_focused_idx + step) % len(candidates)]
+
+print(chosen.get("name") or chosen.get("terminal_id") or chosen.get("pane_id") or "")
+')"
+
+if [ -z "$target" ]; then
+  echo "ERROR: no target agent found" >&2
+  exit 1
+fi
+
+if [ "$PRINT_ONLY" -eq 1 ]; then
+  printf '%s\n' "$target"
+  exit 0
+fi
+
+exec herdr agent focus "$target"
