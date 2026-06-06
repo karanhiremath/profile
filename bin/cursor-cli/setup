@@ -1,0 +1,129 @@
+#!/bin/bash
+# Secure Cursor bootstrap: install CLI, link agents/skills, validate models.
+set -euo pipefail
+shopt -s failglob
+
+usage() {
+    cat <<'EOF'
+Usage: bin/cursor-cli/setup [--help] [--work-repo PATH] [--orchestrator-model SLUG] [--worker-model SLUG]
+
+Install Cursor Agent CLI (if needed), link secure agents/skills into ~/.cursor,
+and smoke-test model availability.
+
+Defaults:
+  work repo   ~/src/karan.hiremath
+  orchestrator claude-opus-4-8-thinking-high
+  worker       gpt-5.5-high
+
+Does not print secrets. Does not enable --force / Run Everything.
+EOF
+}
+
+WORK_REPO="${KARAN_HIREMATH_REPO:-$HOME/src/karan.hiremath}"
+ORCH_MODEL="${CURSOR_ORCHESTRATOR_MODEL:-claude-opus-4-8-thinking-high}"
+WORKER_MODEL="${CURSOR_WORKER_MODEL:-gpt-5.5-high}"
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --work-repo) WORK_REPO="$2"; shift 2 ;;
+        --orchestrator-model) ORCH_MODEL="$2"; shift 2 ;;
+        --worker-model) WORKER_MODEL="$2"; shift 2 ;;
+        --help|-h) usage; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if [[ -z "${PROFILE_DIR:-}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+export APP_BIN="${PROFILE_DIR}/bin"
+
+"${APP_BIN}/cursor-cli/install"
+
+mkdir -p "$HOME/.cursor/agents" "$HOME/.cursor/skills"
+
+link_agent() {
+    local name="$1"
+    local src="$WORK_REPO/.cursor/agents/${name}.md"
+    local dst="$HOME/.cursor/agents/${name}.md"
+    if [[ ! -f "$src" ]]; then
+        echo "WARNING: missing agent source $src (clone karan.hiremath first)" >&2
+        return 0
+    fi
+    ln -sfn "$src" "$dst"
+    echo "✓ agent $name"
+}
+
+for agent in fleet-designer cartesia-security-context bifrost-context gypsum-context training-cluster-setup-context; do
+    link_agent "$agent"
+done
+
+if [[ -d "$HOME/.claude/skills" ]]; then
+    for skill_dir in "$HOME/.claude/skills"/*; do
+        [[ -d "$skill_dir" && -f "$skill_dir/SKILL.md" ]] || continue
+        name="$(basename "$skill_dir")"
+        ln -sfn "$skill_dir" "$HOME/.cursor/skills/$name"
+        echo "✓ skill $name"
+    done
+fi
+
+if [[ -d "$WORK_REPO/agentic/skills" ]]; then
+    for skill_dir in "$WORK_REPO/agentic/skills"/*; do
+        [[ -d "$skill_dir" && -f "$skill_dir/SKILL.md" ]] || continue
+        name="$(basename "$skill_dir")"
+        ln -sfn "$skill_dir" "$HOME/.cursor/skills/kh-$name"
+        echo "✓ skill kh-$name"
+    done
+fi
+
+python3 - <<'PY' "$HOME/.cursor/cli-config.json" "$ORCH_MODEL" "$WORKER_MODEL"
+import json, pathlib, sys
+path, orch, worker = sys.argv[1:4]
+p = pathlib.Path(path)
+data = json.loads(p.read_text()) if p.exists() else {"version": 1}
+data.setdefault("permissions", {})
+allow = data["permissions"].setdefault("allow", [])
+deny = data["permissions"].setdefault("deny", [])
+for entry in [
+    "Shell(git status)", "Shell(git diff*)", "Shell(git log*)", "Shell(git branch*)",
+    "Shell(git fetch*)", "Shell(git show*)", "Shell(git rev-parse*)",
+    "Shell(gh pr list*)", "Shell(gh pr view*)", "Shell(gh issue list*)",
+    "Shell(gh api*)", "Shell(ls)", "Shell(pwd)", "Shell(which*)",
+    "Shell(uv run pytest*)", "Shell(just *)", "Shell(cauth *)", "Shell(caudit *)",
+    "Shell(cscan *)", "Shell(cpatch *)", "Shell(cdev *)",
+]:
+    if entry not in allow:
+        allow.append(entry)
+for entry in [
+    "Shell(git push --force*)", "Shell(git push -f*)",
+    "Shell(terraform apply*)", "Shell(terraform destroy*)",
+]:
+    if entry not in deny:
+        deny.append(entry)
+data["approvalMode"] = data.get("approvalMode", "allowlist")
+data.setdefault("sandbox", {})["mode"] = data.get("sandbox", {}).get("mode", "disabled")
+data.setdefault("attribution", {})["attributeCommitsToAgent"] = True
+data.setdefault("attribution", {})["attributePRsToAgent"] = True
+data["cursorSetup"] = {"orchestratorModel": orch, "workerModel": worker}
+p.write_text(json.dumps(data, indent=2) + "\n")
+print(f"✓ cli-config.json updated (orchestrator={orch}, worker={worker})")
+PY
+
+if command -v cursor-agent >/dev/null 2>&1; then
+    cursor-agent --list-models 2>/dev/null | rg -q "$ORCH_MODEL" && echo "✓ orchestrator model available: $ORCH_MODEL" \
+        || echo "WARNING: orchestrator model not listed: $ORCH_MODEL" >&2
+    cursor-agent --list-models 2>/dev/null | rg -q "$WORKER_MODEL" && echo "✓ worker model available: $WORKER_MODEL" \
+        || echo "WARNING: worker model not listed: $WORKER_MODEL" >&2
+fi
+
+echo ""
+echo "Cursor secure setup complete."
+echo "  Orchestrator: cursor-agent --model $ORCH_MODEL"
+echo "  Worker:       cursor-agent --model $WORKER_MODEL"
+echo "  Work repo:    $WORK_REPO"

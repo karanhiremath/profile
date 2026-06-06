@@ -208,6 +208,15 @@ cursor-cli:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/cursor-cli/install
 
+# Bootstrap secure Cursor agents/skills + cli-config defaults
+cursor-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    chmod +x ./bin/cursor-cli/setup
+    ./bin/cursor-cli/setup
+
 # Install/upgrade Devin for Terminal
 devin:
     #!/usr/bin/env bash
