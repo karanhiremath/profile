@@ -48,13 +48,15 @@ Useful keyboard config:
 previous_agent = ""
 next_agent = ""
 
+open_notification_target = "a"
+
 [[keys.command]]
-key = "a"
+key = "]"
 type = "shell"
 command = "<profile_root>/bin/herdr/focus-agent next --scope current"
 
 [[keys.command]]
-key = "z"
+key = "["
 type = "shell"
 command = "<profile_root>/bin/herdr/focus-agent previous --scope current"
 
@@ -65,7 +67,7 @@ agents = ""
 mouse_capture = true
 ```
 
-With that config: prefix then `a` focuses the next agent in the current workspace; prefix then `z` focuses the previous agent. Built-in `previous_agent`/`next_agent` and indexed agent shortcuts stay disabled because they can behave as global focus shortcuts in this setup.
+With that config: prefix then `a` jumps to the latest notification target; prefix then `]` focuses the next agent in the current workspace; prefix then `[` focuses the previous agent. Built-in `previous_agent`/`next_agent` and indexed agent shortcuts stay disabled because they can behave as global focus shortcuts in this setup.
 
 The container includes baseline tooling for:
 
