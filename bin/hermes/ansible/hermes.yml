@@ -1,0 +1,38 @@
+---
+- name: Install and configure isolated Hermes toolchain
+  hosts: all
+  gather_facts: true
+  vars:
+    profile_repo: "{{ lookup('env', 'PROFILE_REPO') | default(ansible_env.HOME + '/src/profile', true) }}"
+    hermes_machine_profile: "{{ lookup('env', 'HERMES_MACHINE_PROFILE') | default(ansible_hostname, true) }}"
+    hermes_profile_path: "{{ lookup('env', 'HERMES_PROFILE_PATH') | default(ansible_env.HOME + '/src/hermes/machines/' + hermes_machine_profile + '/hermes.yaml', true) }}"
+    hermes_model: "{{ lookup('env', 'HERMES_MODEL') | default('', true) }}"
+    hermes_provider: "{{ lookup('env', 'HERMES_PROVIDER') | default('', true) }}"
+    hermes_skip_auth_import: "{{ lookup('env', 'HERMES_SKIP_AUTH_IMPORT') | default('0', true) }}"
+  tasks:
+    - name: Check profile Hermes manager exists
+      ansible.builtin.stat:
+        path: "{{ profile_repo }}/bin/hermes/configure-machine"
+      register: hermes_configure
+
+    - name: Fail when profile Hermes manager is missing
+      ansible.builtin.fail:
+        msg: "profile Hermes manager missing at {{ profile_repo }}/bin/hermes/configure-machine"
+      when: not hermes_configure.stat.exists
+
+    - name: Configure Hermes for this machine
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [profile_repo + '/bin/hermes/configure-machine', '--machine', hermes_machine_profile, '--profile', hermes_profile_path]
+            + (['--model', hermes_model] if hermes_model else [])
+            + (['--provider', hermes_provider] if hermes_provider else [])
+            + (['--skip-auth-import'] if hermes_skip_auth_import in ['1', 'true', 'yes'] else [])
+          }}
+      changed_when: true
+
+    - name: Show non-secret Hermes status
+      ansible.builtin.command:
+        argv:
+          - "{{ profile_repo }}/bin/hermes/doctor"
+      changed_when: false

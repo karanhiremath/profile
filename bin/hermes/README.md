@@ -12,6 +12,7 @@ Data boundary:
 ```bash
 bin/hermes/install       # isolated tool install under ~/.local/share/hermes-toolchain
 bin/hermes/install-tui   # isolated Bun runtime for herm TUI
+bin/hermes/configure-machine # machine-aware model/auth/config setup
 bin/hermes/private-sync  # clone/update private personal repo
 bin/hermes/doctor        # non-secret status
 bin/hermes/env           # print PATH additions
@@ -30,3 +31,28 @@ The installer uses `uv venv` and prepends the venv to `PATH` while running npm s
 The TUI installer downloads the Bun release asset for the current OS/arch, verifies it against `SHASUMS256.txt`, and installs it under the Hermes toolchain instead of using the global Bun installer.
 
 `install` writes user-local shims to `${HERMES_SHIM_DIR:-$HOME/.local/bin}` for `hermes`, `hermes-agent`, and `herm`. If that directory is already on PATH, no `source <(.../env)` step is needed.
+
+## Machine-aware setup
+
+`configure-machine` reads a non-secret profile from:
+
+```text
+${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/machines/${HERMES_MACHINE_PROFILE:-$(hostname -s)}/hermes.yaml
+```
+
+Example profile:
+
+```yaml
+model:
+  provider: openai-codex
+  default: gpt-5.5
+  base_url: https://chatgpt.com/backend-api/codex
+auth:
+  import_codex_cli: true
+```
+
+Ansible entrypoint:
+
+```bash
+ansible-playbook -i <inventory> <profile_repo>/bin/hermes/ansible/hermes.yml
+```

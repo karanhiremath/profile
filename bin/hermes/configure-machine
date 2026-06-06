@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Configure Hermes for the current machine from a non-secret machine profile.
+# Usage: configure-machine [--profile PATH] [--machine NAME] [--model MODEL] [--provider PROVIDER] [--skip-install] [--skip-auth-import]
+set -euo pipefail
+
+usage() { sed -n '2,3p' "$0" | sed 's/^# //'; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MACHINE="${HERMES_MACHINE_PROFILE:-$(hostname -s)}"
+PRIVATE_DIR="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}"
+PROFILE=""
+MODEL=""
+PROVIDER=""
+BASE_URL=""
+SKIP_INSTALL=0
+SKIP_AUTH_IMPORT=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --profile) PROFILE="${2:?missing profile path}"; shift 2 ;;
+    --machine) MACHINE="${2:?missing machine name}"; shift 2 ;;
+    --model) MODEL="${2:?missing model}"; shift 2 ;;
+    --provider) PROVIDER="${2:?missing provider}"; shift 2 ;;
+    --base-url) BASE_URL="${2:?missing base url}"; shift 2 ;;
+    --skip-install) SKIP_INSTALL=1; shift ;;
+    --skip-auth-import) SKIP_AUTH_IMPORT=1; shift ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$PROFILE" ]; then
+  PROFILE="$PRIVATE_DIR/machines/$MACHINE/hermes.yaml"
+fi
+
+if [ "$SKIP_INSTALL" -eq 0 ]; then
+  "$SCRIPT_DIR/install" --skip-private-sync
+  "$SCRIPT_DIR/install-tui"
+fi
+
+HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+PY="$VENV/bin/python"
+if [ ! -x "$PY" ]; then
+  echo "ERROR: Hermes Python venv missing; run bin/hermes/install first" >&2
+  exit 1
+fi
+
+PROFILE="$PROFILE" MACHINE="$MACHINE" MODEL="$MODEL" PROVIDER="$PROVIDER" BASE_URL="$BASE_URL" SKIP_AUTH_IMPORT="$SKIP_AUTH_IMPORT" "$PY" "$SCRIPT_DIR/configure_machine.py"
