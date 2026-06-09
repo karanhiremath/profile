@@ -2,12 +2,16 @@
 
 set -euo pipefail
 
-shopt -s failglob
+app_name="pi"
+package_name="@earendil-works/pi-coding-agent"
+theme_name="karan-dark"
 
 # Set PROFILE_DIR and APP_BIN if not already set
 if [ -z "${PROFILE_DIR:-}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+else
+    SCRIPT_DIR="${PROFILE_DIR}/bin/pi"
 fi
 
 if [ -z "${APP_BIN:-}" ]; then
@@ -17,22 +21,8 @@ fi
 . "${APP_BIN}/sh/shell_fns" --source-only
 . "${APP_BIN}/sh/brew_helper.sh"
 
-app_name="pi"
-
 MACHINE="$(uname -s)"
-ARCH="$(uname -m)"
 
-# Check if already installed
-if command -v pi >/dev/null 2>&1; then
-    echo "pi already installed. Checking for updates..."
-    echo "Upgrading pi via npm..."
-    npm install -g @mariozechner/pi-coding-agent
-    exit 0
-fi
-
-install_messages "start" "$app_name"
-
-# Function to check Node.js version
 check_node_version() {
     if command -v node >/dev/null 2>&1; then
         local node_version
@@ -44,8 +34,11 @@ check_node_version() {
     return 1
 }
 
-# Ensure Node.js and npm are installed
-if ! check_node_version; then
+ensure_node() {
+    if check_node_version; then
+        return 0
+    fi
+
     echo "Node.js 18+ is required. Installing/updating Node.js..."
     case "${MACHINE}" in
         Darwin)
@@ -81,24 +74,67 @@ if ! check_node_version; then
             exit 1
             ;;
     esac
-fi
+}
 
-# Verify Node.js and npm are available
+install_or_update_pi() {
+    echo "Node.js version: $(node --version)"
+    echo "npm version: $(npm --version)"
+
+    if command -v pi >/dev/null 2>&1; then
+        echo "pi already installed. Upgrading ${package_name}..."
+    else
+        echo "Installing pi..."
+    fi
+
+    npm install -g --ignore-scripts "${package_name}"
+}
+
+configure_theme() {
+    local pi_agent_dir theme_dir settings_file theme_src theme_dst
+    pi_agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
+    theme_dir="${pi_agent_dir}/themes"
+    settings_file="${pi_agent_dir}/settings.json"
+    theme_src="${SCRIPT_DIR}/themes/${theme_name}.json"
+    theme_dst="${theme_dir}/${theme_name}.json"
+
+    if [ ! -f "$theme_src" ]; then
+        echo "ERROR: missing pi theme source: ${theme_src}" >&2
+        exit 1
+    fi
+
+    mkdir -p "$theme_dir"
+    cp "$theme_src" "$theme_dst"
+
+    SETTINGS_FILE="$settings_file" THEME_NAME="$theme_name" node <<'NODE'
+const fs = require('fs');
+const path = process.env.SETTINGS_FILE;
+const theme = process.env.THEME_NAME;
+let settings = {};
+if (fs.existsSync(path)) {
+  settings = JSON.parse(fs.readFileSync(path, 'utf8'));
+}
+settings.theme = theme;
+fs.writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
+NODE
+
+    echo "Configured pi theme: ${theme_name}"
+}
+
+install_messages "start" "$app_name"
+ensure_node
+
 if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
     echo "ERROR: Node.js or npm not found after installation."
     exit 1
 fi
 
-echo "Node.js version: $(node --version)"
-echo "npm version: $(npm --version)"
-
-# Install pi via npm
-echo "Installing pi..."
-npm install -g @mariozechner/pi-coding-agent
+install_or_update_pi
+configure_theme
 
 install_messages "end" "$app_name"
 
 echo ""
 echo "pi installed successfully!"
 echo "Usage: pi --help"
+echo "Theme: ${theme_name}"
 echo ""

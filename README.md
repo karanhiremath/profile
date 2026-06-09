@@ -53,6 +53,7 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 | Recipe | Description |
 |--------|-------------|
 | `just claude` | Claude Code |
+| `just pi` | pi coding agent + profile-managed theme |
 | `just cmux` | cmux (Claude multiplexer) |
 | `just copilot` | GitHub Copilot CLI |
 | `just cursor-cli` | Cursor Agent CLI |

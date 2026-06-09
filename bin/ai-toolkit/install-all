@@ -70,6 +70,16 @@ else
 fi
 echo ""
 
+# pi coding agent
+echo "==> Installing/upgrading pi..."
+if "${APP_BIN}/pi/install"; then
+    echo "✓ pi completed successfully"
+else
+    echo "✗ pi failed"
+    failed_installs+=("pi")
+fi
+echo ""
+
 # cmux
 echo "==> Installing/upgrading cmux..."
 if "${APP_BIN}/cmux/install"; then

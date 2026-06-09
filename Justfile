@@ -176,6 +176,14 @@ claude:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/claude/install
 
+# Install/upgrade pi coding agent + profile-managed theme
+pi:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/pi/install
+
 # Install/upgrade cmux (Claude multiplexer)
 cmux:
     #!/usr/bin/env bash
