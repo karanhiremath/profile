@@ -75,7 +75,7 @@ PANE_JSON=$(herdr pane split "${HERDR_PANE_ID:?}" \
   --focus)
 PANE_ID=$(printf '%s' "$PANE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
 herdr pane rename "$PANE_ID" cbuild-poller
-herdr pane run "$PANE_ID" "cd /home/karan.hiremath/src/cartesia-security-worktrees/cbuild-mirror-scan-gate-20260625 && scripts/infra/cbuild async watch --run-root $RUN_ROOT --interval 15 --tail 60 --hold"
+herdr pane run "$PANE_ID" "cd /home/karan.hiremath/src/cartesia-security-worktrees/cbuild-mirror-scan-gate-20260625 && scripts/infra/cbuild async watch --run-root $RUN_ROOT --interval 15 --tail 40 --jsonl --hold"
 herdr pane layout --pane "${HERDR_PANE_ID:?}"
 ```
 
