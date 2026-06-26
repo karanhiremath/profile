@@ -87,6 +87,15 @@ pc:
     mkdir -p "$HOME/.local/bin"
     cp target/release/pc "$HOME/.local/bin/pc"
     echo "✓ Installed pc to ~/.local/bin/pc"
+    # Install profile-managed Pi skills.
+    if [ -d "$(pwd)/skills/pi" ]; then
+        mkdir -p "$HOME/.pi/agent/skills"
+        for skill in "$(pwd)"/skills/pi/*; do
+            [ -d "$skill" ] || continue
+            ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
+        done
+        echo "✓ Linked profile Pi skills"
+    fi
     # Install Datadog MCP extension if DD env is set
     if [ -n "${DD_API_KEY:-}" ]; then
         mkdir -p "$HOME/.pi/agent/extensions"
