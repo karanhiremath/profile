@@ -1,0 +1,38 @@
+# Hermes voice-validation agent profile.
+# Copy to <name>.yaml (or run `agents new <name>`) and edit.
+#
+# Data boundary: this file is committed to the profile repo (both machines).
+# Do NOT hardcode internal/staging hostnames or secrets here. Point at an
+# internal endpoint via `endpoint.base_url_env` and keep the actual host +
+# CARTESIA_API_KEY in machine-local ~/.hermes/.env.
+
+name: TEMPLATE
+description: "What this agent validates."
+
+endpoint:
+  # Resolution order at launch: base_url (if non-empty) wins, else the value of
+  # the env var named by base_url_env (read from ~/.hermes/.env or the shell).
+  base_url: ""                     # OK to inline ONLY public/non-sensitive hosts
+  base_url_env: CARTESIA_BASE_URL  # internal hosts live here, machine-local
+
+tts:
+  model: sonic-3.5                 # latest
+  voice: ""                        # empty -> resolved from CARTESIA_VOICE_ID
+
+stt:
+  model: ink-2                     # latest
+  language: en
+
+llm:                               # the model driving the agent itself
+  provider: openai-codex
+  model: gpt-5.5
+
+surface: cli                       # default surface: cli | tui | gateway
+platform: telegram                 # used when surface=gateway
+toolsets:
+  - hermes-cli
+
+persona: |
+  You are a Cartesia voice validation agent. Keep replies short and speakable.
+  When asked to test TTS, speak the requested phrase verbatim. Report any
+  synthesis or transcription error text exactly as returned.
