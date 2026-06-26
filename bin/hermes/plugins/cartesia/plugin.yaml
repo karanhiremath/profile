@@ -1,0 +1,7 @@
+name: cartesia
+version: 1.0.0
+description: "Cartesia TTS (Sonic) + STT (Ink) backend for Hermes. Registers a TTSProvider (tts.provider: cartesia) and a TranscriptionProvider (stt.provider: cartesia) over the Cartesia HTTP API."
+author: Karan Hiremath
+kind: backend
+requires_env:
+  - CARTESIA_API_KEY

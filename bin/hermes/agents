@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Spin up isolated Hermes voice agents from declarative profiles, for day-to-day
+# terminal / tmux / TUI (and messaging) use.
+# Usage: agents <command> [args]
+#
+#   list                       List profiles (merged across the profile path)
+#   resolve <profile>          Show the resolved config for a profile (host redacted)
+#   new <name> [--dir D]       Scaffold a profile from TEMPLATE.
+#                              D = work | personal | profile | <path> (default: personal)
+#   check <profile>            Materialize + run an end-to-end endpoint health check
+#   up <profile> [opts] [-- ...args]
+#                              Materialize the isolated home and launch the agent
+#       --surface cli|tui|gateway   Override the profile's default surface
+#       --platform <name>           Messaging platform for surface=gateway
+#       --check                     Run an endpoint health check before launching
+#       -- <args>                   Pass remaining args through to hermes/herm
+#
+# Each agent runs under its own HERMES_HOME so it never touches ~/.hermes.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY_BACKEND="$SCRIPT_DIR/hermes_agents.py"
+TEMPLATE_SRC="$SCRIPT_DIR/profiles/TEMPLATE.yaml"
+PLUGIN_DIR="$SCRIPT_DIR/plugins/cartesia"
+
+# Resolve a `new --dir` target: keyword shorthand or a literal path.
+resolve_profile_dir() {
+  case "$1" in
+    work)     echo "$HOME/src/karan.hiremath/agentic/hermes/profiles" ;;
+    personal) echo "$HOME/src/hermes/profiles" ;;
+    profile)  echo "$SCRIPT_DIR/profiles" ;;
+    *)        echo "$1" ;;
+  esac
+}
+
+HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+PY="$VENV/bin/python"
+SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
+export PATH="$SHIM_DIR:$VENV/bin:$PATH"
+
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+[ -x "$PY" ] || die "Hermes venv python missing ($PY); run bin/hermes/install first"
+
+materialize() {
+  "$PY" "$PY_BACKEND" materialize "$1"
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  -h|--help|help|"") usage; exit 0 ;;
+
+  list)
+    "$PY" "$PY_BACKEND" list
+    ;;
+
+  resolve)
+    [ "$#" -ge 1 ] || die "resolve needs a profile name"
+    "$PY" "$PY_BACKEND" resolve "$1"
+    ;;
+
+  new)
+    [ "$#" -ge 1 ] || die "new needs a name"
+    name="$1"; shift
+    target="personal"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --dir) target="${2:?}"; shift 2 ;;
+        *) die "unknown option: $1" ;;
+      esac
+    done
+    dir="$(resolve_profile_dir "$target")"
+    mkdir -p "$dir"
+    dst="$dir/$name.yaml"
+    [ -e "$dst" ] && die "profile already exists: $dst"
+    sed "s/^name: TEMPLATE/name: $name/" "$TEMPLATE_SRC" > "$dst"
+    echo "created $dst ($(resolve_profile_dir "$target" >/dev/null && echo "$target"))"
+    echo "edit it, then: agents check $name"
+    ;;
+
+  check)
+    [ "$#" -ge 1 ] || die "check needs a profile name"
+    home="$(materialize "$1")"
+    echo "home=$home"
+    HERMES_HOME="$home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt
+    ;;
+
+  up)
+    [ "$#" -ge 1 ] || die "up needs a profile name"
+    profile="$1"; shift
+    surface=""; platform=""; do_check=0; passthrough=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --surface) surface="${2:?}"; shift 2 ;;
+        --platform) platform="${2:?}"; shift 2 ;;
+        --check) do_check=1; shift ;;
+        --) shift; passthrough=("$@"); break ;;
+        *) die "unknown option: $1" ;;
+      esac
+    done
+
+    # Default surface from the profile if not overridden.
+    [ -n "$surface" ] || surface="$("$PY" "$PY_BACKEND" resolve "$profile" | sed -n 's/.*"surface": *"\([^"]*\)".*/\1/p')"
+    [ -n "$surface" ] || surface="cli"
+
+    home="$(materialize "$profile")"
+    echo "profile=$profile surface=$surface home=$home"
+
+    if [ "$do_check" -eq 1 ]; then
+      HERMES_HOME="$home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt || die "endpoint health check failed; not launching"
+    fi
+
+    export HERMES_HOME="$home"
+    case "$surface" in
+      cli)
+        command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"
+        exec hermes chat "${passthrough[@]}"
+        ;;
+      tui)
+        command -v herm >/dev/null 2>&1 || die "herm (TUI) not installed; run bin/hermes/install-tui"
+        exec herm "${passthrough[@]}"
+        ;;
+      gateway)
+        command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"
+        [ -n "$platform" ] && export HERMES_GATEWAY_PLATFORM="$platform"
+        echo "Launching gateway (platform: ${platform:-from config}). Configure tokens in $home/.env"
+        echo "First time? run:  HERMES_HOME=$home hermes gateway setup"
+        exec hermes gateway run "${passthrough[@]}"
+        ;;
+      *) die "unknown surface: $surface (use cli|tui|gateway)" ;;
+    esac
+    ;;
+
+  *) die "unknown command: $cmd (try: agents help)" ;;
+esac
