@@ -1,0 +1,12 @@
+# enabled|profiles|target|source|mode|notes
+# profiles: all,full,minimal. mode: link,dir-link,copy.
+# 'full' applies only on machines WITHOUT ~/src/karan.hiremath (personal boxes);
+# on the work Mac these rows are skipped so the work sync keeps ownership.
+# Never add auth.json, .env, kubeconfigs, credential files, logs, sessions, sqlite, caches.
+1|full|~/.pi/agent/AGENTS.md|config/agents/AGENTS.md|link|pi global personal rules
+1|full|~/.pi/agent/AGENTIC_WORKFLOW.md|config/agents/AGENTIC_WORKFLOW.md|link|agentic execution loop
+1|full|~/.pi/agent/LANG_GO.md|config/agents/LANG_GO.md|link|Go conventions
+1|full|~/.pi/agent/LANG_PYTHON.md|config/agents/LANG_PYTHON.md|link|Python conventions
+1|full|~/.pi/agent/LANG_TYPESCRIPT.md|config/agents/LANG_TYPESCRIPT.md|link|TypeScript conventions
+1|full|~/.codex/AGENTS.md|config/agents/AGENTS.md|link|Codex global personal rules
+1|full|~/.claude/CLAUDE.md|config/agents/AGENTS.md|link|Claude Code global personal rules

@@ -101,6 +101,14 @@ obsidian:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/obsidian/install
 
+# Personal agent-config sync (symlinks + pull-only cron). Safe on the work Mac.
+agentic-sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/agentic-sync/install
+
 zsh:
     #!/usr/bin/env bash
     set -euo pipefail

@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+# agentic-sync — git-backed, pull-only sync of personal agent config.
+#
+# Mirrors the work agentic-workstation pattern for personal machines:
+#   - source of truth: this `profile` repo (synced to all personal machines)
+#   - cron action: fetch + ff-only pull ONLY when the worktree is clean, then
+#     apply safe symlinks from a manifest.
+#   - never auto-commits, auto-pushes, or syncs auth/secrets/sessions/caches.
+#
+# Profile detection is keyed on work-repo presence so this never fights the
+# work sync over the same target paths:
+#   - ~/src/karan.hiremath present  -> "minimal" (keep profile pulled; do NOT
+#                                       touch agent config — the work sync owns it)
+#   - absent (e.g. the Mac Mini)    -> "full"    (apply personal agent config)
+# Override anytime via --profile / AGENTIC_SYNC_PROFILE / host.env.
+
+set -euo pipefail
+
+DEFAULT_REPO_URL="https://github.com/karanhiremath/profile.git"
+DEFAULT_REPO_DIR="${HOME}/src/profile"
+WORK_REPO_DIR="${HOME}/src/karan.hiremath"
+STATE_DIR="${HOME}/.local/state/agentic-sync"
+LOG_FILE="${STATE_DIR}/sync.log"
+CRON_BEGIN="# BEGIN agentic-sync"
+CRON_END="# END agentic-sync"
+
+repo_url="${AGENTIC_SYNC_REPO_URL:-$DEFAULT_REPO_URL}"
+repo_dir="${AGENTIC_SYNC_REPO_DIR:-$DEFAULT_REPO_DIR}"
+manifest=""
+profile="${AGENTIC_SYNC_PROFILE:-}"
+dry_run=0
+assume_yes=0
+command_name="run"
+
+usage() {
+  cat <<'EOF'
+Usage: agentic-sync [options] [command]
+
+Commands:
+  run             pull repo if clean, then apply symlinks (default)
+  status          print repo/link/cron status
+  pull            clone/fetch/ff-only pull repo; skip dirty worktrees
+  link            apply manifest symlinks only
+  install-cron    install user crontab entry for run (every 20 min)
+  uninstall-cron  remove user crontab entry
+  cron-status     show matching crontab block
+
+Options:
+  --repo-dir DIR       repo checkout path (default: ~/src/profile)
+  --repo-url URL       clone URL if repo is absent
+  --manifest FILE      manifest path (default: <repo>/bin/agentic-sync/manifest.tsv)
+  --profile PROFILE    full|minimal|none (default: auto by work-repo presence)
+  --dry-run            print actions without mutating files/crontab
+  -y, --yes            replace existing targets with timestamped backups without prompting
+  -h, --help           show help
+
+Host overrides are read from:
+  /etc/agentic-sync/host.env
+  ~/.config/agentic-sync/host.env
+EOF
+}
+
+log() {
+  printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
+run_cmd() {
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'dry-run:'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+load_host_env() {
+  local env_file
+  for env_file in /etc/agentic-sync/host.env "${HOME}/.config/agentic-sync/host.env"; do
+    if [ -r "$env_file" ]; then
+      # shellcheck disable=SC1090
+      . "$env_file"
+    fi
+  done
+  repo_url="${AGENTIC_SYNC_REPO_URL:-$repo_url}"
+  repo_dir="${AGENTIC_SYNC_REPO_DIR:-$repo_dir}"
+  profile="${AGENTIC_SYNC_PROFILE:-$profile}"
+}
+
+# Personal machines get the full personal agent config; machines that also hold
+# the work repo defer agent-config links to the work sync to avoid clobbering.
+detect_profile() {
+  if [ -n "$profile" ]; then
+    printf '%s\n' "$profile"
+    return
+  fi
+  if [ -d "${WORK_REPO_DIR}/.git" ]; then
+    printf 'minimal\n'
+  else
+    printf 'full\n'
+  fi
+}
+
+expand_path() {
+  local path="$1"
+  path="${path/#\~/$HOME}"
+  path="${path//\$HOME/$HOME}"
+  path="${path//\$REPO_DIR/$repo_dir}"
+  printf '%s\n' "$path"
+}
+
+secret_path_guard() {
+  local path="$1"
+  case "$path" in
+    *auth.json*|*.env|*.env.*|*/.env|*/credentials|*/credentials/*|*kubeconfig*|*history.jsonl*|*logs_*.sqlite*|*.sqlite|*.sqlite-shm|*.sqlite-wal|*/sessions/*|*/cache/*|*/log/*|*/logs/*)
+      log "refusing secret/runtime path: $path"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+manifest_path() {
+  if [ -n "$manifest" ]; then
+    printf '%s\n' "$manifest"
+  else
+    printf '%s\n' "${repo_dir}/bin/agentic-sync/manifest.tsv"
+  fi
+}
+
+ensure_repo() {
+  if [ -d "${repo_dir}/.git" ]; then
+    return 0
+  fi
+  log "repo absent; cloning $repo_url -> $repo_dir"
+  run_cmd mkdir -p "$(dirname "$repo_dir")"
+  run_cmd git clone "$repo_url" "$repo_dir"
+}
+
+repo_dirty() {
+  [ -n "$(git -C "$repo_dir" status --porcelain --untracked-files=normal 2>/dev/null || true)" ]
+}
+
+pull_repo() {
+  ensure_repo
+  if repo_dirty; then
+    log "repo dirty; fetch only, skip pull: $repo_dir"
+    run_cmd git -C "$repo_dir" fetch --quiet origin
+    return 0
+  fi
+  log "repo clean; ff-only pull: $repo_dir"
+  run_cmd git -C "$repo_dir" fetch --quiet origin
+  run_cmd git -C "$repo_dir" pull --ff-only --quiet
+}
+
+profile_matches() {
+  local profiles="$1" active="$2"
+  case ",$profiles," in
+    *,all,*|*,"$active",*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+backup_existing() {
+  local target="$1"
+  local backup
+  backup="${target}.backup.$(date -u '+%Y%m%dT%H%M%SZ')"
+  if [ "$assume_yes" -ne 1 ] && [ ! -t 0 ]; then
+    log "non-interactive and --yes missing; refusing to replace $target"
+    return 1
+  fi
+  if [ "$assume_yes" -ne 1 ]; then
+    printf 'Replace %s with symlink? Existing path will move to %s [y/N] ' "$target" "$backup" >&2
+    local answer
+    read -r answer
+    case "$answer" in
+      y|Y|yes|YES) ;;
+      *) log "skipped $target"; return 1 ;;
+    esac
+  fi
+  log "backup $target -> $backup"
+  run_cmd mv "$target" "$backup"
+}
+
+link_one() {
+  local target="$1" source="$2" mode="$3" note="$4"
+  local target_path source_path target_parent
+  target_path="$(expand_path "$target")"
+  source_path="$(expand_path "$source")"
+  case "$source_path" in
+    /*) ;;
+    *) source_path="${repo_dir}/${source_path}" ;;
+  esac
+
+  secret_path_guard "$target_path" || return 0
+  secret_path_guard "$source_path" || return 0
+
+  if [ ! -e "$source_path" ]; then
+    log "missing source; skip $target_path <- $source_path"
+    return 0
+  fi
+
+  if [ -L "$target_path" ]; then
+    local current
+    current="$(readlink "$target_path")"
+    if [ "$current" = "$source_path" ]; then
+      log "linked ok: $target_path"
+      return 0
+    fi
+    log "replace symlink: $target_path ($current -> $source_path)"
+    run_cmd rm "$target_path"
+  elif [ -e "$target_path" ]; then
+    if [ "$mode" = "copy" ]; then
+      log "copy over existing: $target_path ($note)"
+      run_cmd cp "$source_path" "$target_path"
+      return 0
+    fi
+    backup_existing "$target_path" || return 0
+  fi
+
+  target_parent="$(dirname "$target_path")"
+  run_cmd mkdir -p "$target_parent"
+  case "$mode" in
+    link|dir-link)
+      log "link: $target_path -> $source_path ($note)"
+      run_cmd ln -s "$source_path" "$target_path"
+      ;;
+    copy)
+      log "copy: $source_path -> $target_path ($note)"
+      run_cmd cp "$source_path" "$target_path"
+      ;;
+    *)
+      log "unknown mode '$mode'; skip $target_path"
+      ;;
+  esac
+}
+
+apply_links() {
+  ensure_repo
+  local mf active_profile
+  mf="$(manifest_path)"
+  active_profile="$(detect_profile)"
+  if [ "$active_profile" = "none" ]; then
+    log "profile=none; no links applied"
+    return 0
+  fi
+  if [ ! -f "$mf" ]; then
+    log "missing manifest: $mf"
+    return 1
+  fi
+  log "apply links: profile=$active_profile manifest=$mf"
+
+  local enabled profiles target source mode note
+  while IFS='|' read -r enabled profiles target source mode note; do
+    case "${enabled:-}" in ''|'#'*) continue ;; esac
+    [ "$enabled" = "1" ] || continue
+    profile_matches "$profiles" "$active_profile" || continue
+    link_one "$target" "$source" "$mode" "${note:-}"
+  done < "$mf"
+}
+
+cron_line() {
+  printf '3,23,43 * * * * /usr/bin/env bash %q run >> %q 2>&1\n' "${repo_dir}/bin/agentic-sync/agentic-sync" "$LOG_FILE"
+}
+
+install_cron() {
+  mkdir -p "$STATE_DIR"
+  local tmp
+  tmp="$(mktemp)"
+  (crontab -l 2>/dev/null || true) | awk -v begin="$CRON_BEGIN" -v end="$CRON_END" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    skip != 1 {print}
+  ' > "$tmp"
+  {
+    printf '%s\n' "$CRON_BEGIN"
+    cron_line
+    printf '%s\n' "$CRON_END"
+  } >> "$tmp"
+  if [ "$dry_run" -eq 1 ]; then
+    cat "$tmp"
+  else
+    crontab "$tmp"
+    log "installed crontab block"
+  fi
+  rm -f "$tmp"
+}
+
+uninstall_cron() {
+  local tmp
+  tmp="$(mktemp)"
+  (crontab -l 2>/dev/null || true) | awk -v begin="$CRON_BEGIN" -v end="$CRON_END" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    skip != 1 {print}
+  ' > "$tmp"
+  if [ "$dry_run" -eq 1 ]; then
+    cat "$tmp"
+  else
+    crontab "$tmp"
+    log "removed crontab block"
+  fi
+  rm -f "$tmp"
+}
+
+cron_status() {
+  (crontab -l 2>/dev/null || true) | awk -v begin="$CRON_BEGIN" -v end="$CRON_END" '
+    $0 == begin {show=1}
+    show == 1 {print}
+    $0 == end {show=0}
+  '
+}
+
+status() {
+  local active_profile mf
+  active_profile="$(detect_profile)"
+  mf="$(manifest_path)"
+  printf 'repo_dir: %s\n' "$repo_dir"
+  printf 'repo_url: %s\n' "$repo_url"
+  printf 'work_repo: %s\n' "$([ -d "${WORK_REPO_DIR}/.git" ] && echo present || echo absent)"
+  printf 'profile: %s\n' "$active_profile"
+  printf 'manifest: %s\n' "$mf"
+  if [ -d "${repo_dir}/.git" ]; then
+    printf 'repo: present\n'
+    if repo_dirty; then
+      printf 'repo_dirty: yes\n'
+    else
+      printf 'repo_dirty: no\n'
+    fi
+  else
+    printf 'repo: absent\n'
+  fi
+  printf 'cron:\n'
+  cron_status | sed 's/^/  /' || true
+}
+
+main() {
+  load_host_env
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo-dir) repo_dir="$2"; shift 2 ;;
+      --repo-url) repo_url="$2"; shift 2 ;;
+      --manifest) manifest="$2"; shift 2 ;;
+      --profile) profile="$2"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      -y|--yes) assume_yes=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      run|status|pull|link|install-cron|uninstall-cron|cron-status) command_name="$1"; shift ;;
+      *) printf 'unknown arg: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+  done
+
+  case "$command_name" in
+    run) pull_repo; apply_links ;;
+    status) status ;;
+    pull) pull_repo ;;
+    link) apply_links ;;
+    install-cron) install_cron ;;
+    uninstall-cron) uninstall_cron ;;
+    cron-status) cron_status ;;
+  esac
+}
+
+main "$@"
