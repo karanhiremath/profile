@@ -216,6 +216,66 @@ _pc_completions() {
 }
 compdef _pc_completions pc
 
+# Completions for the Hermes `agents` launcher (subcommands + profile names from
+# the profile search path).
+_agents_completions() {
+    local -a subcmds profiles dirs
+    subcmds=(
+        "list:list profiles, source, surface, endpoint"
+        "resolve:show a profile's resolved config"
+        "new:scaffold a new profile from TEMPLATE"
+        "check:materialize + endpoint health check"
+        "up:launch an agent (cli/tui/gateway)"
+        "help:show help"
+    )
+    if [[ -n "$HERMES_AGENT_PROFILE_PATH" ]]; then
+        dirs=(${(s/:/)HERMES_AGENT_PROFILE_PATH})
+    else
+        dirs=(
+            "$HOME/src/karan.hiremath/agentic/hermes/profiles"
+            "$HOME/src/hermes/profiles"
+            "$HOME/src/profile/bin/hermes/profiles"
+        )
+    fi
+    local d f
+    for d in $dirs; do
+        [[ -d "$d" ]] || continue
+        for f in "$d"/*.yaml(N); do
+            [[ "${f:t:r}" == TEMPLATE ]] && continue
+            profiles+="${f:t:r}"
+        done
+    done
+    profiles=(${(u)profiles})  # dedupe across the search path
+
+    if (( CURRENT == 2 )); then
+        _describe 'agents command' subcmds
+        return
+    fi
+    case "${words[2]}" in
+        resolve|check)
+            _describe 'profile' profiles ;;
+        up)
+            if (( CURRENT == 3 )); then
+                _describe 'profile' profiles
+            else
+                _arguments \
+                    '--surface[launch surface]:surface:(cli tui gateway)' \
+                    '--platform[gateway platform]:platform:(telegram discord whatsapp weixin)' \
+                    '--check[health-check the endpoint before launching]'
+            fi ;;
+        new)
+            if (( CURRENT == 3 )); then
+                _message 'new profile name'
+            else
+                _arguments '--dir[target repo]:dir:(work personal profile)'
+            fi ;;
+    esac
+}
+compdef _agents_completions agents
+
+# Hermes voice/agent launcher (profiles -> isolated agents; CLI/TUI/gateway)
+alias agents="$HOME/src/profile/bin/hermes/agents"
+
 # Source work-specific extensions if present
 # karan.hiremath provides: tc (training clusters), ic (inference clusters), dashboard
 [ -f "$HOME/src/karan.hiremath/scripts/shell-ext.sh" ] && source "$HOME/src/karan.hiremath/scripts/shell-ext.sh"
