@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Non-secret Omnigent status check for personal/shared profile tooling.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/omnigent/doctor [--help]
+
+Prints non-secret Omnigent status. It intentionally avoids reading chat.db,
+artifacts, transcripts, or log bodies because those may contain personal/work
+session content.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+if ! command -v omni >/dev/null 2>&1; then
+  echo "omni=missing"
+  exit 1
+fi
+if ! command -v omnigent >/dev/null 2>&1; then
+  echo "omnigent=missing"
+  exit 1
+fi
+
+printf 'omni=%s\n' "$(command -v omni)"
+printf 'omnigent=%s\n' "$(command -v omnigent)"
+printf 'version='; omni --version
+printf '\n-- config --\n'
+omni config list
+printf '\n-- server --\n'
+omni server status || true
+printf '\n-- local host --\n'
+omni host status --server "" || true

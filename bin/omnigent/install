@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Install or upgrade Omnigent via uv tool into the user's local toolchain.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/omnigent/install [--help]
+
+Installs/upgrades Omnigent with uv tool, exposing both `omni` and `omnigent`.
+Runtime config/state stays machine-local in ~/.omnigent and is never committed.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "ERROR: uv is required. Install uv first: https://docs.astral.sh/uv/getting-started/installation/" >&2
+  exit 1
+fi
+
+python_bin="${OMNIGENT_PYTHON:-/usr/bin/python3.12}"
+if [ ! -x "$python_bin" ]; then
+  python_bin="$(command -v python3.12 || command -v python3 || true)"
+fi
+if [ -z "$python_bin" ]; then
+  echo "ERROR: no python3.12/python3 found for uv tool install" >&2
+  exit 1
+fi
+
+echo "Installing/upgrading Omnigent with $python_bin..."
+uv tool install --python "$python_bin" omnigent
+
+echo ""
+omni --version
+printf 'omni=%s\n' "$(command -v omni)"
+printf 'omnigent=%s\n' "$(command -v omnigent)"
+echo "Runtime state: ~/.omnigent (machine-local; do not commit)"
