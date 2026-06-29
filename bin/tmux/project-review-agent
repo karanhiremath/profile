@@ -23,6 +23,24 @@ esac
 
 export TMUX_PR_REVIEW_SCOPE="$scope"
 export TMUX_PR_REVIEW_PANE="$pr_pane"
+export PATH="$HOME/.local/share/hermes-toolchain/npm/bin:$HOME/.local/bin:$PATH"
+
+hermes_bin="${HERMES_BIN:-}"
+if [ -z "$hermes_bin" ]; then
+  if command -v hermes >/dev/null 2>&1; then
+    hermes_bin="$(command -v hermes)"
+  else
+    for candidate in \
+      "$HOME/.local/share/hermes-toolchain/npm/bin/hermes" \
+      "$HOME/.local/bin/hermes"; do
+      if [ -x "$candidate" ]; then
+        hermes_bin="$candidate"
+        break
+      fi
+    done
+  fi
+fi
+[ -n "$hermes_bin" ] || { echo "ERROR: hermes not found. PATH=$PATH" >&2; exit 127; }
 
 if [ -d "$profile_home" ]; then
   export HERMES_HOME="$profile_home"
@@ -33,4 +51,4 @@ printf 'Profile: %s\n' "$profile_name"
 printf 'PR pane: %s\n\n' "${pr_pane:-unknown}"
 
 # Use the classic CLI for predictable tmux paste/input behavior.
-exec hermes chat --cli --source tmux-pr-review
+exec "$hermes_bin" chat --cli --source tmux-pr-review

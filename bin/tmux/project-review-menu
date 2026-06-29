@@ -38,6 +38,29 @@ profile_bin="$(cd -- "$script_dir/../.." && pwd)"
 pr_review_cmd="$profile_bin/bin/gh/pr-review"
 agent_cmd="$profile_bin/bin/tmux/project-review-agent"
 
+# tmux popups inherit the tmux server environment, which can be much smaller
+# than the interactive shell PATH. Include Hermes' profile-managed toolchain.
+export PATH="$HOME/.local/share/hermes-toolchain/npm/bin:$HOME/.local/bin:$PATH"
+
+resolve_hermes() {
+  if command -v hermes >/dev/null 2>&1; then
+    command -v hermes
+    return 0
+  fi
+  for candidate in \
+    "$HOME/.local/share/hermes-toolchain/npm/bin/hermes" \
+    "$HOME/.local/bin/hermes" \
+    "$HOME/src/profile/bin/hermes/hermes"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+hermes_bin="$(resolve_hermes || true)"
+
 have_work_profile() {
   [ -d "$HOME/.local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work" ] && return 0
   [ -d "$HOME/.local/share/hermes-agents/chief-of-staff-work" ] && return 0
@@ -72,18 +95,18 @@ launch_session() {
   fi
 
   command -v tmux >/dev/null 2>&1 || { echo "ERROR: tmux not found" >&2; exit 127; }
-  command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found" >&2; exit 127; }
-  command -v gh >/dev/null 2>&1 || { echo "ERROR: gh not found" >&2; exit 127; }
+  [ -n "$hermes_bin" ] || { echo "ERROR: hermes not found. PATH=$PATH" >&2; exit 127; }
+  command -v gh >/dev/null 2>&1 || { echo "ERROR: gh not found. PATH=$PATH" >&2; exit 127; }
   [ -x "$pr_review_cmd" ] || { echo "ERROR: missing executable $pr_review_cmd" >&2; exit 127; }
   [ -x "$agent_cmd" ] || { echo "ERROR: missing executable $agent_cmd" >&2; exit 127; }
 
-  tmux new-session -d -s "$session" -n review -c "$HOME" "$agent_cmd $scope"
+  tmux new-session -d -s "$session" -n review -c "$HOME" "HERMES_BIN='$hermes_bin' '$agent_cmd' '$scope'"
   left_pane="$(tmux list-panes -t "$session:review" -F '#{pane_id}' | head -n1)"
   right_pane="$(tmux split-window -h -t "$session:review" -c "$HOME/src/profile" -P -F '#{pane_id}' "$pr_review_cmd")"
   tmux resize-pane -t "$left_pane" -x 55%
 
   # Restart the left pane with the right pane id injected so Hermes can drive gh-dash.
-  tmux respawn-pane -k -t "$left_pane" "$agent_cmd $scope '$right_pane'"
+  tmux respawn-pane -k -t "$left_pane" "HERMES_BIN='$hermes_bin' '$agent_cmd' '$scope' '$right_pane'"
   tmux select-pane -t "$left_pane"
 
   prompt_file="$(mktemp "${TMPDIR:-/tmp}/project-review-prompt.XXXXXX")"
