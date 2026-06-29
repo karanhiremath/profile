@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+scope="${1:-personal}"
+pr_pane="${2:-}"
+
+case "$scope" in
+  personal)
+    profile_name="chief-of-staff"
+    profile_home="$HOME/.local/share/hermes-agents/chief-of-staff/profiles/chief-of-staff"
+    title="Personal project review manager"
+    ;;
+  work)
+    profile_name="chief-of-staff-work"
+    profile_home="$HOME/.local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+    title="Work project review manager"
+    ;;
+  *)
+    echo "ERROR: unknown project-review scope: $scope" >&2
+    exit 2
+    ;;
+esac
+
+export TMUX_PR_REVIEW_SCOPE="$scope"
+export TMUX_PR_REVIEW_PANE="$pr_pane"
+
+if [ -d "$profile_home" ]; then
+  export HERMES_HOME="$profile_home"
+fi
+
+printf '%s\n' "$title"
+printf 'Profile: %s\n' "$profile_name"
+printf 'PR pane: %s\n\n' "${pr_pane:-unknown}"
+
+# Use the classic CLI for predictable tmux paste/input behavior.
+exec hermes chat --cli --source tmux-pr-review

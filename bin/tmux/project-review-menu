@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="popup"
+SELECT=""
+DRY_RUN=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mode) MODE="$2"; shift 2 ;;
+    --select) SELECT="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --list) SELECT="__list__"; shift ;;
+    -h|--help)
+      cat <<'USAGE'
+Usage: project-review-menu [--mode popup|window|inline] [--select personal|work] [--dry-run] [--list]
+
+Context-aware tmux launcher for project review sessions.
+Creates a new tmux session with:
+  left pane: Hermes project manager
+  right pane: gh-dash PR review
+
+Work review appears only when a work Hermes profile is present on the host.
+USAGE
+      exit 0
+      ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+profile_bin="$HOME/src/profile"
+pr_review_cmd="$profile_bin/bin/gh/pr-review"
+agent_cmd="$profile_bin/bin/tmux/project-review-agent"
+
+have_work_profile() {
+  [ -d "$HOME/.local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work" ] && return 0
+  [ -d "$HOME/.local/share/hermes-agents/chief-of-staff-work" ] && return 0
+  if [ -x "$HOME/src/profile/bin/hermes/agents" ]; then
+    "$HOME/src/profile/bin/hermes/agents" list 2>/dev/null | awk '{print $1}' | grep -qx 'chief-of-staff-work' && return 0
+  fi
+  return 1
+}
+
+print_options() {
+  echo "Project review menu ($MODE)"
+  echo
+  echo "1) Personal project PR review"
+  if have_work_profile; then
+    echo "2) Work project PR review"
+  fi
+  echo "q) Quit"
+}
+
+launch_session() {
+  scope="$1"
+  session="${TMUX_PROJECT_REVIEW_SESSION:-project-review-$scope-$(date +%Y%m%d-%H%M%S)}"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "DRY RUN"
+    echo "scope=$scope"
+    echo "session=$session"
+    echo "left=$agent_cmd $scope <right-pane>"
+    echo "right=$pr_review_cmd"
+    return 0
+  fi
+
+  command -v tmux >/dev/null 2>&1 || { echo "ERROR: tmux not found" >&2; exit 127; }
+  command -v hermes >/dev/null 2>&1 || { echo "ERROR: hermes not found" >&2; exit 127; }
+  command -v gh >/dev/null 2>&1 || { echo "ERROR: gh not found" >&2; exit 127; }
+  [ -x "$pr_review_cmd" ] || { echo "ERROR: missing executable $pr_review_cmd" >&2; exit 127; }
+  [ -x "$agent_cmd" ] || { echo "ERROR: missing executable $agent_cmd" >&2; exit 127; }
+
+  tmux new-session -d -s "$session" -n review -c "$HOME" "$agent_cmd $scope"
+  left_pane="$(tmux list-panes -t "$session:review" -F '#{pane_id}' | head -n1)"
+  right_pane="$(tmux split-window -h -t "$session:review" -c "$HOME/src/profile" -P -F '#{pane_id}' "$pr_review_cmd")"
+  tmux resize-pane -t "$left_pane" -x 55%
+
+  # Restart the left pane with the right pane id injected so Hermes can drive gh-dash.
+  tmux respawn-pane -k -t "$left_pane" "$agent_cmd $scope '$right_pane'"
+  tmux select-pane -t "$left_pane"
+
+  prompt_file="$(mktemp "${TMPDIR:-/tmp}/project-review-prompt.XXXXXX")"
+  if [ "$scope" = "work" ]; then
+    boundary="WORK PROFILE. Use work-profile rules and do not copy work-private details into personal notes or repos."
+    title="work project manager"
+  else
+    boundary="PERSONAL ONLY. Do not read ~/src/karan.hiremath, Linear, work dailies, internal Slack, infra, customer data, security findings, or secrets."
+    title="personal project manager"
+  fi
+  cat >"$prompt_file" <<EOF
+You are the $title for a terminal-native tmux PR review session.
+
+Context:
+- The live PR dashboard is in the tmux pane target: $right_pane.
+- The dashboard is gh-dash, not a bespoke PR UI.
+- Help Karan review PRs without leaving tmux.
+- You may inspect PR metadata/diffs/checks using gh commands.
+- You may navigate the gh-dash pane when useful with commands like:
+  tmux send-keys -t '$right_pane' Down
+  tmux send-keys -t '$right_pane' Up
+  tmux send-keys -t '$right_pane' d
+  tmux send-keys -t '$right_pane' q
+- Prefer off-the-shelf GitHub tooling (gh-dash + gh). Do not build a bespoke PR dashboard.
+
+Boundary:
+$boundary
+
+Start by briefly orienting Karan: explain that the Hermes project manager is on the left, the live PR dashboard is on the right, you can drive it via tmux/gh, and ask which PR/project he wants to review first. Keep responses concise and action-oriented.
+EOF
+
+  # Give Hermes a moment to start, then paste the boot prompt into the left pane.
+  ( sleep 3
+    tmux load-buffer -b project-review-prompt "$prompt_file"
+    tmux paste-buffer -b project-review-prompt -t "$left_pane"
+    tmux send-keys -t "$left_pane" Enter
+    rm -f "$prompt_file"
+  ) >/dev/null 2>&1 &
+
+  if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$session"
+  else
+    tmux attach-session -t "$session"
+  fi
+}
+
+if [ "$SELECT" = "__list__" ]; then
+  print_options
+  exit 0
+fi
+
+if [ -n "$SELECT" ]; then
+  case "$SELECT" in
+    personal) launch_session personal ;;
+    work)
+      if have_work_profile; then
+        launch_session work
+      else
+        echo "Work project review is not available on this host (chief-of-staff-work profile not detected)." >&2
+        exit 1
+      fi
+      ;;
+    *) echo "unknown selection: $SELECT" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
+
+print_options
+printf '\nSelect: '
+read -r choice
+case "$choice" in
+  1|p|P|personal) launch_session personal ;;
+  2|w|W|work)
+    if have_work_profile; then
+      launch_session work
+    else
+      echo "Work project review is not available on this host."
+      sleep 2
+    fi
+    ;;
+  q|Q|'') exit 0 ;;
+  *) echo "Unknown choice: $choice"; sleep 2; exit 2 ;;
+esac
