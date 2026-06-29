@@ -46,10 +46,10 @@ if [ -d "$profile_home" ]; then
   export HERMES_HOME="$profile_home"
 fi
 
-# In this two-pane review workflow, typed follow-ups should queue by default
-# instead of interrupting an in-flight project-manager turn. Allow override for
+# In this two-pane review workflow, typed follow-ups should steer by default
+# instead of interrupting an in-flight code-review turn. Allow override for
 # ad-hoc testing with HERMES_PROJECT_REVIEW_BUSY_INPUT_MODE=interrupt|steer|queue.
-busy_input_mode="${HERMES_PROJECT_REVIEW_BUSY_INPUT_MODE:-queue}"
+busy_input_mode="${HERMES_PROJECT_REVIEW_BUSY_INPUT_MODE:-steer}"
 if [ -n "${HERMES_HOME:-}" ]; then
   "$hermes_bin" config set display.busy_input_mode "$busy_input_mode" >/dev/null 2>&1 || true
 fi
