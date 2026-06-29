@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-config="${GH_DASH_CONFIG:-$HOME/src/profile/bin/gh/gh-dash/config.yml}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+profile_bin="$(cd -- "$script_dir/../.." && pwd)"
+config="${GH_DASH_CONFIG:-$profile_bin/bin/gh/gh-dash/config.yml}"
 
 if ! gh extension list | grep -q '^gh dash[[:space:]]'; then
-  "$HOME/src/profile/bin/gh/ensure-gh-dash"
+  "$profile_bin/bin/gh/ensure-gh-dash"
 fi
 
 exec gh dash --config "$config"

@@ -30,10 +30,12 @@ From any terminal:
 ~/src/profile/bin/gh/pr-review
 ```
 
-which runs:
+The wrapper resolves paths relative to its checked-out profile repo, so it can also be smoke-tested from a PR worktree before merge.
+
+By default it runs:
 
 ```bash
-gh dash --config ~/src/profile/bin/gh/gh-dash/config.yml
+gh dash --config <profile-repo>/bin/gh/gh-dash/config.yml
 ```
 
 ## tmux project-review menu

@@ -27,7 +27,8 @@ USAGE
   esac
 done
 
-profile_bin="$HOME/src/profile"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+profile_bin="$(cd -- "$script_dir/../.." && pwd)"
 pr_review_cmd="$profile_bin/bin/gh/pr-review"
 agent_cmd="$profile_bin/bin/tmux/project-review-agent"
 
