@@ -17,7 +17,7 @@ bin/hermes/private-sync  # clone/update private personal repo
 bin/hermes/doctor        # non-secret status
 bin/hermes/env           # print PATH additions
 bin/hermes/agents        # run isolated Hermes voice agents for daily terminal use
-bin/hermes/cos           # launch personal Chief of Staff profile
+bin/hermes/cos           # personal Chief of Staff cockpit (tmux + Herm TUI + status)
 bin/hermes/cosw          # launch work Chief of Staff profile
 bin/hermes/pm <project>  # attach/start a registered project-manager tmux/TUI
 bin/hermes/pl <project>  # attach a registered project-lead implementation session
@@ -28,7 +28,10 @@ bin/hermes/pl <project>  # attach a registered project-lead implementation sessi
 These commands are generic profile-level wrappers. They do not embed work/private project state; they resolve profiles and project session registries from the normal Hermes search paths.
 
 ```bash
-cos                         # agents up chief-of-staff
+cos                         # open/switch the personal Chief of Staff cockpit
+cos open                    # same as cos; uses agents up chief-of-staff --surface tui
+cos open --no-switch        # create the tmux window detached if it is missing
+cos status                  # read-only status: tmux, repos, tools, nvim registry, Omni
 cosw                        # agents up chief-of-staff-work
 pm <project>                # attach/start the Hermes PM TUI session for project
 pl <project>                # attach the project-lead implementation tmux session
