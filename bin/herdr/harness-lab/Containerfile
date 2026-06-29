@@ -1,0 +1,80 @@
+# Generic herdr harness lab image.
+# Build with: podman build -t herdr-harness-lab -f Containerfile .
+
+FROM node:22-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    PATH="/usr/local/bin:/root/.local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      curl \
+      fd-find \
+      git \
+      jq \
+      less \
+      procps \
+      python3 \
+      python3-venv \
+      ripgrep \
+      tini \
+      tmux \
+      unzip \
+      xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# uv is used for Python CLI tool isolation. This is inside the lab container only.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+ && mv /root/.local/bin/uv /usr/local/bin/uv \
+ && mv /root/.local/bin/uvx /usr/local/bin/uvx \
+ && uv --version
+
+# Perplexity research path: Datasette llm CLI + llm-perplexity plugin.
+RUN uv tool install llm \
+ && llm install llm-perplexity \
+ && llm --version \
+ && llm plugins
+
+# Public wrapper/tool candidates. These are isolated in the image and smoke-tested before trust.
+# Hermes npm packages are intentionally excluded from the baseline: hermes-agent's
+# postinstall currently shells out to system pip and trips Debian PEP 668. Validate
+# Hermes in a separate disposable manifest before promotion.
+RUN npm install -g \
+      @perplexity-cli/perplexity-cli \
+      @perplexity-ai/mcp-server \
+      coding-agent-adapters \
+      @goclaw/perplexity-cli \
+ && npm cache clean --force
+
+# Standalone process/job supervisors from GitHub releases.
+ARG PROCESS_COMPOSE_VERSION=1.110.0
+ARG PUEUE_VERSION=4.0.4
+RUN set -euo pipefail; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) pc_arch="linux_amd64"; pueue_arch="x86_64-unknown-linux-musl" ;; \
+      arm64) pc_arch="linux_arm64"; pueue_arch="aarch64-unknown-linux-musl" ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    tmp="$(mktemp -d)"; \
+    curl -fsSL "https://github.com/F1bonacc1/process-compose/releases/download/v${PROCESS_COMPOSE_VERSION}/process-compose_${pc_arch}.tar.gz" -o "$tmp/process-compose.tgz"; \
+    tar -xzf "$tmp/process-compose.tgz" -C "$tmp"; \
+    install -m 0755 "$tmp/process-compose" /usr/local/bin/process-compose; \
+    curl -fsSL "https://github.com/Nukesor/pueue/releases/download/v${PUEUE_VERSION}/pueue-${pueue_arch}" -o /usr/local/bin/pueue; \
+    chmod 0755 /usr/local/bin/pueue; \
+    rm -rf "$tmp"
+
+RUN useradd --create-home --shell /bin/bash agent
+WORKDIR /workspace
+USER agent
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash"]

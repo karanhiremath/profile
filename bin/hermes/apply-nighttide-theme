@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Install and select Karan's Nighttide Herm TUI themes.
+
+Keeps Herm's visual theme aligned with ~/src/profile/bin/ghostty/config.
+The dark background is intentionally the exact Ghostty background (#2e3d4e)
+for both personal and work profiles, while preserving a small identity cue:
+  - personal/default profiles use the purple accent
+  - work profiles use the orange accent
+
+Safe to rerun after `herm-tui` upgrades; preserves unrelated Herm preferences
+such as eikon, kanban state, never-prompts, and lastSessionId.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+
+HOME = Path.home()
+NPM_PREFIX = Path(os.environ.get("HERMES_NPM_PREFIX", HOME / ".local/share/hermes-toolchain/npm"))
+HERM_TUI = NPM_PREFIX / "lib/node_modules/herm-tui"
+THEMES = HERM_TUI / "themes"
+INDEX = HERM_TUI / "index.js"
+
+GHOSTTY_CONFIG = HOME / "src/profile/bin/ghostty/config"
+DEFAULT_GHOSTTY_BG = "#2e3d4e"
+RED_ACCENT = "#cd5244"
+
+
+def ghostty_background() -> str:
+    """Read the background from the profile repo's Ghostty config."""
+    try:
+        for line in GHOSTTY_CONFIG.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("background ="):
+                return line.split("=", 1)[1].strip()
+    except FileNotFoundError:
+        pass
+    return DEFAULT_GHOSTTY_BG
+
+
+NIGHTTIDE_PRIMARY = "#64ba9a"
+GHOSTTY_COLOR12 = "#5b8fd4"
+
+# Work theme colors:
+# - Primary text: Ghostty palette color12 (#5b8fd4)
+# - Main border: light Cartesia Growth scale step, green-200 (#ceecbf)
+# - Ember accent: cartesia-orange-500 (#fc7a37)
+WORK_PRIMARY_TEXT = GHOSTTY_COLOR12
+PRODUCT_GROWTH_LIGHT = "#ceecbf"
+PRODUCT_EMBER = "#fc7a37"
+
+
+GHOSTTY_BG = ghostty_background()
+PERSONAL_ACCENT = RED_ACCENT
+WORK_ACCENT = PRODUCT_EMBER
+WORK_LINE_COLOR = PRODUCT_GROWTH_LIGHT
+
+
+def nighttide_theme(
+    accent: str,
+    *,
+    line_color: str = GHOSTTY_BG,
+    primary: str = NIGHTTIDE_PRIMARY,
+) -> dict:
+    """Return a Nighttide theme with profile-specific accent and line colors."""
+    light_accent = accent
+    light_line_color = line_color
+    return {
+        "$schema": "https://opencode.ai/theme.json",
+        "defs": {
+            "ntBg0": GHOSTTY_BG,
+            # Keep panel/element surfaces on the exact terminal background while
+            # allowing the work profile's line/border color to follow the product
+            # primary token when WORK_LINE_COLOR overrides it.
+            "ntBg1": GHOSTTY_BG,
+            "ntBg2": GHOSTTY_BG,
+            "ntLine": line_color,
+            "ntText": "#eceff0",
+            "ntTextSoft": "#bec2c5",
+            "ntMuted": primary,
+            "ntPrimary": primary,
+            "ntSecondary": "#5b8fd4",
+            "ntAccent": accent,
+            "ntAccent2": accent,
+            "ntRed": "#cd5244",
+            "ntGreen": "#5eae63",
+            "ntYellow": "#e4c843",
+            "ntOrange": WORK_ACCENT,
+            "ntCyan": "#64bb9b",
+            "ntBlue": "#5b8fd4",
+            "ntDiffAddBg": "#244633",
+            "ntDiffDelBg": "#4a2a2b",
+            "lightBg": "#f5f7f8",
+            "lightPanel": "#edf2f1",
+            "lightElem": "#e2ebe8",
+            "lightLine": light_line_color,
+            "lightText": "#1d332b",
+            "lightMuted": "#4a9e7c",
+            "lightPrimary": "#4a9e7c",
+            "lightSecondary": "#3f73aa",
+            "lightAccent": light_accent,
+            "lightRed": "#b94035",
+            "lightGreen": "#43864a",
+            "lightYellow": "#a3831d",
+            "lightCyan": "#3d8f78",
+        },
+        "theme": {
+            "primary": {"dark": "ntPrimary", "light": "lightPrimary"},
+            "secondary": {"dark": "ntSecondary", "light": "lightSecondary"},
+            "accent": {"dark": "ntAccent", "light": "lightAccent"},
+            "error": {"dark": "ntRed", "light": "lightRed"},
+            "warning": {"dark": "ntYellow", "light": "lightYellow"},
+            "success": {"dark": "ntGreen", "light": "lightGreen"},
+            "info": {"dark": "ntCyan", "light": "lightCyan"},
+            "text": {"dark": "ntText", "light": "lightText"},
+            "textMuted": {"dark": "ntMuted", "light": "lightMuted"},
+            "background": {"dark": "ntBg0", "light": "lightBg"},
+            "backgroundPanel": {"dark": "ntBg1", "light": "lightPanel"},
+            "backgroundElement": {"dark": "ntBg2", "light": "lightElem"},
+            "border": {"dark": "ntLine", "light": "lightLine"},
+            "borderActive": {"dark": "ntAccent", "light": "lightAccent"},
+            "borderSubtle": {"dark": "ntLine", "light": "lightLine"},
+            "diffAdded": {"dark": "ntGreen", "light": "lightGreen"},
+            "diffRemoved": {"dark": "ntRed", "light": "lightRed"},
+            "diffContext": {"dark": "ntTextSoft", "light": "#63736e"},
+            "diffHunkHeader": {"dark": "ntCyan", "light": "lightCyan"},
+            "diffHighlightAdded": {"dark": "#78c979", "light": "#2f7f3d"},
+            "diffHighlightRemoved": {"dark": "#d86456", "light": "#aa3028"},
+            "diffAddedBg": {"dark": "ntDiffAddBg", "light": "#dff0e4"},
+            "diffRemovedBg": {"dark": "ntDiffDelBg", "light": "#f2dfde"},
+            "diffContextBg": {"dark": "ntBg1", "light": "lightPanel"},
+            "diffLineNumber": {"dark": "ntMuted", "light": "#6d7d78"},
+            "diffAddedLineNumberBg": {"dark": "#213f30", "light": "#d3e7da"},
+            "diffRemovedLineNumberBg": {"dark": "#432629", "light": "#ead2d0"},
+            "markdownText": {"dark": "ntText", "light": "lightText"},
+            "markdownHeading": {"dark": "ntPrimary", "light": "lightPrimary"},
+            "markdownLink": {"dark": "ntBlue", "light": "lightSecondary"},
+            "markdownLinkText": {"dark": "ntCyan", "light": "lightCyan"},
+            "markdownCode": {"dark": "ntYellow", "light": "lightYellow"},
+            "markdownBlockQuote": {"dark": "ntMuted", "light": "lightMuted"},
+            "markdownEmph": {"dark": "ntAccent2", "light": "lightAccent"},
+            "markdownStrong": {"dark": "ntPrimary", "light": "lightPrimary"},
+            "markdownHorizontalRule": {"dark": "ntLine", "light": "lightLine"},
+            "markdownListItem": {"dark": "ntCyan", "light": "lightCyan"},
+            "markdownListEnumeration": {"dark": "ntYellow", "light": "lightYellow"},
+            "markdownImage": {"dark": "ntBlue", "light": "lightSecondary"},
+            "markdownImageText": {"dark": "ntMuted", "light": "lightMuted"},
+            "markdownCodeBlock": {"dark": "ntText", "light": "lightText"},
+            "syntaxComment": {"dark": "ntMuted", "light": "lightMuted"},
+            "syntaxKeyword": {"dark": "ntAccent2", "light": "lightAccent"},
+            "syntaxFunction": {"dark": "ntBlue", "light": "lightSecondary"},
+            "syntaxVariable": {"dark": "ntText", "light": "lightText"},
+            "syntaxString": {"dark": "ntGreen", "light": "lightGreen"},
+            "syntaxNumber": {"dark": "ntYellow", "light": "lightYellow"},
+            "syntaxType": {"dark": "ntCyan", "light": "lightCyan"},
+            "syntaxOperator": {"dark": "ntOrange", "light": "lightYellow"},
+            "syntaxPunctuation": {"dark": "ntTextSoft", "light": "#63736e"},
+        },
+    }
+
+
+THEME_VARIANTS = {
+    # Backward-compatible alias: if a profile already points at nighttide, it
+    # remains personal unless the path is clearly work-scoped below.
+    "nighttide": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
+    "nighttide-personal": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
+    "nighttide-work": (WORK_ACCENT, WORK_PRIMARY_TEXT, WORK_LINE_COLOR),
+}
+
+
+def write_themes() -> None:
+    THEMES.mkdir(parents=True, exist_ok=True)
+    for name, (accent, primary, line_color) in THEME_VARIANTS.items():
+        (THEMES / f"{name}.json").write_text(
+            json.dumps(nighttide_theme(accent, primary=primary, line_color=line_color), indent=2) + "\n"
+        )
+
+
+def ensure_registry() -> None:
+    if not INDEX.exists():
+        return
+    text = INDEX.read_text(errors="ignore")
+    entries = {
+        name: f'{name if "-" not in name else json.dumps(name)}:'
+        f'{{primary:"{primary}",accent:"{accent}",background:"{GHOSTTY_BG}"}},'
+        for name, (accent, primary, _line_color) in THEME_VARIANTS.items()
+    }
+
+    changed = False
+    for name, entry in entries.items():
+        token = f'{name}:{{' if "-" not in name else f'"{name}":{{'
+        if token in text:
+            # Keep reruns idempotent, but update colors if the entry changed.
+            text, n = re.subn(re.escape(token) + r'primary:"#[0-9A-Fa-f]{6}",accent:"#[0-9A-Fa-f]{6}",background:"#[0-9A-Fa-f]{6}"\},', entry, text, count=1)
+            changed = changed or bool(n)
+            continue
+        insert_after = entries["nighttide"] if "nighttide:{" in text else 'nightowl:{primary:"#82AAFF",accent:"#c792ea",background:"#011627"},'
+        if insert_after not in text:
+            raise SystemExit("could not patch herm-tui theme registry: insertion point missing")
+        text = text.replace(insert_after, insert_after + entry, 1)
+        changed = True
+
+    if changed:
+        INDEX.write_text(text)
+
+
+def is_work_home(home: Path) -> bool:
+    parts = set(home.parts)
+    name = home.name.lower()
+    return "work" in parts or "chief-of-staff-work" in parts or name.endswith("-work")
+
+
+def theme_for_home(home: Path) -> str:
+    return "nighttide-work" if is_work_home(home) else "nighttide-personal"
+
+
+def merge_pref(home: Path) -> str:
+    path = home / "herm" / "tui.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    theme = theme_for_home(home)
+    data.update({"theme": theme, "themeMode": "dark"})
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return theme
+
+
+def candidate_homes() -> list[Path]:
+    homes = [HOME / ".hermes"]
+
+    # Profile homes under the default Hermes root, including ~/.hermes/profiles/work.
+    profiles = HOME / ".hermes" / "profiles"
+    if profiles.exists():
+        homes.extend(p for p in profiles.iterdir() if p.is_dir())
+
+    # Standalone Hermes Agent profile homes, plus their nested profile homes.
+    agents = HOME / ".local/share/hermes-agents"
+    if agents.exists():
+        homes.extend(p for p in agents.rglob("*") if (p / "config.yaml").exists() or (p / "SOUL.md").exists())
+
+    seen = set()
+    ordered = []
+    for home in homes:
+        try:
+            key = home.resolve()
+        except FileNotFoundError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(home)
+    return ordered
+
+
+def main() -> None:
+    if not HERM_TUI.exists():
+        raise SystemExit(f"herm-tui install not found: {HERM_TUI}")
+
+    write_themes()
+    ensure_registry()
+
+    applied = []
+    for home in candidate_homes():
+        theme = merge_pref(home)
+        applied.append(f"{home}: {theme}")
+
+    print(f"nighttide themes installed with Ghostty background {GHOSTTY_BG}")
+    for line in applied:
+        print(f"  {line}")
+
+
+if __name__ == "__main__":
+    main()

@@ -87,6 +87,15 @@ pc:
     mkdir -p "$HOME/.local/bin"
     cp target/release/pc "$HOME/.local/bin/pc"
     echo "✓ Installed pc to ~/.local/bin/pc"
+    # Install profile-managed Pi skills.
+    if [ -d "$(pwd)/skills/pi" ]; then
+        mkdir -p "$HOME/.pi/agent/skills"
+        for skill in "$(pwd)"/skills/pi/*; do
+            [ -d "$skill" ] || continue
+            ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
+        done
+        echo "✓ Linked profile Pi skills"
+    fi
     # Install Datadog MCP extension if DD env is set
     if [ -n "${DD_API_KEY:-}" ]; then
         mkdir -p "$HOME/.pi/agent/extensions"
@@ -224,6 +233,14 @@ devin:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/devin/install
 
+# Install/upgrade Omnigent
+omnigent:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/omnigent/install
+
 # Install/upgrade Gemini CLI
 gemini-cli:
     #!/usr/bin/env bash
@@ -247,6 +264,14 @@ kubectl:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/kubectl/install
+
+# Install/upgrade herdr (agent multiplexer; runs inside tmux)
+herdr:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/herdr/install
 
 # Install/upgrade Helm
 helm:

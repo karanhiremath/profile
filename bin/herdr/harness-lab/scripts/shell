@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Open an interactive shell inside the herdr harness lab container.
+# Usage: shell [run args...]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/run" "$@" -- bash

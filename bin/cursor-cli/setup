@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Generic Cursor Agent CLI config bootstrap.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/cursor-cli/setup [--install] [--target-dir DIR] [--agent-dir DIR] [--skill-dir DIR]
+
+Generic only: installs/configures Cursor CLI state without Cartesia-specific agents.
+If AGENT_SANDBOX_ROOT is set, the default target is $AGENT_SANDBOX_ROOT/state/cursor;
+otherwise it is ~/.cursor.
+EOF
+}
+
+INSTALL=0
+TARGET_DIR="${CURSOR_CONFIG_DIR:-${AGENT_SANDBOX_ROOT:+$AGENT_SANDBOX_ROOT/state/cursor}}"
+TARGET_DIR="${TARGET_DIR:-$HOME/.cursor}"
+AGENT_DIR=""
+SKILL_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install) INSTALL=1; shift ;;
+    --target-dir) TARGET_DIR="${2:?missing target dir}"; shift 2 ;;
+    --agent-dir) AGENT_DIR="${2:?missing agent dir}"; shift 2 ;;
+    --skill-dir) SKILL_DIR="${2:?missing skill dir}"; shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ -n "${AGENT_SANDBOX_ROOT:-}" ]]; then
+  case "$TARGET_DIR" in
+    "$AGENT_SANDBOX_ROOT"|"$AGENT_SANDBOX_ROOT/"*) ;;
+    *) echo "ERROR: target dir must be under AGENT_SANDBOX_ROOT when set: $TARGET_DIR" >&2; exit 2 ;;
+  esac
+fi
+
+if [[ "$INSTALL" -eq 1 ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+  "$PROFILE_DIR/bin/cursor-cli/install"
+fi
+
+mkdir -p "$TARGET_DIR/agents" "$TARGET_DIR/skills"
+
+if [[ -n "$AGENT_DIR" && -d "$AGENT_DIR" ]]; then
+  while IFS= read -r -d '' file; do
+    name="$(basename "$file")"
+    ln -sfn "$file" "$TARGET_DIR/agents/$name"
+    printf 'agent=%s\n' "$name"
+  done < <(find "$AGENT_DIR" -maxdepth 1 -type f -name '*.md' -print0)
+fi
+
+if [[ -n "$SKILL_DIR" && -d "$SKILL_DIR" ]]; then
+  while IFS= read -r -d '' dir; do
+    [[ -f "$dir/SKILL.md" ]] || continue
+    name="$(basename "$dir")"
+    ln -sfn "$dir" "$TARGET_DIR/skills/$name"
+    printf 'skill=%s\n' "$name"
+  done < <(find "$SKILL_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
+fi
+
+python3 - "$TARGET_DIR/cli-config.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+data = json.loads(p.read_text()) if p.exists() else {"version": 1}
+allow = data.setdefault("permissions", {}).setdefault("allow", [])
+deny = data.setdefault("permissions", {}).setdefault("deny", [])
+for entry in [
+    "Shell(git status)", "Shell(git diff*)", "Shell(git log*)", "Shell(git branch*)",
+    "Shell(git fetch*)", "Shell(git show*)", "Shell(git rev-parse*)",
+    "Shell(ls)", "Shell(pwd)", "Shell(which*)", "Shell(rg *)", "Shell(find *)",
+]:
+    if entry not in allow:
+        allow.append(entry)
+for entry in [
+    "Shell(git push --force*)", "Shell(git push -f*)",
+    "Shell(terraform apply*)", "Shell(terraform destroy*)",
+    "Shell(op *)", "Shell(1password*)",
+]:
+    if entry not in deny:
+        deny.append(entry)
+data["approvalMode"] = data.get("approvalMode", "allowlist")
+data.setdefault("sandbox", {})["mode"] = data.get("sandbox", {}).get("mode", "disabled")
+data.setdefault("attribution", {})["attributeCommitsToAgent"] = True
+data.setdefault("attribution", {})["attributePRsToAgent"] = True
+p.write_text(json.dumps(data, indent=2) + "\n")
+PY
+
+printf 'cursor_config_dir=%s\n' "$TARGET_DIR"

@@ -120,6 +120,16 @@ else
 fi
 echo ""
 
+# Omnigent
+echo "==> Installing/upgrading Omnigent..."
+if "${APP_BIN}/omnigent/install"; then
+    echo "✓ Omnigent completed successfully"
+else
+    echo "✗ Omnigent failed"
+    failed_installs+=("omnigent")
+fi
+echo ""
+
 # Gemini CLI
 echo "==> Installing/upgrading Gemini CLI..."
 if "${APP_BIN}/gemini-cli/install"; then
@@ -127,6 +137,16 @@ if "${APP_BIN}/gemini-cli/install"; then
 else
     echo "✗ Gemini CLI failed"
     failed_installs+=("gemini-cli")
+fi
+echo ""
+
+# herdr
+echo "==> Installing/upgrading herdr..."
+if "${APP_BIN}/herdr/install"; then
+    echo "✓ herdr completed successfully"
+else
+    echo "✗ herdr failed"
+    failed_installs+=("herdr")
 fi
 echo ""
 

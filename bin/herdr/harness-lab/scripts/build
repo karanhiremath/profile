@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Build the generic herdr harness lab container image.
+# Usage: build [--image NAME] [--runtime podman|docker]
+
+set -euo pipefail
+
+usage() {
+  sed -n '2,4p' "$0" | sed 's/^# //'
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+IMAGE="${HERDR_HARNESS_IMAGE:-herdr-harness-lab:latest}"
+RUNTIME="${HERDR_HARNESS_RUNTIME:-podman}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --image) IMAGE="${2:?missing image}"; shift 2 ;;
+    --runtime) RUNTIME="${2:?missing runtime}"; shift 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+if ! command -v "$RUNTIME" >/dev/null 2>&1; then
+  echo "ERROR: runtime not found: $RUNTIME" >&2
+  exit 1
+fi
+
+cd "$LAB_DIR"
+build_args=()
+if [ "$RUNTIME" = "podman" ]; then
+  build_args+=(--format=docker)
+fi
+"$RUNTIME" build \
+  "${build_args[@]}" \
+  --pull=newer \
+  --label org.opencontainers.image.title="herdr harness lab" \
+  --label org.opencontainers.image.description="Sandbox for validating terminal agent wrappers and research CLIs" \
+  -t "$IMAGE" \
+  -f Containerfile \
+  .
