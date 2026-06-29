@@ -4,6 +4,7 @@ set -euo pipefail
 MODE="popup"
 SELECT=""
 TARGET_CLIENT=""
+ATTACH_MODE="switch"
 TMUX_MENU=0
 DRY_RUN=0
 while [ $# -gt 0 ]; do
@@ -11,6 +12,7 @@ while [ $# -gt 0 ]; do
     --mode) MODE="$2"; shift 2 ;;
     --select) SELECT="$2"; shift 2 ;;
     --client) TARGET_CLIENT="$2"; shift 2 ;;
+    --attach) ATTACH_MODE="$2"; shift 2 ;;
     --tmux-menu) TMUX_MENU=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --list) SELECT="__list__"; shift ;;
@@ -88,9 +90,9 @@ show_tmux_menu() {
   [ -n "$TARGET_CLIENT" ] || { echo "ERROR: no tmux client target available" >&2; exit 1; }
 
   menu_cmd=(tmux display-menu -c "$TARGET_CLIENT" -T "Project Review")
-  menu_cmd+=("Personal project PR review" p "run-shell '$0 --select personal --client \"$TARGET_CLIENT\"'")
+  menu_cmd+=("Personal code review" p "run-shell '$0 --select personal --client \"$TARGET_CLIENT\" --attach popup'")
   if have_work_profile; then
-    menu_cmd+=("Work project PR review" w "run-shell '$0 --select work --client \"$TARGET_CLIENT\"'")
+    menu_cmd+=("Work code review" w "run-shell '$0 --select work --client \"$TARGET_CLIENT\" --attach popup'")
   fi
   menu_cmd+=("" "" "" "Cancel" q "")
   "${menu_cmd[@]}"
@@ -105,6 +107,7 @@ launch_session() {
     echo "scope=$scope"
     echo "session=$session"
     echo "client=${TARGET_CLIENT:-<current>}"
+    echo "attach=$ATTACH_MODE"
     echo "left=$agent_cmd $scope <right-pane>"
     echo "right=$pr_review_cmd"
     return 0
@@ -128,17 +131,17 @@ launch_session() {
   prompt_file="$(mktemp "${TMPDIR:-/tmp}/project-review-prompt.XXXXXX")"
   if [ "$scope" = "work" ]; then
     boundary="WORK PROFILE. Use work-profile rules and do not copy work-private details into personal notes or repos."
-    title="work project manager"
+    title="work code review manager"
   else
     boundary="PERSONAL ONLY. Do not read ~/src/karan.hiremath, Linear, work dailies, internal Slack, infra, customer data, security findings, or secrets."
-    title="personal project manager"
+    title="personal code review manager"
   fi
   cat >"$prompt_file" <<EOF
-You are the $title for a terminal-native tmux PR review session.
+You are the $title for a terminal-native tmux code review session.
 
 Context:
-- The live PR dashboard is in the tmux pane target: $right_pane.
-- The dashboard is gh-dash, not a bespoke PR UI.
+- You are in the left pane as the Hermes TUI code review/profile manager.
+- The live PR review TUI (gh-dash) is in the right pane target: $right_pane.
 - Help Karan review PRs without leaving tmux.
 - You may inspect PR metadata/diffs/checks using gh commands.
 - You may navigate the gh-dash pane when useful with commands like:
@@ -151,7 +154,7 @@ Context:
 Boundary:
 $boundary
 
-Start by briefly orienting Karan: explain that the Hermes project manager is on the left, the live PR dashboard is on the right, you can drive it via tmux/gh, and ask which PR/project he wants to review first. Keep responses concise and action-oriented.
+Start by briefly orienting Karan: explain that the Hermes code review manager is on the left, the live PR review TUI is on the right, you can drive it via tmux/gh, and ask which PR/project he wants to review first. Keep responses concise and action-oriented.
 EOF
 
   # Give Hermes a moment to start, then paste the boot prompt into the left pane.
@@ -162,7 +165,14 @@ EOF
     rm -f "$prompt_file"
   ) >/dev/null 2>&1 &
 
-  if [ -n "$TARGET_CLIENT" ]; then
+  if [ "$ATTACH_MODE" = "popup" ]; then
+    [ -n "$TARGET_CLIENT" ] || TARGET_CLIENT="$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)"
+    if [ -n "$TARGET_CLIENT" ]; then
+      tmux display-popup -c "$TARGET_CLIENT" -E -w 95% -h 90% "tmux attach-session -t '$session'"
+    else
+      tmux display-popup -E -w 95% -h 90% "tmux attach-session -t '$session'"
+    fi
+  elif [ -n "$TARGET_CLIENT" ]; then
     tmux switch-client -c "$TARGET_CLIENT" -t "$session"
   elif [ -n "${TMUX:-}" ]; then
     tmux switch-client -t "$session"
