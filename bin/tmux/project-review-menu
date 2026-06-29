@@ -3,11 +3,13 @@ set -euo pipefail
 
 MODE="popup"
 SELECT=""
+TARGET_CLIENT=""
 DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE="$2"; shift 2 ;;
     --select) SELECT="$2"; shift 2 ;;
+    --client) TARGET_CLIENT="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --list) SELECT="__list__"; shift ;;
     -h|--help)
@@ -26,6 +28,10 @@ USAGE
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# If a popup/window launch fails, keep the UI open long enough to see the error
+# instead of silently disappearing.
+trap 'code=$?; if [ "$code" -ne 0 ] && [ -t 0 ]; then echo; echo "project-review-menu failed (exit $code)"; echo "Press Enter to close"; read -r _ || true; fi' EXIT
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 profile_bin="$(cd -- "$script_dir/../.." && pwd)"
@@ -59,6 +65,7 @@ launch_session() {
     echo "DRY RUN"
     echo "scope=$scope"
     echo "session=$session"
+    echo "client=${TARGET_CLIENT:-<current>}"
     echo "left=$agent_cmd $scope <right-pane>"
     echo "right=$pr_review_cmd"
     return 0
@@ -116,7 +123,9 @@ EOF
     rm -f "$prompt_file"
   ) >/dev/null 2>&1 &
 
-  if [ -n "${TMUX:-}" ]; then
+  if [ -n "$TARGET_CLIENT" ]; then
+    tmux switch-client -c "$TARGET_CLIENT" -t "$session"
+  elif [ -n "${TMUX:-}" ]; then
     tmux switch-client -t "$session"
   else
     tmux attach-session -t "$session"
