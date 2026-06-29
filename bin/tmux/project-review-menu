@@ -4,12 +4,14 @@ set -euo pipefail
 MODE="popup"
 SELECT=""
 TARGET_CLIENT=""
+TMUX_MENU=0
 DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE="$2"; shift 2 ;;
     --select) SELECT="$2"; shift 2 ;;
     --client) TARGET_CLIENT="$2"; shift 2 ;;
+    --tmux-menu) TMUX_MENU=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --list) SELECT="__list__"; shift ;;
     -h|--help)
@@ -78,6 +80,20 @@ print_options() {
     echo "2) Work project PR review"
   fi
   echo "q) Quit"
+}
+
+show_tmux_menu() {
+  command -v tmux >/dev/null 2>&1 || { echo "ERROR: tmux not found" >&2; exit 127; }
+  [ -n "$TARGET_CLIENT" ] || TARGET_CLIENT="$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)"
+  [ -n "$TARGET_CLIENT" ] || { echo "ERROR: no tmux client target available" >&2; exit 1; }
+
+  menu_cmd=(tmux display-menu -c "$TARGET_CLIENT" -T "Project Review")
+  menu_cmd+=("Personal project PR review" p "run-shell '$0 --select personal --client \"$TARGET_CLIENT\"'")
+  if have_work_profile; then
+    menu_cmd+=("Work project PR review" w "run-shell '$0 --select work --client \"$TARGET_CLIENT\"'")
+  fi
+  menu_cmd+=("" "" "" "Cancel" q "")
+  "${menu_cmd[@]}"
 }
 
 launch_session() {
@@ -154,6 +170,11 @@ EOF
     tmux attach-session -t "$session"
   fi
 }
+
+if [ "$TMUX_MENU" -eq 1 ]; then
+  show_tmux_menu
+  exit 0
+fi
 
 if [ "$SELECT" = "__list__" ]; then
   print_options
