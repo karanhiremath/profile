@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Show non-secret Hermes toolchain status.
+set -euo pipefail
+
+HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
+VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
+PRIVATE_DIR="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}"
+SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
+export PATH="$SHIM_DIR:$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
+
+printf 'toolchain=%s\n' "$HERMES_TOOLCHAIN_HOME"
+printf 'npm_prefix=%s\n' "$NPM_PREFIX"
+printf 'python_venv=%s\n' "$VENV"
+printf 'bun_home=%s\n' "$BUN_HOME"
+printf 'private_dir=%s\n' "$PRIVATE_DIR"
+printf 'shim_dir=%s\n' "$SHIM_DIR"
+
+for bin in hermes hermes-agent herm; do
+  path="$NPM_PREFIX/bin/$bin"
+  if [ -x "$path" ]; then
+    printf '%s=%s\n' "$bin" "$path"
+  else
+    printf '%s=missing\n' "$bin"
+  fi
+done
+
+for shim in hermes hermes-agent herm; do
+  if [ -x "$SHIM_DIR/$shim" ]; then
+    printf 'shim_%s=present\n' "$shim"
+  else
+    printf 'shim_%s=missing\n' "$shim"
+  fi
+done
+
+if command -v hermes >/dev/null 2>&1 && hermes --help >/dev/null 2>&1; then
+  printf 'hermes_help=ok\n'
+else
+  printf 'hermes_help=missing\n'
+fi
+if command -v bun >/dev/null 2>&1; then
+  printf 'bun=%s\n' "$(command -v bun)"
+  printf 'bun_version=%s\n' "$(bun --version 2>/dev/null || true)"
+else
+  printf 'bun=missing_optional_for_herm_tui\n'
+fi
+if command -v herm >/dev/null 2>&1 && command -v bun >/dev/null 2>&1; then
+  if herm --help >/dev/null 2>&1; then
+    printf 'herm_help=ok\n'
+  else
+    printf 'herm_help=failed\n'
+  fi
+fi
+
+if [ -d "$PRIVATE_DIR/.git" ]; then
+  printf 'private_repo=present\n'
+  git -C "$PRIVATE_DIR" status --short --branch
+else
+  printf 'private_repo=missing\n'
+fi

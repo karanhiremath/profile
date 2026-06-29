@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Install Hermes CLI tooling into an isolated user-local toolchain.
+# Usage: install [--skip-private-sync]
+set -euo pipefail
+
+usage() { sed -n '2,3p' "$0" | sed 's/^# //'; }
+
+SKIP_PRIVATE_SYNC=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --skip-private-sync) SKIP_PRIVATE_SYNC=1; shift ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
+VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
+BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
+SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
+
+for bin in node npm uv git; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "ERROR: required binary not found: $bin" >&2
+    exit 127
+  fi
+done
+
+mkdir -p "$HERMES_TOOLCHAIN_HOME" "$NPM_PREFIX" "$SHIM_DIR"
+uv venv --allow-existing --seed "$VENV"
+uv pip install --python "$VENV/bin/python" pip setuptools wheel PyYAML
+
+export PATH="$VENV/bin:$NPM_PREFIX/bin:$PATH"
+export npm_config_prefix="$NPM_PREFIX"
+
+npm install -g --prefix "$NPM_PREFIX" hermes-agent herm-tui
+chmod +x \
+  "$NPM_PREFIX/lib/node_modules/hermes-agent/bin/hermes.js" \
+  "$NPM_PREFIX/lib/node_modules/hermes-agent/bin/hermes-agent.js" \
+  2>/dev/null || true
+
+write_shim() {
+  local name="$1"
+  local target="$2"
+  cat > "$SHIM_DIR/$name" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HERMES_TOOLCHAIN_HOME="$HERMES_TOOLCHAIN_HOME"
+export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:\$PATH"
+exec "$target" "\$@"
+EOF
+  chmod 0755 "$SHIM_DIR/$name"
+}
+
+write_shim hermes "$NPM_PREFIX/bin/hermes"
+write_shim hermes-agent "$NPM_PREFIX/bin/hermes-agent"
+write_shim herm "$NPM_PREFIX/bin/herm"
+write_shim agents "$SCRIPT_DIR/agents"
+write_shim cos "$SCRIPT_DIR/cos"
+write_shim cosw "$SCRIPT_DIR/cosw"
+write_shim pm "$SCRIPT_DIR/pm"
+write_shim pl "$SCRIPT_DIR/pl"
+
+if [ "$SKIP_PRIVATE_SYNC" -eq 0 ]; then
+  "$SCRIPT_DIR/private-sync"
+fi
+
+cat <<EOF
+Hermes toolchain installed.
+
+User-local shims:
+  $SHIM_DIR/hermes
+  $SHIM_DIR/hermes-agent
+  $SHIM_DIR/herm
+  $SHIM_DIR/agents
+  $SHIM_DIR/cos
+  $SHIM_DIR/cosw
+  $SHIM_DIR/pm
+  $SHIM_DIR/pl
+
+Toolchain binaries:
+  $NPM_PREFIX/bin/hermes
+  $NPM_PREFIX/bin/hermes-agent
+  $NPM_PREFIX/bin/herm
+EOF

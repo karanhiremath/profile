@@ -1,0 +1,53 @@
+{
+  // Devin CLI project config for profile/ — dev tooling, dotfiles, installers.
+  // See .devin/SECURITY.md for threat model and rationale.
+  "read_config_from": {
+    "claude": true,
+    "cursor": true,
+    "windsurf": true
+  },
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Exec(just)",
+      "Exec(ls)",
+      "Exec(pwd)",
+      "Exec(which)",
+      "Exec(rg)",
+      "Exec(git status)",
+      "Exec(git diff)",
+      "Exec(git log)",
+      "Exec(git branch)",
+      "Exec(git fetch)",
+      "Exec(git show)",
+      "Exec(git add)",
+      "Exec(git commit)",
+      "Exec(gh pr list)",
+      "Exec(gh pr view)",
+      "Exec(gh issue list)"
+    ],
+    "ask": [
+      "Exec(brew)",
+      "Exec(curl)",
+      "Exec(./install.sh)",
+      "Exec(./bin)"
+    ],
+    "deny": [
+      "Exec(sudo)",
+      "Exec(rm -rf)",
+      "Exec(git push --force)",
+      "Exec(git push -f)",
+      "Exec(git reset --hard)",
+      "Write(**/.env)",
+      "Write(**/.env.local)",
+      "Write(**/.env.production)",
+      "Write(**/.git/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/credentials)",
+      "Read(~/.pi/agent/auth.json)",
+      "Read(~/.claude/.credentials*)",
+      "Read(~/.Codex/auth.json)",
+      "Read(~/.local/share/fleet/**)"
+    ]
+  }
+}

@@ -1,23 +1,36 @@
 #!/usr/bin/env bash
-# Spin up isolated Hermes voice-validation agents from declarative profiles.
+# Spin up isolated Hermes voice agents from declarative profiles, for day-to-day
+# terminal / tmux / TUI (and messaging) use.
 # Usage: agents <command> [args]
 #
 #   list                       List profiles (merged across the profile path)
 #   resolve <profile>          Show the resolved config for a profile (host redacted)
 #   new <name> [--dir D]       Scaffold a profile from TEMPLATE.
 #                              D = work | personal | profile | <path> (default: personal)
-#   check <profile>            Materialize + run an end-to-end endpoint validation
+#   check <profile>            Materialize + run an end-to-end endpoint health check
 #   up <profile> [opts] [-- ...args]
 #                              Materialize the isolated home and launch the agent
+#
+# Convenience wrappers:
+#   cos                        agents up chief-of-staff
+#   cosw                       agents up chief-of-staff-work
+#   pm <project>               attach/start registered Hermes PM tmux/TUI
+#   pl <project>               attach registered project-lead tmux session
 #       --surface cli|tui|gateway   Override the profile's default surface
 #       --platform <name>           Messaging platform for surface=gateway
-#       --check                     Run endpoint validation before launching
+#       --check                     Run an endpoint health check before launching
 #       -- <args>                   Pass remaining args through to hermes/herm
 #
 # Each agent runs under its own HERMES_HOME so it never touches ~/.hermes.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PY_BACKEND="$SCRIPT_DIR/hermes_agents.py"
 TEMPLATE_SRC="$SCRIPT_DIR/profiles/TEMPLATE.yaml"
 PLUGIN_DIR="$SCRIPT_DIR/plugins/cartesia"
@@ -38,7 +51,7 @@ PY="$VENV/bin/python"
 SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 export PATH="$SHIM_DIR:$VENV/bin:$PATH"
 
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -106,13 +119,18 @@ case "$cmd" in
     [ -n "$surface" ] || surface="cli"
 
     home="$(materialize "$profile")"
-    echo "profile=$profile surface=$surface home=$home"
+    runtime_profile="$(sed -n '1p' "$home/active_profile" 2>/dev/null || true)"
+    runtime_home="$home"
+    if [ -n "$runtime_profile" ] && [ "$runtime_profile" != "default" ] && [ -d "$home/profiles/$runtime_profile" ]; then
+      runtime_home="$home/profiles/$runtime_profile"
+    fi
+    echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home"
 
     if [ "$do_check" -eq 1 ]; then
-      HERMES_HOME="$home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt || die "endpoint validation failed; not launching"
+      HERMES_HOME="$runtime_home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt || die "endpoint health check failed; not launching"
     fi
 
-    export HERMES_HOME="$home"
+    export HERMES_HOME="$runtime_home"
     case "$surface" in
       cli)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"

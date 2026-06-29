@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Run no-secret smoke checks inside the herdr harness lab container and write artifacts.
+# Usage: smoke [--image NAME] [--runtime podman|docker]
+
+set -euo pipefail
+
+usage() {
+  sed -n '2,4p' "$0" | sed 's/^# //'
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+IMAGE="${HERDR_HARNESS_IMAGE:-herdr-harness-lab:latest}"
+RUNTIME="${HERDR_HARNESS_RUNTIME:-podman}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --image) IMAGE="${2:?missing image}"; shift 2 ;;
+    --runtime) RUNTIME="${2:?missing runtime}"; shift 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+mkdir -p "$LAB_DIR/artifacts"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="$LAB_DIR/artifacts/smoke-${STAMP}.md"
+JSON="$LAB_DIR/artifacts/smoke-${STAMP}.jsonl"
+
+cat > "$OUT" <<EOF
+# herdr harness lab smoke
+
+- timestamp: ${STAMP}
+- image: ${IMAGE}
+- runtime: ${RUNTIME}
+
+EOF
+
+run_check() {
+  local name="$1"
+  shift
+  {
+    echo "## ${name}"
+    echo
+    echo '```text'
+  } >> "$OUT"
+
+  set +e
+  "$SCRIPT_DIR/run" --image "$IMAGE" --runtime "$RUNTIME" -- "$@" >"$LAB_DIR/artifacts/${name}-${STAMP}.out" 2>"$LAB_DIR/artifacts/${name}-${STAMP}.err"
+  local status=$?
+  set -e
+
+  cat "$LAB_DIR/artifacts/${name}-${STAMP}.out" >> "$OUT" || true
+  if [ -s "$LAB_DIR/artifacts/${name}-${STAMP}.err" ]; then
+    echo "--- stderr ---" >> "$OUT"
+    cat "$LAB_DIR/artifacts/${name}-${STAMP}.err" >> "$OUT" || true
+  fi
+  echo '```' >> "$OUT"
+  echo >> "$OUT"
+
+  jq -cn --arg name "$name" --argjson status "$status" --arg out "artifacts/${name}-${STAMP}.out" --arg err "artifacts/${name}-${STAMP}.err" \
+    '{name:$name,status:$status,stdout_ref:$out,stderr_ref:$err}' >> "$JSON"
+}
+
+run_check node-version node --version
+run_check npm-version npm --version
+run_check uv-version uv --version
+run_check llm-version llm --version
+run_check llm-plugins llm plugins
+run_check git-version git --version
+run_check tmux-version tmux -V
+run_check process-compose-version process-compose version
+run_check pueue-version pueue --version
+run_check npm-global-list npm list -g --depth=0
+
+cat >> "$OUT" <<EOF
+## result refs
+
+- jsonl: ${JSON}
+EOF
+
+echo "$OUT"

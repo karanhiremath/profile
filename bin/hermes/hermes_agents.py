@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Backend for the `agents` launcher: resolve a voice-validation profile and
-materialize an isolated HERMES_HOME for it.
+"""Backend for the `agents` launcher: resolve an agent profile and materialize
+an isolated HERMES_HOME for it.
 
-Each validation agent gets its own HERMES_HOME under
-``$XDG_DATA_HOME/hermes-validation/<name>/`` so it never touches the operator's
+Each agent gets its own HERMES_HOME under
+``$XDG_DATA_HOME/hermes-agents/<name>/`` so it never touches the operator's
 main ~/.hermes. The home gets a derived ``config.yaml`` (Cartesia TTS+STT wired
 to the profile's endpoint/models), an ``.env`` seeded from ~/.hermes/.env with
 the resolved ``CARTESIA_BASE_URL`` upserted, the Cartesia plugin symlinked in,
@@ -92,7 +92,7 @@ def find_profile(name: str) -> Path:
 
 def _data_home() -> Path:
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "hermes-validation"
+    return Path(base) / "hermes-agents"
 
 
 def _read_env_file(path: Path) -> Dict[str, str]:
@@ -127,7 +127,15 @@ def load_profile(name: str) -> Dict[str, Any]:
     return data
 
 
-def resolve_base_url(profile: Dict[str, Any]) -> str:
+def voice_on(profile: Dict[str, Any]) -> bool:
+    """Whether this agent uses TTS/STT at all. Text-only agents (tts+stt both
+    disabled) need no Cartesia endpoint and skip all voice wiring."""
+    tts = profile.get("tts") or {}
+    stt = profile.get("stt") or {}
+    return bool(tts.get("enabled", True)) or bool(stt.get("enabled", True))
+
+
+def resolve_base_url(profile: Dict[str, Any], *, required: bool = True) -> Optional[str]:
     ep = profile.get("endpoint") or {}
     inline = (ep.get("base_url") or "").strip()
     if inline:
@@ -135,10 +143,13 @@ def resolve_base_url(profile: Dict[str, Any]) -> str:
     env_key = (ep.get("base_url_env") or "").strip()
     val = _resolve_env(env_key) if env_key else None
     if not val:
+        if not required:
+            return None
         raise SystemExit(
             f"ERROR: profile '{profile.get('name')}' has no endpoint.base_url and "
             f"env {env_key or '(unset)'} is empty. Set {env_key} in ~/.hermes/.env "
-            "(internal hosts stay machine-local)."
+            "(internal hosts stay machine-local), or set tts.enabled+stt.enabled "
+            "to false for a text-only agent."
         )
     return val.rstrip("/")
 
@@ -157,32 +168,39 @@ def _redact_host(url: str) -> str:
         return "<redacted>"
 
 
-def _render_config(profile: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
     tts = profile.get("tts") or {}
     stt = profile.get("stt") or {}
     llm = profile.get("llm") or {}
+    tts_on = bool(tts.get("enabled", True))
+    stt_on = bool(stt.get("enabled", True))
     voice = (tts.get("voice") or "").strip() or _resolve_env("CARTESIA_VOICE_ID") or ""
+
+    toolsets = list(profile.get("toolsets") or ["hermes-cli"])
+    if not tts_on and "tts" in toolsets:
+        toolsets.remove("tts")
+
     cfg: Dict[str, Any] = {
         "model": {
             "provider": llm.get("provider", "openai-codex"),
             "default": llm.get("model", "gpt-5.5"),
         },
-        "toolsets": profile.get("toolsets") or ["hermes-cli"],
-        "plugins": {"enabled": ["cartesia"]},
-        "tts": {
-            "provider": "cartesia",
-            "model": tts.get("model", "sonic-3.5"),
-            "voice": voice,
-        },
-        "stt": {
+        "toolsets": toolsets,
+        "plugins": {"enabled": ["cartesia"] if (tts_on or stt_on) else []},
+    }
+    display = profile.get("display")
+    if isinstance(display, dict) and display:
+        cfg["display"] = display
+    if tts_on:
+        cfg["tts"] = {"provider": "cartesia", "model": tts.get("model", "sonic-3.5"), "voice": voice}
+    if stt_on:
+        cfg["stt"] = {
             "enabled": True,
             "provider": "cartesia",
-            "cartesia": {
-                "model": stt.get("model", "ink-2"),
-                "language": stt.get("language", "en"),
-            },
-        },
-    }
+            "cartesia": {"model": stt.get("model", "ink-2"), "language": stt.get("language", "en")},
+        }
+    else:
+        cfg["stt"] = {"enabled": False}
     return cfg
 
 
@@ -203,18 +221,37 @@ def _upsert_env(path: Path, updates: Dict[str, str]) -> None:
     path.chmod(0o600)
 
 
+def _merge_json_file(path: Path, updates: Dict[str, Any]) -> None:
+    """Merge top-level JSON preferences, preserving unrelated Herm TUI state."""
+    existing: Dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            existing = {}
+    existing.update(updates)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+
+
 def materialize(name: str) -> Path:
     profile = load_profile(name)
-    base_url = resolve_base_url(profile)
+    uses_voice = voice_on(profile)
+    base_url = resolve_base_url(profile, required=uses_voice)
     home = _data_home() / name
     home.mkdir(parents=True, exist_ok=True)
     home.chmod(0o700)
 
+    cfg = _render_config(profile)
+    herm_prefs = (profile.get("herm") or {}).get("preferences") or {}
+    if not isinstance(herm_prefs, dict):
+        herm_prefs = {}
     # config.yaml — always regenerated (fully derived from the profile).
-    (home / "config.yaml").write_text(
-        yaml.safe_dump(_render_config(profile, base_url), sort_keys=False),
-        encoding="utf-8",
-    )
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    if herm_prefs:
+        _merge_json_file(home / "herm" / "tui.json", herm_prefs)
 
     # SOUL.md — persona.
     persona = (profile.get("persona") or "").strip()
@@ -223,31 +260,73 @@ def materialize(name: str) -> Path:
 
     # .env — seed from main once, then upsert managed keys on every run. The
     # API key always re-syncs from ~/.hermes/.env so adding it later propagates;
-    # non-managed keys (e.g. gateway platform tokens) are preserved.
-    env_updates = {"CARTESIA_BASE_URL": base_url}
-    api_key = _resolve_env("CARTESIA_API_KEY")
-    if api_key:
-        env_updates["CARTESIA_API_KEY"] = api_key
-    voice = _render_config(profile, base_url)["tts"]["voice"]
-    if voice:
-        env_updates["CARTESIA_VOICE_ID"] = voice
+    # non-managed keys (e.g. gateway platform tokens) are preserved. Voice keys
+    # are written only for voice-enabled agents.
+    env_updates: Dict[str, str] = {}
+    if uses_voice:
+        if base_url:
+            env_updates["CARTESIA_BASE_URL"] = base_url
+        api_key = _resolve_env("CARTESIA_API_KEY")
+        if api_key:
+            env_updates["CARTESIA_API_KEY"] = api_key
+        voice = cfg.get("tts", {}).get("voice")
+        if voice:
+            env_updates["CARTESIA_VOICE_ID"] = voice
     _upsert_env(home / ".env", env_updates)
 
-    # plugin — symlink the canonical profile-repo copy into this home.
-    plugins = home / "plugins"
-    plugins.mkdir(exist_ok=True)
-    link = plugins / "cartesia"
-    if link.is_symlink() or link.exists():
+    def sync_runtime_home(runtime_home: Path) -> None:
+        """Mirror the materialized config into a real Hermes named profile.
+
+        Hermes reports the active profile as `default` whenever HERMES_HOME is a
+        custom root. Pointing launches at <root>/profiles/<name> makes the
+        startup metadata and prompt symbol show the agent profile name.
+        """
+        runtime_home.mkdir(parents=True, exist_ok=True)
+        runtime_home.chmod(0o700)
+        (runtime_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+        if herm_prefs:
+            _merge_json_file(runtime_home / "herm" / "tui.json", herm_prefs)
+        if persona:
+            (runtime_home / "SOUL.md").write_text(persona + "\n", encoding="utf-8")
+        _upsert_env(runtime_home / ".env", env_updates)
+
+        if uses_voice:
+            plugins = runtime_home / "plugins"
+            plugins.mkdir(exist_ok=True)
+            link = plugins / "cartesia"
+            if link.is_symlink():
+                link.unlink()
+            if not link.exists():
+                link.symlink_to(PLUGIN_DIR)
+
+        main_auth = MAIN_HOME / "auth.json"
+        runtime_auth = runtime_home / "auth.json"
+        if main_auth.exists() and not runtime_auth.exists():
+            runtime_auth.symlink_to(main_auth)
+
+    # plugin — symlink the canonical profile-repo copy into this home (only when
+    # the agent actually uses voice).
+    if uses_voice:
+        plugins = home / "plugins"
+        plugins.mkdir(exist_ok=True)
+        link = plugins / "cartesia"
         if link.is_symlink():
             link.unlink()
-    if not link.exists():
-        link.symlink_to(PLUGIN_DIR)
+        if not link.exists():
+            link.symlink_to(PLUGIN_DIR)
 
     # auth.json — reuse the operator's LLM auth without re-login.
     main_auth = MAIN_HOME / "auth.json"
     home_auth = home / "auth.json"
     if main_auth.exists() and not home_auth.exists():
         home_auth.symlink_to(main_auth)
+
+    # Make the agent's own name a real Hermes named profile inside the isolated
+    # root, and mark it active for humans inspecting the root with profile list.
+    runtime_name = str(profile.get("runtime_profile") or name).strip() or name
+    runtime_home = home / "profiles" / runtime_name
+    sync_runtime_home(runtime_home)
+    (home / "active_profile").write_text(runtime_name + "\n", encoding="utf-8")
 
     return home
 
@@ -265,14 +344,17 @@ def cmd_list() -> int:
                 prof = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
             except Exception:
                 continue
-            ep = prof.get("endpoint") or {}
-            inline = (ep.get("base_url") or "").strip()
-            env_key = (ep.get("base_url_env") or "").strip()
-            if inline:
-                endpoint = inline
+            if not voice_on(prof):
+                endpoint = "(text-only)"
             else:
-                resolved = _resolve_env(env_key)
-                endpoint = _redact_host(resolved) if resolved else f"(unset: {env_key})"
+                ep = prof.get("endpoint") or {}
+                inline = (ep.get("base_url") or "").strip()
+                env_key = (ep.get("base_url_env") or "").strip()
+                if inline:
+                    endpoint = inline
+                else:
+                    resolved = _resolve_env(env_key)
+                    endpoint = _redact_host(resolved) if resolved else f"(unset: {env_key})"
             home = _data_home() / p.stem
             rows.append((
                 p.stem, _source_label(d), prof.get("surface", "cli"),
@@ -287,18 +369,26 @@ def cmd_list() -> int:
 
 def cmd_resolve(name: str) -> int:
     profile = load_profile(name)
-    base_url = resolve_base_url(profile)
-    cfg = _render_config(profile, base_url)
-    out = {
+    uses_voice = voice_on(profile)
+    cfg = _render_config(profile)
+    out: Dict[str, Any] = {
         "name": name,
-        "endpoint": _redact_host(base_url),
-        "tts_model": cfg["tts"]["model"],
-        "stt_model": cfg["stt"]["cartesia"]["model"],
-        "voice": "set" if cfg["tts"]["voice"] else "(none)",
+        "voice": uses_voice,
         "surface": profile.get("surface", "cli"),
         "platform": profile.get("platform", "telegram"),
+        "toolsets": cfg["toolsets"],
         "home": str(_data_home() / name),
     }
+    if uses_voice:
+        base_url = resolve_base_url(profile, required=False)
+        out["endpoint"] = _redact_host(base_url) if base_url else "(unset)"
+        if "tts" in cfg:
+            out["tts_model"] = cfg["tts"]["model"]
+            out["tts_voice"] = "set" if cfg["tts"]["voice"] else "(none)"
+        if cfg.get("stt", {}).get("enabled"):
+            out["stt_model"] = cfg["stt"]["cartesia"]["model"]
+    else:
+        out["endpoint"] = "(text-only)"
     print(json.dumps(out, indent=2))
     return 0
 

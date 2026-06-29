@@ -233,6 +233,14 @@ devin:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/devin/install
 
+# Install/upgrade Omnigent
+omnigent:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/omnigent/install
+
 # Install/upgrade Gemini CLI
 gemini-cli:
     #!/usr/bin/env bash

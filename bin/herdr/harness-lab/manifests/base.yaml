@@ -1,0 +1,63 @@
+schema: herdr-harness-lab/v1
+harness:
+  name: base-agent-wrapper-lab
+  purpose: generic sandbox for terminal agent wrapper and research-cli validation
+  image: herdr-harness-lab:latest
+policy:
+  default_network: disabled-unless-run-allows-it
+  default_secrets: none
+  forbidden_mounts:
+    - ~/.ssh
+    - ~/.aws
+    - ~/.config/gcloud
+    - ~/.kube
+    - ~/.docker
+    - ~/.1password
+  forbidden_behaviors:
+    - dump-env
+    - print-secrets
+    - kill-unrelated-processes
+    - cancel-unrelated-jobs
+    - rollback-without-approval
+runtimes:
+  local:
+    preferred: podman
+  devlarge:
+    preferred:
+      - enroot
+      - rootless-podman
+tools:
+  python:
+    - uv
+    - llm
+    - llm-perplexity
+  node:
+    - npm
+    - node
+    - '@perplexity-cli/perplexity-cli'
+    - '@perplexity-ai/mcp-server'
+    - coding-agent-adapters
+  deferred:
+    - hermes-agent
+    - herm-tui
+    - '@goclaw/perplexity-cli'
+  process:
+    - tmux
+    - process-compose
+    - pueue
+  evidence:
+    - git
+    - jq
+    - rg
+    - fd
+smoke:
+  no_network:
+    - node --version
+    - npm --version
+    - uv --version
+    - llm --version
+    - llm plugins
+    - git --version
+    - tmux -V
+    - process-compose version
+    - pueue --version

@@ -9,8 +9,8 @@
  * Install: symlink or copy to ~/.pi/agent/extensions/datadog-mcp.ts
  *          or project-local .pi/extensions/datadog-mcp.ts
  */
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 export default function datadogMcp(pi: ExtensionAPI) {
   const ddApiKey = process.env.DD_API_KEY;
@@ -27,7 +27,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
     description:
       "Search Datadog logs. Use for debugging, incident response, and observability. " +
       "Returns recent log entries matching the query.",
-    input: Type.Object({
+    parameters: Type.Object({
       query: Type.String({
         description:
           'Datadog log search query (e.g. "service:api status:error", "host:gpu-node-*")',
@@ -48,7 +48,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
         })
       ),
     }),
-    execute: async (ctx, input) => {
+    execute: async (_toolCallId, input) => {
       const from = input.from || "now-15m";
       const to = input.to || "now";
       const limit = Math.min(input.limit || 25, 100);
@@ -71,8 +71,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
       );
 
       if (!res.ok) {
-        const err = await res.text();
-        return { error: `Datadog API error (${res.status}): ${err}` };
+        throw new Error(`Datadog API error (${res.status})`);
       }
 
       const data = await res.json();
@@ -85,10 +84,15 @@ export default function datadogMcp(pi: ExtensionAPI) {
         tags: entry.attributes?.tags?.slice(0, 10),
       }));
 
-      return {
+      const result = {
         count: logs.length,
         total: data.meta?.page?.after ? "more available" : logs.length,
         logs,
+      };
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
       };
     },
   });
@@ -98,7 +102,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
     name: "dd_metrics",
     description:
       "Query Datadog metrics. Use for performance analysis, capacity planning, and monitoring.",
-    input: Type.Object({
+    parameters: Type.Object({
       query: Type.String({
         description:
           'Datadog metrics query (e.g. "avg:system.cpu.user{host:gpu-*}", "sum:trace.http.request.hits{service:api}.as_count()")',
@@ -114,7 +118,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
         })
       ),
     }),
-    execute: async (ctx, input) => {
+    execute: async (_toolCallId, input) => {
       const now = Math.floor(Date.now() / 1000);
       const from = input.from || now - 3600;
       const to = input.to || now;
@@ -136,8 +140,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
       );
 
       if (!res.ok) {
-        const err = await res.text();
-        return { error: `Datadog API error (${res.status}): ${err}` };
+        throw new Error(`Datadog API error (${res.status})`);
       }
 
       const data = await res.json();
@@ -152,7 +155,11 @@ export default function datadogMcp(pi: ExtensionAPI) {
         })),
       }));
 
-      return { series_count: series.length, series };
+      const result = { series_count: series.length, series };
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
     },
   });
 
@@ -161,7 +168,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
     name: "dd_monitors",
     description:
       "List Datadog monitors/alerts. Use to check alert status, find triggered monitors, and triage incidents.",
-    input: Type.Object({
+    parameters: Type.Object({
       query: Type.Optional(
         Type.String({
           description: 'Filter monitors (e.g. "tag:team:infra", "status:Alert")',
@@ -174,7 +181,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
         })
       ),
     }),
-    execute: async (ctx, input) => {
+    execute: async (_toolCallId, input) => {
       const params = new URLSearchParams();
       if (input.query) params.set("query", input.query);
       if (input.states) {
@@ -195,8 +202,7 @@ export default function datadogMcp(pi: ExtensionAPI) {
       );
 
       if (!res.ok) {
-        const err = await res.text();
-        return { error: `Datadog API error (${res.status}): ${err}` };
+        throw new Error(`Datadog API error (${res.status})`);
       }
 
       const monitors = await res.json();
@@ -212,7 +218,11 @@ export default function datadogMcp(pi: ExtensionAPI) {
         })
       );
 
-      return { count: summary.length, monitors: summary };
+      const result = { count: summary.length, monitors: summary };
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
     },
   });
 }

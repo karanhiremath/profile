@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Create and print a guarded per-user scratch root for agent/tool data.
+set -euo pipefail
+
+USER_NAME="${USER:?USER is required}"
+DEFAULT_ROOT="/scratch/people/${USER_NAME}"
+ROOT="${AGENT_SANDBOX_ROOT:-$DEFAULT_ROOT}"
+
+case "$ROOT" in
+  "/scratch/people/${USER_NAME}"|"/scratch/people/${USER_NAME}/"*) ;;
+  *)
+    echo "ERROR: refusing scratch root outside /scratch/people/${USER_NAME}: $ROOT" >&2
+    exit 2
+    ;;
+esac
+
+install -d -m 700 "$ROOT"
+for dir in \
+  cache cache/enroot cache/npm cache/uv cache/pip cache/xdg \
+  containers containers/enroot containers/podman \
+  kube logs repos slurm state toolchains tmp workspace; do
+  install -d -m 700 "$ROOT/$dir"
+done
+
+printf '%s\n' "$ROOT"

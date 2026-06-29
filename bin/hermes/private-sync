@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Clone or update the personal private Hermes workflow repo.
+# Usage: private-sync [--repo GIT_URL] [--dir PATH]
+set -euo pipefail
+
+usage() { sed -n '2,3p' "$0" | sed 's/^# //'; }
+
+REPO="${HERMES_PRIVATE_REPO:-git@github.com:karanhiremath/hermes.git}"
+DIR="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repo) REPO="${2:?missing repo}"; shift 2 ;;
+    --dir) DIR="${2:?missing dir}"; shift 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "ERROR: git not found" >&2
+  exit 127
+fi
+
+if [ -d "$DIR/.git" ]; then
+  git -C "$DIR" pull --ff-only
+else
+  mkdir -p "$(dirname "$DIR")"
+  git clone "$REPO" "$DIR"
+fi
+
+printf 'private_repo_dir=%s\n' "$DIR"

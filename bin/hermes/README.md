@@ -16,19 +16,46 @@ bin/hermes/configure-machine # machine-aware model/auth/config setup
 bin/hermes/private-sync  # clone/update private personal repo
 bin/hermes/doctor        # non-secret status
 bin/hermes/env           # print PATH additions
-bin/hermes/agents        # spin up isolated Hermes voice-validation agents
+bin/hermes/agents        # run isolated Hermes voice agents for daily terminal use
+bin/hermes/cos           # launch personal Chief of Staff profile
+bin/hermes/cosw          # launch work Chief of Staff profile
+bin/hermes/pm <project>  # attach/start a registered project-manager tmux/TUI
+bin/hermes/pl <project>  # attach a registered project-lead implementation session
 ```
 
-## Voice-validation agents (`agents`)
+## CoS / PM / PL command model
 
-Stamp out isolated Hermes agents (each with its own `HERMES_HOME`) wired to the
-Cartesia TTS/STT plugin (`plugins/cartesia/`), pointed at prod, internal
-staging, or on-prem — then bring one up as a CLI, TUI, or messaging gateway.
+These commands are generic profile-level wrappers. They do not embed work/private project state; they resolve profiles and project session registries from the normal Hermes search paths.
+
+```bash
+cos                         # agents up chief-of-staff
+cosw                        # agents up chief-of-staff-work
+pm <project>                # attach/start the Hermes PM TUI session for project
+pl <project>                # attach the project-lead implementation tmux session
+bin/hermes/project_sessions.py list
+bin/hermes/project_sessions.py resolve <project>
+```
+
+Project registries are searched in:
+
+1. `$HERMES_PROJECT_REGISTRY_PATH` / `$HERMES_PROJECT_REGISTRY_DIRS`
+2. `~/src/karan.hiremath/agentic/hermes/projects`
+3. `~/src/hermes/projects`
+4. `bin/hermes/projects`
+
+A PM-managed handoff is incomplete unless the project event bus receives a `pm_action_required` event telling the PM to register/spawn the replacement Pi coding agent with the handoff prompt. Profile owns the wrappers; project-specific event types, handoffs, kanban/Linear references, and guardrails live in the project registry.
+
+## Voice agents (`agents`)
+
+Run isolated Hermes voice agents (each in its own `HERMES_HOME`) wired to the
+Cartesia TTS/STT plugin (`plugins/cartesia/`) for day-to-day terminal / tmux /
+TUI (and messaging) workflows. Each profile picks an endpoint and voice; bring
+one up as a CLI, TUI, or messaging gateway.
 
 ```bash
 bin/hermes/agents list                 # profiles, surface, endpoint, home status
 bin/hermes/agents resolve staging-voice # show resolved config (internal host redacted)
-bin/hermes/agents check staging-voice   # materialize + end-to-end endpoint validation
+bin/hermes/agents check staging-voice   # materialize + end-to-end endpoint health check
 bin/hermes/agents up staging-voice                      # launch (profile's default surface)
 bin/hermes/agents up staging-voice --surface tui
 bin/hermes/agents up staging-voice --surface gateway --platform telegram --check
@@ -55,7 +82,7 @@ Defaults:
 - private repo: `git@github.com:karanhiremath/hermes.git`
 - private checkout: `$HOME/src/hermes`
 
-The installer uses `uv venv` and prepends the venv to `PATH` while running npm so package lifecycle Python installs land in the Hermes toolchain venv, not system Python.
+The installer uses `uv venv`, installs the small Python helper dependency (`PyYAML`), and prepends the venv to `PATH` while running npm so package lifecycle Python installs land in the Hermes toolchain venv, not system Python.
 
 The TUI installer downloads the Bun release asset for the current OS/arch, verifies it against `SHASUMS256.txt`, and installs it under the Hermes toolchain instead of using the global Bun installer.
 

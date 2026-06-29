@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Run a command inside the herdr harness lab container.
+# Usage: run [--image NAME] [--runtime podman|docker] [--allow-network] [--allow-perplexity] -- <command...>
+
+set -euo pipefail
+
+usage() {
+  sed -n '2,4p' "$0" | sed 's/^# //'
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+IMAGE="${HERDR_HARNESS_IMAGE:-herdr-harness-lab:latest}"
+RUNTIME="${HERDR_HARNESS_RUNTIME:-podman}"
+NETWORK="none"
+ALLOW_PERPLEXITY=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --image) IMAGE="${2:?missing image}"; shift 2 ;;
+    --runtime) RUNTIME="${2:?missing runtime}"; shift 2 ;;
+    --allow-network) NETWORK="slirp4netns"; shift ;;
+    --allow-perplexity) NETWORK="slirp4netns"; ALLOW_PERPLEXITY=1; shift ;;
+    --) shift; break ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) break ;;
+  esac
+done
+
+if [ "$#" -eq 0 ]; then
+  echo "ERROR: missing command" >&2
+  usage
+  exit 2
+fi
+
+if ! command -v "$RUNTIME" >/dev/null 2>&1; then
+  echo "ERROR: runtime not found: $RUNTIME" >&2
+  exit 1
+fi
+
+mkdir -p "$LAB_DIR/artifacts" "$LAB_DIR/workspace"
+
+ENV_ARGS=()
+if [ "$ALLOW_PERPLEXITY" -eq 1 ]; then
+  if [ -z "${PERPLEXITY_API_KEY:-}" ]; then
+    echo "ERROR: --allow-perplexity requires PERPLEXITY_API_KEY in caller env" >&2
+    exit 1
+  fi
+  ENV_ARGS+=(--env PERPLEXITY_API_KEY)
+fi
+
+"$RUNTIME" run --rm -it \
+  --network "$NETWORK" \
+  --security-opt no-new-privileges \
+  --cap-drop ALL \
+  --pids-limit 512 \
+  --memory "${HERDR_HARNESS_MEMORY:-2g}" \
+  --cpus "${HERDR_HARNESS_CPUS:-2}" \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=512m \
+  --tmpfs /home/agent:rw,nosuid,nodev,size=256m \
+  --volume "$LAB_DIR/workspace:/workspace:rw,z" \
+  --volume "$LAB_DIR/artifacts:/artifacts:rw,z" \
+  "${ENV_ARGS[@]}" \
+  "$IMAGE" \
+  "$@"

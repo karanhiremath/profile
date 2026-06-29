@@ -1,4 +1,4 @@
-# Hermes voice-validation agent profile.
+# Hermes voice agent profile.
 # Copy to <name>.yaml (or run `agents new <name>`) and edit.
 #
 # Data boundary: this file is committed to the profile repo (both machines).
@@ -33,6 +33,5 @@ toolsets:
   - hermes-cli
 
 persona: |
-  You are a Cartesia voice validation agent. Keep replies short and speakable.
-  When asked to test TTS, speak the requested phrase verbatim. Report any
-  synthesis or transcription error text exactly as returned.
+  You are a helpful voice assistant in my terminal. Keep replies short, natural,
+  and easy to speak aloud. Be direct and skip filler.
