@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# dream — install/update and launch the personal Hermes Dream Sandbox cockpit.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: dream [options]
+
+Set up this machine for the Dream Sandbox from karanhiremath/hermes, then launch
+(or report status for) the cockpit.
+
+Options:
+  --status          Print resolved paths/tool/profile state and exit
+  --setup-only      Install/update profile + runtime, but do not launch tmux
+  --dry-run         Print actions without mutating files or launching
+  --update          git fetch/pull the Hermes meta repo before setup
+  --build-image     Build the local Podman sandbox image if Podman is available
+  --no-build-image  Do not build the image (default unless image is missing)
+  --apply-users     On Linux only: sudo-apply Linux users/groups isolation
+  -h, --help        Show this help
+
+Environment:
+  HERMES_META_REPO_PATH  default: ~/src/hermes
+  HERMES_META_REPO_URL   default: git@github.com:karanhiremath/hermes.git
+  DREAM_ROOT            default: <repo>/workflows/dream-sandbox
+  HERMES_PROFILE_NAME   default: hdream-sandbox
+  DREAM_TMUX_SESSION    default: dream-sandbox
+USAGE
+}
+
+mode="launch"
+update_repo=0
+build_image="auto"
+apply_users=0
+
+dry_run=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --status|status) mode="status" ;;
+    --setup-only) mode="setup-only" ;;
+    --dry-run) dry_run=1 ;;
+    --update) update_repo=1 ;;
+    --build-image) build_image="yes" ;;
+    --no-build-image) build_image="no" ;;
+    --apply-users) apply_users=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "dream: unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+real_home="${HOME}"
+repo_path="${HERMES_META_REPO_PATH:-${real_home}/src/hermes}"
+repo_url="${HERMES_META_REPO_URL:-git@github.com:karanhiremath/hermes.git}"
+case "$repo_path" in
+  ~/*) repo_path="${real_home}/${repo_path#~/}" ;;
+  /*) ;;
+  *) echo "dream: HERMES_META_REPO_PATH must be absolute, got: $repo_path" >&2; exit 64 ;;
+esac
+if [ -d "$repo_path" ]; then
+  repo_path="$(cd -- "$repo_path" && pwd -P)"
+else
+  repo_parent="$(dirname -- "$repo_path")"
+  repo_base="$(basename -- "$repo_path")"
+  repo_parent="$(mkdir -p "$repo_parent" && cd -- "$repo_parent" && pwd -P)"
+  repo_path="${repo_parent}/${repo_base}"
+fi
+profile_name="${HERMES_PROFILE_NAME:-hdream-sandbox}"
+dream_root="${DREAM_ROOT:-${repo_path}/workflows/dream-sandbox}"
+case "$dream_root" in
+  ~/*) dream_root="${real_home}/${dream_root#~/}" ;;
+  /*) ;;
+  *) echo "dream: DREAM_ROOT must be absolute, got: $dream_root" >&2; exit 64 ;;
+esac
+if [ -d "$dream_root" ]; then
+  dream_root="$(cd -- "$dream_root" && pwd -P)"
+fi
+tmux_session="${DREAM_TMUX_SESSION:-dream-sandbox}"
+image_tag="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
+
+run() {
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'DRY-RUN: '
+    printf '%q ' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+podman_image_exists() {
+  have podman && podman image inspect "$image_tag" >/dev/null 2>&1
+}
+
+print_status() {
+  local repo_state="missing" profile_state="missing" cockpit_state="missing" image_state="missing" podman_state="missing"
+  [ -d "$repo_path/.git" ] && repo_state="git: $(git -C "$repo_path" rev-parse --abbrev-ref HEAD 2>/dev/null || printf unknown) $(git -C "$repo_path" rev-parse --short HEAD 2>/dev/null || printf unknown)"
+  if have hermes && hermes profile list 2>/dev/null | grep -qE "(^|[[:space:]])${profile_name}([[:space:]]|$)"; then
+    profile_state="installed"
+  fi
+  if have tmux && tmux has-session -t "$tmux_session" 2>/dev/null; then
+    cockpit_state="running"
+  elif have tmux; then
+    cockpit_state="not-running"
+  fi
+  if have podman; then
+    podman_state="$(podman --version 2>/dev/null || printf available)"
+    if podman_image_exists; then image_state="present: ${image_tag}"; else image_state="missing: ${image_tag}"; fi
+  fi
+  cat <<EOF
+Dream Sandbox machine state:
+  repo_path: ${repo_path}
+  repo: ${repo_state}
+  dream_root: ${dream_root}
+  profile: ${profile_name} (${profile_state})
+  tmux_session: ${tmux_session} (${cockpit_state})
+  podman: ${podman_state}
+  image: ${image_state}
+  launch: cd ${dream_root} && ./bin/dream-sandbox-tmux
+EOF
+}
+
+if [ "$mode" = "status" ]; then
+  print_status
+  exit 0
+fi
+
+if [ ! -d "$repo_path/.git" ]; then
+  parent="$(dirname -- "$repo_path")"
+  run mkdir -p "$parent"
+  run git clone "$repo_url" "$repo_path"
+fi
+
+if [ "$update_repo" -eq 1 ]; then
+  run git -C "$repo_path" pull --ff-only
+fi
+
+if [ ! -x "$repo_path/scripts/install-profile.sh" ]; then
+  echo "dream: missing Hermes profile installer: $repo_path/scripts/install-profile.sh" >&2
+  exit 1
+fi
+if [ ! -x "$dream_root/bin/dream-sandbox-tmux" ]; then
+  echo "dream: missing Dream Sandbox cockpit: $dream_root/bin/dream-sandbox-tmux" >&2
+  echo "dream: ensure $repo_path is on a branch/revision containing workflows/dream-sandbox" >&2
+  exit 1
+fi
+
+if have hermes; then
+  run "$repo_path/scripts/install-profile.sh" "$profile_name"
+else
+  echo "dream: hermes CLI not found; install Hermes before profile setup" >&2
+  exit 1
+fi
+
+if have podman; then
+  if [ "$build_image" = "yes" ] || { [ "$build_image" = "auto" ] && ! podman_image_exists; }; then
+    if [ -x "$repo_path/scripts/build-sandbox-image.sh" ]; then
+      run "$repo_path/scripts/build-sandbox-image.sh" python-node-fedora
+    else
+      echo "dream: image builder missing; skipping: $repo_path/scripts/build-sandbox-image.sh" >&2
+    fi
+  fi
+  if [ -x "$repo_path/scripts/setup-podman-runtime.sh" ]; then
+    run "$repo_path/scripts/setup-podman-runtime.sh" "$profile_name"
+  fi
+else
+  echo "dream: podman not found; profile installed, container runtime not pinned" >&2
+fi
+
+if [ "$apply_users" -eq 1 ]; then
+  if [ "$(uname -s)" != "Linux" ]; then
+    echo "dream: --apply-users is Linux-only; current=$(uname -s)" >&2
+    exit 78
+  fi
+  run sudo DREAM_HUMAN_USER="${USER}" DREAM_ROOT="$dream_root" "$dream_root/bin/dream-sandbox-provision" --apply
+fi
+
+if [ "$mode" = "setup-only" ]; then
+  print_status
+  exit 0
+fi
+
+cd "$dream_root"
+if [ "$dry_run" -eq 1 ]; then
+  print_status
+  printf 'DRY-RUN: cd %q && DREAM_TMUX_SESSION=%q HERMES_PROFILE_NAME=%q ./bin/dream-sandbox-tmux\n' "$dream_root" "$tmux_session" "$profile_name"
+  exit 0
+fi
+
+exec env DREAM_TMUX_SESSION="$tmux_session" HERMES_PROFILE_NAME="$profile_name" ./bin/dream-sandbox-tmux

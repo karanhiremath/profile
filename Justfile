@@ -10,6 +10,79 @@ all: git tmux nvim pc
 install:
     ./install.sh
 
+# Install Ansible dependencies without mutating profile state
+ansible-bootstrap:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v ansible-playbook >/dev/null 2>&1; then
+        if command -v uv >/dev/null 2>&1; then
+            uv tool install --with ansible ansible-core
+        elif command -v brew >/dev/null 2>&1; then
+            brew install ansible
+        else
+            echo "ansible-playbook not found; install Ansible with uv or the OS package manager first" >&2
+            exit 1
+        fi
+    fi
+    ansible-galaxy collection install -r ansible/requirements.yml
+
+# Preview Ansible-managed workstation changes; safe default
+ansible-plan:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    inventory="${ANSIBLE_INVENTORY:-ansible/inventory.local.yml}"
+    if [ ! -f "$inventory" ]; then inventory="ansible/inventory.example.yml"; fi
+    args=(ansible-playbook -i "$inventory" ansible/site.yml --check --diff --limit "${ANSIBLE_LIMIT:-localhost}" -e "profile_env=${PROFILE_ENV:-personal}")
+    if [ -n "${TAGS:-}" ]; then args+=(--tags "$TAGS"); fi
+    if [ "${PROFILE_INSTALL_TOOLS:-0}" = "1" ]; then args+=(-e profile_install_tools=true -e "profile_tools=${TOOLS:-[]}"); fi
+    "${args[@]}"
+
+# Apply Ansible-managed workstation changes; requires explicit host mutation opt-in
+ansible-apply:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "${PROFILE_ALLOW_HOST_MUTATION:-0}" != "1" ]; then
+        echo "refusing host mutation; rerun with PROFILE_ALLOW_HOST_MUTATION=1" >&2
+        exit 1
+    fi
+    inventory="${ANSIBLE_INVENTORY:-ansible/inventory.local.yml}"
+    if [ ! -f "$inventory" ]; then inventory="ansible/inventory.example.yml"; fi
+    args=(ansible-playbook -i "$inventory" ansible/site.yml --diff --limit "${ANSIBLE_LIMIT:-localhost}" -e "profile_env=${PROFILE_ENV:-personal}" -e profile_allow_host_mutation=true)
+    if [ -n "${TAGS:-}" ]; then args+=(--tags "$TAGS"); fi
+    if [ "${PROFILE_INSTALL_TOOLS:-0}" = "1" ]; then args+=(-e profile_install_tools=true -e "profile_tools=${TOOLS:-[]}"); fi
+    "${args[@]}"
+
+# Apply one Ansible tag set, e.g. `just ansible-apply-tags dotfiles`
+ansible-apply-tags TAGS:
+    TAGS="{{TAGS}}" just ansible-apply
+
+# Build isolated control image for agent/dev workflows
+agent-container-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    engine="${CONTAINER_ENGINE:-}"
+    if [ -z "$engine" ]; then
+        if command -v podman >/dev/null 2>&1; then engine=podman; elif command -v docker >/dev/null 2>&1; then engine=docker; else echo "podman/docker not found" >&2; exit 1; fi
+    fi
+    "$engine" build -f ansible/container/Containerfile -t profile-agent-ansible .
+
+# Open an isolated repo shell: repo mounted, disposable HOME, no host credential mounts
+agent-container-shell:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    engine="${CONTAINER_ENGINE:-}"
+    if [ -z "$engine" ]; then
+        if command -v podman >/dev/null 2>&1; then engine=podman; elif command -v docker >/dev/null 2>&1; then engine=docker; else echo "podman/docker not found" >&2; exit 1; fi
+    fi
+    mkdir -p .agent-home
+    "$engine" run --rm -it \
+        -v "$(pwd):/workspace/profile:rw" \
+        -v "$(pwd)/.agent-home:/agent-home:rw" \
+        -e HOME=/agent-home \
+        --workdir /workspace/profile \
+        --entrypoint bash \
+        profile-agent-ansible
+
 # Bootstrap a personal node (profile + notes)
 setup:
     #!/usr/bin/env bash
@@ -193,6 +266,24 @@ pi:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/pi/install
 
+# Link profile-managed Pi skills into ~/.pi/agent/skills
+pi-skills:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "$HOME/.pi/agent/skills"
+    for skill in "$(pwd)"/skills/pi/*; do
+        [ -d "$skill" ] || continue
+        ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
+    done
+
+# Link Codex.app CLI for shell/tmux use
+codex:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/codex/install
+
 # Install/upgrade cmux (Claude multiplexer)
 cmux:
     #!/usr/bin/env bash
@@ -224,6 +315,15 @@ cursor-cli:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/cursor-cli/install
+
+# Bootstrap Cursor agents/skills + cli-config (day-to-day setup)
+cursor-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    chmod +x ./bin/cursor-cli/setup
+    ./bin/cursor-cli/setup
 
 # Install/upgrade Devin for Terminal
 devin:
@@ -272,6 +372,22 @@ herdr:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/herdr/install
+
+# Install/upgrade Hermes Agent + herm TUI wrappers
+hermes:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/hermes/install
+
+# Diagnose Hermes/herm/profile wrapper setup
+hermes-doctor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/hermes/doctor
 
 # Install/upgrade Helm
 helm:
@@ -345,6 +461,22 @@ openvpn:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/openvpn/install
 
+# Install/upgrade AltTab (macOS window switcher)
+alt-tab:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/alt-tab/install
+
+# Install/upgrade DockDoor (macOS window peeking utility)
+dockdoor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/dockdoor/install
+
 # Install/upgrade btop
 btop:
     #!/usr/bin/env bash
@@ -415,7 +547,9 @@ mac:
     ${BREW_CMD} tap teamookla/speedtest
     ${BREW_CMD} install speedtest --force
     ${BREW_CMD} install --cask rectangle
-    just alfred
+    just alt-tab
+    just dockdoor
+    just raycast
     just opentofu
     just steampipe
 

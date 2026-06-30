@@ -1,0 +1,13 @@
+---
+profile_hosts:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_host: localhost
+  children:
+    personal:
+      hosts:
+        localhost:
+    mac:
+      hosts:
+        localhost:

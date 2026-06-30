@@ -1,0 +1,16 @@
+---
+- name: Install selected Homebrew packages
+  community.general.homebrew:
+    name: "{{ profile_mac_brew_packages }}"
+    state: present
+  when:
+    - profile_enable_mac_apps | bool
+    - profile_mac_brew_packages | length > 0
+
+- name: Install selected Homebrew casks
+  community.general.homebrew_cask:
+    name: "{{ profile_mac_brew_casks }}"
+    state: present
+  when:
+    - profile_enable_mac_apps | bool
+    - profile_mac_brew_casks | length > 0

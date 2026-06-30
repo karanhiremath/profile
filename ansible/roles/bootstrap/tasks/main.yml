@@ -1,0 +1,24 @@
+---
+- name: Create base config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ profile_home }}/.config"
+    - "{{ profile_home }}/.local/bin"
+    - "{{ profile_home }}/.cache/nvim/undo"
+    - "{{ profile_home }}/.config/nvim"
+    - "{{ profile_home }}/.config/tmux"
+    - "{{ profile_home }}/.config/ghostty"
+
+- name: Write profile environment facts
+  ansible.builtin.blockinfile:
+    path: "{{ profile_home }}/.config/.vars"
+    create: true
+    mode: "0644"
+    marker: "# {mark} profile ansible managed vars"
+    block: |
+      export PROFILE_DIR={{ profile_repo_dir }}
+      export MACHINE={{ 'Mac' if ansible_facts.system == 'Darwin' else ansible_facts.system }}
+      export ARCH={{ ansible_facts.architecture }}

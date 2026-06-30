@@ -1,0 +1,6 @@
+---
+profile_mac_brew_packages:
+  - speedtest
+
+profile_mac_brew_casks:
+  - rectangle

@@ -1,0 +1,38 @@
+---
+# Safety defaults: local, explicit, least-surprise.
+profile_env: personal
+profile_allow_host_mutation: false
+profile_install_tools: false
+profile_enable_mac_apps: false
+
+profile_repo_dir: "{{ playbook_dir | dirname }}"
+profile_app_bin: "{{ profile_repo_dir }}/bin"
+profile_home: "{{ ansible_facts.env.HOME }}"
+
+profile_shell_sources:
+  - zsh_profile.sh
+  - myprofile.sh
+
+profile_dotfile_links:
+  - src: "{{ profile_repo_dir }}/bin/tmux/tmux.conf"
+    dest: "{{ profile_home }}/.tmux.conf"
+  - src: "{{ profile_repo_dir }}/bin/tmux/tmux.conf"
+    dest: "{{ profile_home }}/.config/tmux/tmux.conf"
+  - src: "{{ profile_repo_dir }}/bin/ghostty/config"
+    dest: "{{ profile_home }}/.config/ghostty/config"
+  - src: "{{ profile_repo_dir }}/bin/nvim/init.lua"
+    dest: "{{ profile_home }}/.config/nvim/init.lua"
+  - src: "{{ profile_repo_dir }}/bin/nvim/lua"
+    dest: "{{ profile_home }}/.config/nvim/lua"
+  - src: "{{ profile_repo_dir }}/bin/nvim/after"
+    dest: "{{ profile_home }}/.config/nvim/after"
+
+# Empty by default. Opt in per run/env to keep blast radius small.
+profile_tools: []
+profile_core_tools:
+  - git
+  - tmux
+  - nvim
+
+profile_mac_brew_packages: []
+profile_mac_brew_casks: []

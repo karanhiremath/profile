@@ -1,0 +1,37 @@
+---
+- name: Manage profile workstation state
+  hosts: profile_hosts
+  gather_facts: true
+
+  pre_tasks:
+    - name: Refuse non-local Ansible connections by default
+      ansible.builtin.assert:
+        that:
+          - ansible_connection == 'local'
+        fail_msg: >-
+          Refusing non-local profile management. Use local container/localhost workflows;
+          do not widen blast radius without changing this guard intentionally.
+      tags: [always, safety]
+
+    - name: Require explicit mutation opt-in outside check mode
+      ansible.builtin.assert:
+        that:
+          - profile_allow_host_mutation | bool
+        fail_msg: >-
+          Refusing to mutate host. First run `just ansible-plan`; then set
+          PROFILE_ALLOW_HOST_MUTATION=1 for apply.
+      when: not ansible_check_mode
+      tags: [always, safety]
+
+  roles:
+    - role: bootstrap
+      tags: [bootstrap]
+    - role: shell
+      tags: [shell]
+    - role: dotfiles
+      tags: [dotfiles]
+    - role: cli_tools
+      tags: [cli_tools]
+    - role: mac_apps
+      when: ansible_facts.system == 'Darwin'
+      tags: [mac_apps]

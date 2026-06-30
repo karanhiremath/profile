@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+# hs — Hermes sandbox entrypoint.
+#
+# Opens a project in an isolated Hermes/herdr state directory with a disposable
+# HOME by default. This is intended as the muscle-memory entrypoint for safe
+# personal project agent sessions:
+#   hs              # sandbox current repo, launch herdr
+#   hs foo          # sandbox ~/src/foo, launch herdr
+#   hs --shell foo  # sandbox ~/src/foo, shell only
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: hs [options] [project-or-path]
+
+Open a Hermes sandbox for a project.
+
+Options:
+  --herdr             Launch herdr (default)
+  --herm              Launch herm instead of herdr
+  --shell             Open a shell instead of an agent multiplexer
+  --container-shell   Open a container shell with repo + disposable HOME only
+  --status            Print resolved sandbox/profile/herdr status and exit
+  --clean             Remove this sandbox's disposable HOME before launching
+  --dry-run           Print resolved settings and command, then exit
+  --no-disposable-home
+                      Keep host HOME but still isolate HERMES_HOME/profile
+  -h, --help          Show this help
+
+Resolution:
+  hs                  uses the current directory
+  hs foo              uses ~/src/foo when it exists, otherwise ./foo
+  hs ~/src/foo        uses that explicit path
+
+Default local sandbox:
+  - cwd: resolved project path
+  - HOME: ~/.hs/<slug>/home
+  - HERMES_HOME: $HOME/.hermes
+  - HERMES_PROFILE: hs-<slug>
+  - session: hs-<slug>
+
+The local sandbox isolates agent state and HOME-relative files. It does not
+prevent a process from accessing absolute host paths. Use --container-shell for
+filesystem isolation with only the repo and disposable HOME mounted.
+
+Sandbox HOME bootstraps a minimal zsh profile from the profile repo. It does
+not copy or source the host ~/.zshrc, so host secrets/work snippets stay out of
+the default sandbox shell.
+EOF
+}
+
+mode="herdr"
+clean=0
+dry_run=0
+disposable_home=1
+project_arg=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --herdr) mode="herdr" ;;
+    --herm) mode="herm" ;;
+    --shell) mode="shell" ;;
+    --container-shell) mode="container-shell" ;;
+    --status|status) mode="status" ;;
+    --clean) clean=1 ;;
+    --dry-run) dry_run=1 ;;
+    --no-disposable-home) disposable_home=0 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) echo "hs: unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *)
+      if [ -n "$project_arg" ]; then
+        echo "hs: only one project/path argument is supported" >&2
+        usage >&2
+        exit 2
+      fi
+      project_arg="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ $# -gt 0 ]; then
+  if [ -n "$project_arg" ]; then
+    echo "hs: only one project/path argument is supported" >&2
+    usage >&2
+    exit 2
+  fi
+  project_arg="$1"
+fi
+
+real_home="${HOME}"
+profile_dir="${PROFILE_DIR:-}"
+if [ -z "$profile_dir" ]; then
+  script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  profile_dir="$(CDPATH= cd -- "${script_dir}/../.." && pwd)"
+fi
+
+resolve_project() {
+  local arg="$1"
+  local candidate
+
+  if [ -z "$arg" ]; then
+    pwd
+    return
+  fi
+
+  case "$arg" in
+    .) candidate="$arg" ;;
+    ~/*) candidate="${real_home}/${arg#~/}" ;;
+    /*) candidate="$arg" ;;
+    ./*|../*) candidate="$arg" ;;
+    *)
+      if [ -d "${real_home}/src/${arg}" ]; then
+        candidate="${real_home}/src/${arg}"
+      else
+        candidate="$arg"
+      fi
+      ;;
+  esac
+
+  if [ ! -d "$candidate" ]; then
+    echo "hs: project path does not exist: $candidate" >&2
+    exit 1
+  fi
+
+  CDPATH= cd -- "$candidate" && pwd
+}
+
+slugify() {
+  local input="$1"
+  local base slug hash prefix
+  base="$(basename -- "$input")"
+  slug="$(printf '%s' "$base" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//; s/^$/project/')"
+
+  # Herdr stores session sockets below $HOME/.config/herdr/sessions/<session>/.
+  # macOS UNIX-domain socket paths are short (SUN_LEN), so keep sandbox roots
+  # and session names compact. Preserve short names; hash long names.
+  if [ "${#slug}" -le 12 ]; then
+    printf '%s' "$slug"
+  else
+    prefix="$(printf '%s' "$slug" | cut -c 1-4 | sed -E 's/-+$//')"
+    hash="$(printf '%s' "$input" | cksum | awk '{print $1}' | cut -c 1-7)"
+    printf '%s-%s' "${prefix:-proj}" "$hash"
+  fi
+}
+
+project_path="$(resolve_project "$project_arg")"
+slug="$(slugify "$project_path")"
+session="hs-${slug}"
+sandbox_root="${HERMES_SANDBOX_ROOT:-${real_home}/.hs}"
+sandbox_dir="${sandbox_root}/${slug}"
+sandbox_home="${sandbox_dir}/home"
+
+if [ "$clean" -eq 1 ]; then
+  rm -rf -- "$sandbox_home"
+fi
+if [ "$mode" != "status" ]; then
+  mkdir -p -- "$sandbox_home"
+fi
+
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\''/g")"
+}
+
+bootstrap_sandbox_home() {
+  [ "$disposable_home" -eq 1 ] || return 0
+  [ "$mode" != "status" ] || return 0
+
+  mkdir -p -- "$sandbox_home/.config" "$sandbox_home/.local/bin" "$sandbox_home/bin"
+
+  local q_profile_dir q_real_home q_session q_sandbox_home q_toolchain arch_value machine_value
+  q_profile_dir="$(shell_quote "$profile_dir")"
+  q_real_home="$(shell_quote "$real_home")"
+  q_session="$(shell_quote "$session")"
+  q_sandbox_home="$(shell_quote "$sandbox_home")"
+  q_toolchain="$(shell_quote "${HERMES_TOOLCHAIN:-${real_home}/.local/share/hermes-toolchain}")"
+  arch_value="${ARCH:-$(uname -m 2>/dev/null || printf unknown)}"
+  machine_value="${MACHINE:-Mac}"
+
+  cat >"$sandbox_home/.config/.vars" <<EOF
+export PROFILE_DIR=${q_profile_dir}
+export PROFILE_REAL_HOME=${q_real_home}
+export MACHINE=${machine_value}
+export ARCH=${arch_value}
+EOF
+
+  cat >"$sandbox_home/.zshrc" <<EOF
+# Generated by profile/bin/hermes/hs. Safe sandbox shell bootstrap.
+export PROFILE_DIR=${q_profile_dir}
+export PROFILE_REAL_HOME=${q_real_home}
+export HERMES_SANDBOX_PROFILE=${q_session}
+export HERMES_PROFILE=${q_session}
+export HERMES_HOME=${q_sandbox_home}/.hermes
+export HERMES_TOOLCHAIN=${q_toolchain}
+
+# Keep common host tool locations available while HOME remains disposable.
+path=(
+  ${q_real_home}/.local/bin
+  ${q_real_home}/.cargo/bin
+  /opt/homebrew/bin
+  /usr/local/bin
+  \$path
+)
+export PATH
+
+if [ -r ${q_profile_dir}/zsh_profile.sh ]; then
+  source ${q_profile_dir}/zsh_profile.sh
+elif [ -r ${q_profile_dir}/myprofile.sh ]; then
+  source ${q_profile_dir}/myprofile.sh
+fi
+EOF
+
+  cat >"$sandbox_home/.zprofile" <<'EOF'
+# Generated by profile/bin/hermes/hs. Intentionally minimal.
+# Interactive zsh shells read $HOME/.zshrc after this file.
+EOF
+}
+
+bootstrap_sandbox_home
+
+run_container_shell() {
+  local engine="${CONTAINER_ENGINE:-}"
+  if [ -z "$engine" ]; then
+    if command -v podman >/dev/null 2>&1; then
+      engine=podman
+    elif command -v docker >/dev/null 2>&1; then
+      engine=docker
+    else
+      echo "hs: podman/docker not found" >&2
+      exit 1
+    fi
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    local image_available="yes"
+    if ! "$engine" image inspect profile-agent-ansible >/dev/null 2>&1; then
+      image_available="no; build with: cd ${profile_dir} && just agent-container-build"
+    fi
+    cat <<EOF
+project_path=${project_path}
+slug=${slug}
+sandbox_home=${sandbox_home}
+mode=container-shell
+engine=${engine}
+image=profile-agent-ansible
+image_available=${image_available}
+command=${engine} run --rm -it -v ${project_path}:/workspace/${slug}:rw -v ${sandbox_home}:/agent-home:rw -e HOME=/agent-home --workdir /workspace/${slug} --entrypoint bash profile-agent-ansible
+EOF
+    exit 0
+  fi
+
+  if ! "$engine" image inspect profile-agent-ansible >/dev/null 2>&1; then
+    echo "hs: container image profile-agent-ansible not found; run: cd ${profile_dir} && just agent-container-build" >&2
+    exit 1
+  fi
+
+  exec "$engine" run --rm -it \
+    -v "${project_path}:/workspace/${slug}:rw" \
+    -v "${sandbox_home}:/agent-home:rw" \
+    -e HOME=/agent-home \
+    --workdir "/workspace/${slug}" \
+    --entrypoint bash \
+    profile-agent-ansible
+}
+
+if [ "$mode" = "container-shell" ]; then
+  run_container_shell
+fi
+
+export PROFILE_DIR="$profile_dir"
+export HERMES_SANDBOX_PROFILE="$session"
+export HERMES_PROFILE="$session"
+export HERMES_TOOLCHAIN="${HERMES_TOOLCHAIN:-${real_home}/.local/share/hermes-toolchain}"
+
+if [ "$disposable_home" -eq 1 ]; then
+  export HOME="$sandbox_home"
+  export HERMES_HOME="${HOME}/.hermes"
+else
+  export HERMES_HOME="${real_home}/.hermes/profiles/${session}"
+fi
+
+path_prepend() {
+  case ":${PATH}:" in
+    *":$1:"*) ;;
+    *) PATH="$1:${PATH}" ;;
+  esac
+}
+path_prepend "${real_home}/.local/bin"
+path_prepend "${real_home}/.cargo/bin"
+path_prepend "${HERMES_TOOLCHAIN}/venv/bin"
+path_prepend "${HERMES_TOOLCHAIN}/npm/bin"
+path_prepend "${HERMES_TOOLCHAIN}/bun/bin"
+export PATH
+if command -v zsh >/dev/null 2>&1; then
+  export SHELL="$(command -v zsh)"
+fi
+
+print_status() {
+  local project_kind="personal-or-unknown"
+  local tmux_status="missing"
+  local herdr_status="missing"
+  local docker_path="missing"
+  local docker_version="missing"
+  local git_remote="none"
+  local warnings=""
+
+  case "$project_path" in
+    "${real_home}/src/hermes"*|"${real_home}/src/notes"*) project_kind="personal" ;;
+  esac
+  if [ -n "${PROFILE_WORK_ROOTS:-}" ]; then
+    local old_ifs="$IFS" work_root
+    IFS=":"
+    for work_root in $PROFILE_WORK_ROOTS; do
+      [ -n "$work_root" ] || continue
+      case "$project_path" in "$work_root"*) project_kind="work" ;; esac
+    done
+    IFS="$old_ifs"
+  fi
+
+  if command -v tmux >/dev/null 2>&1; then
+    if tmux has-session -t "$session" 2>/dev/null; then
+      tmux_status="exists"
+    else
+      tmux_status="not-running"
+    fi
+  fi
+
+  if command -v herdr >/dev/null 2>&1; then
+    herdr_status="available: $(command -v herdr)"
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    docker_path="$(command -v docker)"
+    docker_version="$(HOME="$real_home" docker --version 2>/dev/null || printf 'error')"
+  elif command -v podman >/dev/null 2>&1; then
+    docker_path="podman: $(command -v podman)"
+    docker_version="$(HOME="$real_home" podman --version 2>/dev/null || printf 'error')"
+  fi
+
+  if git -C "$project_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git_remote="$(git -C "$project_path" remote get-url origin 2>/dev/null || printf 'none')"
+  fi
+
+  if [ "$project_kind" = "work" ]; then
+    warnings="${warnings}work repo selected; verify work Hermes/mobile identity before launching agents\n"
+  fi
+  case "$project_path" in
+    "$real_home"|"$real_home/"*) ;;
+    *) warnings="${warnings}project outside HOME; verify mounts before using agents\n" ;;
+  esac
+
+  cat <<EOF
+hs_status:
+  project_path: ${project_path}
+  project_kind: ${project_kind}
+  git_remote: ${git_remote}
+  slug: ${slug}
+  session: ${session}
+  tmux_session: ${tmux_status}
+  herdr: ${herdr_status}
+  sandbox_home: ${sandbox_home}
+  disposable_home: ${disposable_home}
+  HOME: ${HOME}
+  HERMES_HOME: ${HERMES_HOME}
+  HERMES_PROFILE: ${HERMES_PROFILE}
+  HERMES_TOOLCHAIN: ${HERMES_TOOLCHAIN}
+  container_cli: ${docker_path}
+  container_version: ${docker_version}
+  gateway_identity: unset
+  mobile_boundary: disabled-or-unset
+EOF
+  if [ -n "$warnings" ]; then
+    printf 'warnings:\n'
+    printf '%b' "$warnings" | sed 's/^/  - /'
+  fi
+}
+
+if [ "$mode" = "status" ]; then
+  print_status
+  exit 0
+fi
+
+case "$mode" in
+  herdr) command=(herdr --session "$session") ;;
+  herm) command=(herm) ;;
+  shell)
+    if command -v zsh >/dev/null 2>&1; then
+      export SHELL="$(command -v zsh)"
+      command=(zsh -l)
+    else
+      command=(bash -l)
+    fi
+    ;;
+  *) echo "hs: internal error: unknown mode: $mode" >&2; exit 1 ;;
+esac
+
+if [ "$dry_run" -eq 1 ]; then
+  cat <<EOF
+project_path=${project_path}
+slug=${slug}
+session=${session}
+sandbox_home=${sandbox_home}
+HOME=${HOME}
+HERMES_HOME=${HERMES_HOME}
+HERMES_PROFILE=${HERMES_PROFILE}
+HERMES_TOOLCHAIN=${HERMES_TOOLCHAIN}
+mode=${mode}
+command=${command[*]}
+EOF
+  exit 0
+fi
+
+cd -- "$project_path"
+echo "hs: ${project_path} -> ${session} (HOME=${HOME}, HERMES_HOME=${HERMES_HOME})"
+exec "${command[@]}"

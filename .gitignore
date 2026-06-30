@@ -3,3 +3,11 @@
 __pycache__/
 *.pyc
 .worktrees/
+
+# Local Ansible state/inventory
+ansible/inventory.local.yml
+ansible/*.retry
+ansible/.facts/
+
+# Local container/runtime scratch
+.agent-home/

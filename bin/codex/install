@@ -1,0 +1,44 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="codex"
+codex_app_bin="/Applications/Codex.app/Contents/Resources/codex"
+target_dir="${HOME}/.local/bin"
+target="${target_dir}/codex"
+
+install_messages "start" "$app_name"
+
+if [ ! -x "$codex_app_bin" ]; then
+    echo "ERROR: Codex.app CLI not found at ${codex_app_bin}"
+    echo "Install or update Codex.app, then rerun: just codex"
+    exit 1
+fi
+
+mkdir -p "$target_dir"
+ln -fns "$codex_app_bin" "$target"
+
+if ! command -v codex >/dev/null 2>&1; then
+    echo "WARNING: codex linked to ${target}, but ${target_dir} is not on PATH in this shell."
+    echo "Open a new zsh/tmux session or source ~/.zshrc."
+fi
+
+"$target" --version
+
+install_messages "end" "$app_name"
+
+echo "codex linked at ${target}"
+echo "tmux usage: tmux new -s codex 'codex -C ~/src'"

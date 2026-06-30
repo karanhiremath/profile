@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ansible-core \
+        bash \
+        ca-certificates \
+        git \
+        openssh-client \
+        rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY ansible/requirements.yml /tmp/ansible-requirements.yml
+RUN ansible-galaxy collection install -r /tmp/ansible-requirements.yml
+
+WORKDIR /workspace/profile
+ENTRYPOINT ["ansible-playbook"]

@@ -57,6 +57,8 @@ EOF
 write_shim hermes "$NPM_PREFIX/bin/hermes"
 write_shim hermes-agent "$NPM_PREFIX/bin/hermes-agent"
 write_shim herm "$NPM_PREFIX/bin/herm"
+write_shim hs "$SCRIPT_DIR/hs"
+write_shim dream "$SCRIPT_DIR/dream"
 write_shim agents "$SCRIPT_DIR/agents"
 write_shim cos "$SCRIPT_DIR/cos"
 write_shim cosw "$SCRIPT_DIR/cosw"
@@ -74,6 +76,8 @@ User-local shims:
   $SHIM_DIR/hermes
   $SHIM_DIR/hermes-agent
   $SHIM_DIR/herm
+  $SHIM_DIR/hs
+  $SHIM_DIR/dream
   $SHIM_DIR/agents
   $SHIM_DIR/cos
   $SHIM_DIR/cosw
