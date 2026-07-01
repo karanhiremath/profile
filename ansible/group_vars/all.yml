@@ -2,6 +2,7 @@
 # Safety defaults: local, explicit, least-surprise.
 profile_env: personal
 profile_allow_host_mutation: false
+profile_allow_remote_host_mutation: false
 profile_install_tools: false
 profile_enable_mac_apps: false
 
@@ -36,3 +37,14 @@ profile_core_tools:
 
 profile_mac_brew_packages: []
 profile_mac_brew_casks: []
+
+# SSH authorized_keys management.
+# Enable per inventory/env and point at a 1Password secret reference containing
+# newline-separated public keys, e.g. op://<vault>/<item>/public_keys.
+profile_ssh_authorized_keys_enabled: false
+profile_op_cli: op
+profile_op_account: ""
+profile_ssh_authorized_keys_op_ref: ""
+profile_ssh_authorized_keys: []
+profile_ssh_authorized_keys_user: "{{ ansible_facts.user_id }}"
+profile_ssh_authorized_keys_exclusive: false

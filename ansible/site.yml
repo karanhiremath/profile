@@ -4,13 +4,13 @@
   gather_facts: true
 
   pre_tasks:
-    - name: Refuse non-local Ansible connections by default
+    - name: Refuse non-local Ansible connections without explicit remote opt-in
       ansible.builtin.assert:
         that:
-          - ansible_connection == 'local'
+          - ansible_connection == 'local' or profile_allow_remote_host_mutation | bool
         fail_msg: >-
-          Refusing non-local profile management. Use local container/localhost workflows;
-          do not widen blast radius without changing this guard intentionally.
+          Refusing non-local profile management without explicit opt-in.
+          Use profile_allow_remote_host_mutation=true only for intentional remote setup.
       tags: [always, safety]
 
     - name: Require explicit mutation opt-in outside check mode
@@ -30,6 +30,8 @@
       tags: [shell]
     - role: dotfiles
       tags: [dotfiles]
+    - role: ssh_authorized_keys
+      tags: [ssh_authorized_keys, ssh]
     - role: cli_tools
       tags: [cli_tools]
     - role: mac_apps
