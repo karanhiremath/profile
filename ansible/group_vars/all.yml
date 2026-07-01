@@ -48,3 +48,26 @@ profile_ssh_authorized_keys_op_ref: ""
 profile_ssh_authorized_keys: []
 profile_ssh_authorized_keys_user: "{{ ansible_facts.user_id }}"
 profile_ssh_authorized_keys_exclusive: false
+
+# Hermes CoS/CoSW voice setup.
+# This installs a helper that resolves the shared Cartesia API key from
+# 1Password at runtime; profile-specific config still controls voice/model.
+profile_hermes_voice_enabled: false
+profile_hermes_voice_install_op_cli: true
+profile_hermes_voice_op_account: my.1password.com
+profile_hermes_voice_cartesia_op_ref: "op://agent-stack/karan.hiremath-hermes/credential"
+profile_hermes_voice_helper_path: "{{ profile_home }}/.local/bin/hermes-cartesia-env"
+profile_hermes_voice_verify_op_ref: false
+
+# Optional bootstrap: create a 1Password service account token and store it in
+# the local macOS Keychain. Off by default because the token is returned once and
+# should be created deliberately.
+profile_hermes_voice_create_service_account_token: false
+profile_hermes_voice_service_account_name: "hermes-voice-{{ ansible_facts.hostname | default(inventory_hostname) }}"
+profile_hermes_voice_service_account_vault: agent-stack
+profile_hermes_voice_service_account_expires_in: 30d
+profile_hermes_voice_keychain_account: "{{ ansible_facts.user_id }}"
+profile_hermes_voice_op_token_keychain_service: "Hermes OP_SERVICE_ACCOUNT_TOKEN my.1password.com agent-stack"
+profile_hermes_voice_op_token_keychain_comment: >-
+  1Password service account token for Hermes voice agents; vault=agent-stack;
+  reference={{ profile_hermes_voice_cartesia_op_ref }}

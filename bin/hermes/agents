@@ -126,6 +126,17 @@ case "$cmd" in
     fi
     echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home"
 
+    # Voice-enabled Cartesia profiles should get CARTESIA_API_KEY from the
+    # host-level 1Password helper installed by the Ansible hermes_voice role.
+    # The helper prints shell export syntax and never logs the secret. If the
+    # helper is absent, existing env/.env behavior remains unchanged.
+    if [ -z "${CARTESIA_API_KEY:-}" ] && [ -f "$runtime_home/config.yaml" ] && grep -q 'provider: cartesia' "$runtime_home/config.yaml"; then
+      cartesia_helper="${HERMES_CARTESIA_ENV_HELPER:-$HOME/.local/bin/hermes-cartesia-env}"
+      if [ -x "$cartesia_helper" ]; then
+        eval "$("$cartesia_helper")" || die "failed to resolve Cartesia API key via $cartesia_helper"
+      fi
+    fi
+
     if [ "$do_check" -eq 1 ]; then
       HERMES_HOME="$runtime_home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt || die "endpoint health check failed; not launching"
     fi
