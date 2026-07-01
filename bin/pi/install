@@ -90,15 +90,17 @@ install_or_update_pi() {
 }
 
 configure_pi_agent() {
-    local pi_agent_dir theme_dir settings_file theme_src theme_dst agents_src settings_src trust_file
+    local pi_agent_dir theme_dir extensions_dir settings_file theme_src theme_dst agents_src settings_src extensions_src trust_file
     pi_agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
     theme_dir="${pi_agent_dir}/themes"
+    extensions_dir="${pi_agent_dir}/extensions"
     settings_file="${pi_agent_dir}/settings.json"
     trust_file="${pi_agent_dir}/trust.json"
     theme_src="${SCRIPT_DIR}/themes/${theme_name}.json"
     theme_dst="${theme_dir}/${theme_name}.json"
     agents_src="${PROFILE_DIR}/config/pi/AGENTS.personal.md"
     settings_src="${PROFILE_DIR}/config/pi/settings.personal.json"
+    extensions_src="${PROFILE_DIR}/config/pi/extensions"
 
     if [ ! -f "$theme_src" ]; then
         echo "ERROR: missing pi theme source: ${theme_src}" >&2
@@ -113,10 +115,13 @@ configure_pi_agent() {
         exit 1
     fi
 
-    mkdir -p "$theme_dir"
+    mkdir -p "$theme_dir" "$extensions_dir"
     cp "$theme_src" "$theme_dst"
     cp "$agents_src" "${pi_agent_dir}/AGENTS.md"
     cp "$settings_src" "$settings_file"
+    if [ -d "$extensions_src" ] && compgen -G "${extensions_src}/*.ts" >/dev/null; then
+        cp "${extensions_src}"/*.ts "$extensions_dir"/
+    fi
 
     TRUST_FILE="$trust_file" HOME_DIR="$HOME" node <<'NODE'
 const fs = require('fs');
@@ -132,7 +137,7 @@ for (const rel of ['src/profile', 'src/hermes', 'src/notes']) {
 fs.writeFileSync(path, JSON.stringify(trust, null, 2) + '\n');
 NODE
 
-    echo "Configured pi personal agent policy, trust, and theme: ${theme_name}"
+    echo "Configured pi personal agent policy, trust, extensions, and theme: ${theme_name}"
 }
 
 install_messages "start" "$app_name"
