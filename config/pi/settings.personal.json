@@ -1,0 +1,18 @@
+{
+  "defaultProjectTrust": "ask",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "high",
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "hideThinkingBlock": false,
+  "shellPath": "/bin/zsh",
+  "theme": "karan-dark",
+  "enabledModels": [
+    "openai-codex/gpt-5.5"
+  ],
+  "enableInstallTelemetry": false,
+  "terminal": {
+    "showTerminalProgress": true
+  }
+}

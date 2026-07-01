@@ -89,35 +89,50 @@ install_or_update_pi() {
     npm install -g --ignore-scripts "${package_name}"
 }
 
-configure_theme() {
-    local pi_agent_dir theme_dir settings_file theme_src theme_dst
+configure_pi_agent() {
+    local pi_agent_dir theme_dir settings_file theme_src theme_dst agents_src settings_src trust_file
     pi_agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
     theme_dir="${pi_agent_dir}/themes"
     settings_file="${pi_agent_dir}/settings.json"
+    trust_file="${pi_agent_dir}/trust.json"
     theme_src="${SCRIPT_DIR}/themes/${theme_name}.json"
     theme_dst="${theme_dir}/${theme_name}.json"
+    agents_src="${PROFILE_DIR}/config/pi/AGENTS.personal.md"
+    settings_src="${PROFILE_DIR}/config/pi/settings.personal.json"
 
     if [ ! -f "$theme_src" ]; then
         echo "ERROR: missing pi theme source: ${theme_src}" >&2
         exit 1
     fi
+    if [ ! -f "$agents_src" ]; then
+        echo "ERROR: missing pi personal AGENTS source: ${agents_src}" >&2
+        exit 1
+    fi
+    if [ ! -f "$settings_src" ]; then
+        echo "ERROR: missing pi personal settings source: ${settings_src}" >&2
+        exit 1
+    fi
 
     mkdir -p "$theme_dir"
     cp "$theme_src" "$theme_dst"
+    cp "$agents_src" "${pi_agent_dir}/AGENTS.md"
+    cp "$settings_src" "$settings_file"
 
-    SETTINGS_FILE="$settings_file" THEME_NAME="$theme_name" node <<'NODE'
+    TRUST_FILE="$trust_file" HOME_DIR="$HOME" node <<'NODE'
 const fs = require('fs');
-const path = process.env.SETTINGS_FILE;
-const theme = process.env.THEME_NAME;
-let settings = {};
+const path = process.env.TRUST_FILE;
+const home = process.env.HOME_DIR;
+let trust = {};
 if (fs.existsSync(path)) {
-  settings = JSON.parse(fs.readFileSync(path, 'utf8'));
+  try { trust = JSON.parse(fs.readFileSync(path, 'utf8')); } catch { trust = {}; }
 }
-settings.theme = theme;
-fs.writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
+for (const rel of ['src/profile', 'src/hermes', 'src/notes']) {
+  trust[`${home}/${rel}`] = true;
+}
+fs.writeFileSync(path, JSON.stringify(trust, null, 2) + '\n');
 NODE
 
-    echo "Configured pi theme: ${theme_name}"
+    echo "Configured pi personal agent policy, trust, and theme: ${theme_name}"
 }
 
 install_messages "start" "$app_name"
@@ -129,7 +144,7 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
 fi
 
 install_or_update_pi
-configure_theme
+configure_pi_agent
 
 install_messages "end" "$app_name"
 
