@@ -25,12 +25,31 @@ ARCH="$(uname -m)"
 if command -v vllm >/dev/null 2>&1; then
     echo "vLLM already installed. Checking for updates..."
     case "${MACHINE}" in
-        Darwin|Linux)
+        Darwin)
+            echo "Upgrading vLLM for macOS (CPU-only) with uv/Python 3.12..."
+            if ! command -v uv >/dev/null 2>&1; then
+                echo "ERROR: uv is required for macOS vLLM install" >&2
+                exit 1
+            fi
+            vllm_home="${VLLM_HOME:-${HOME}/.local/share/vllm}"
+            vllm_venv="${vllm_home}/venv"
+            mkdir -p "${vllm_home}" "${HOME}/.local/bin"
+            uv venv --python "$(uv python find 3.12)" "${vllm_venv}"
+            uv pip install --python "${vllm_venv}/bin/python" --upgrade vllm
+            if [ -x "${vllm_venv}/bin/vllm" ]; then
+                ln -sf "${vllm_venv}/bin/vllm" "${HOME}/.local/bin/vllm"
+            else
+                cat > "${HOME}/.local/bin/vllm" <<EOF
+#!/usr/bin/env bash
+exec "${vllm_venv}/bin/python" -m vllm "\$@"
+EOF
+                chmod +x "${HOME}/.local/bin/vllm"
+            fi
+            ;;
+        Linux)
             echo "Upgrading vLLM..."
             pipx upgrade vllm
-            
-            # Check if CUDA is available on Linux
-            if [[ "${MACHINE}" == "Linux" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+            if command -v nvidia-smi >/dev/null 2>&1; then
                 echo "NVIDIA GPU detected. vLLM will use GPU acceleration."
             fi
             ;;
@@ -78,9 +97,28 @@ else
             echo "Installing vLLM package..."
             case "${MACHINE}" in
                 Darwin)
-                    # On macOS, install CPU-only version
-                    echo "Installing vLLM for macOS (CPU-only)..."
-                    pipx install vllm
+                    # On macOS, pipx can resolve/build the wrong vLLM under newer
+                    # Python versions. Use a durable uv-managed Python 3.12 venv
+                    # and expose a stable shim in ~/.local/bin.
+                    echo "Installing vLLM for macOS (CPU-only) with uv/Python 3.12..."
+                    if ! command -v uv >/dev/null 2>&1; then
+                        echo "ERROR: uv is required for macOS vLLM install" >&2
+                        exit 1
+                    fi
+                    vllm_home="${VLLM_HOME:-${HOME}/.local/share/vllm}"
+                    vllm_venv="${vllm_home}/venv"
+                    mkdir -p "${vllm_home}" "${HOME}/.local/bin"
+                    uv venv --python "$(uv python find 3.12)" "${vllm_venv}"
+                    uv pip install --python "${vllm_venv}/bin/python" vllm
+                    if [ -x "${vllm_venv}/bin/vllm" ]; then
+                        ln -sf "${vllm_venv}/bin/vllm" "${HOME}/.local/bin/vllm"
+                    else
+                        cat > "${HOME}/.local/bin/vllm" <<EOF
+#!/usr/bin/env bash
+exec "${vllm_venv}/bin/python" -m vllm "\$@"
+EOF
+                        chmod +x "${HOME}/.local/bin/vllm"
+                    fi
                     ;;
                 Linux)
                     # On Linux, install with CUDA support (for NVIDIA DGX)
