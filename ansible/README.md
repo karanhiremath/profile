@@ -42,3 +42,49 @@ PROFILE_ALLOW_HOST_MUTATION=1 TAGS=ssh_authorized_keys just ansible-apply
 ```
 
 The Ansible task uses `no_log: true` for fetched key material.
+
+## Hermes CoS/CoSW voice secrets from 1Password
+
+Personal hosts enable `hermes_voice` by default via `group_vars/personal.yml`.
+The role installs a local helper that resolves the shared Cartesia key from
+1Password at launch time; it does **not** write the Cartesia API key to disk.
+Profile-local `config.yaml` still controls the voice/model.
+
+Shared reference:
+
+```text
+op://agent-stack/karan.hiremath-hermes/credential
+```
+
+Run/apply only this role:
+
+```bash
+TAGS=hermes_voice just ansible-plan
+PROFILE_ALLOW_HOST_MUTATION=1 TAGS=hermes_voice just ansible-apply
+```
+
+The role installs:
+
+```text
+~/.local/bin/hermes-cartesia-env
+```
+
+`bin/hermes/agents` automatically calls that helper before launching a profile
+whose materialized config uses `provider: cartesia`.
+
+### Personal service-account bootstrap
+
+For personal use, `group_vars/personal.yml` enables creation of a scoped
+1Password service account token. The token has read access to `agent-stack` and
+is stored in macOS Keychain; it is not committed and is not the Cartesia API key.
+
+Keychain item:
+
+```text
+service: Hermes OP_SERVICE_ACCOUNT_TOKEN my.1password.com agent-stack
+account: <local user>
+```
+
+If the machine is not signed in to 1Password CLI, service-account creation fails
+closed with an authorization error. Sign in/unlock 1Password, then rerun the
+`hermes_voice` apply command above.

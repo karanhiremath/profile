@@ -1,2 +1,6 @@
 ---
 profile_env: personal
+
+# Personal machines should be able to run voice-enabled CoS/CoSW agents.
+profile_hermes_voice_enabled: true
+profile_hermes_voice_create_service_account_token: true

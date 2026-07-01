@@ -1,0 +1,123 @@
+---
+- name: Validate Hermes voice 1Password configuration
+  ansible.builtin.assert:
+    that:
+      - profile_hermes_voice_cartesia_op_ref | length > 0
+      - profile_hermes_voice_op_account | length > 0
+    fail_msg: >-
+      profile_hermes_voice_enabled=true requires profile_hermes_voice_op_account
+      and profile_hermes_voice_cartesia_op_ref.
+  when: profile_hermes_voice_enabled | bool
+
+- name: Install 1Password CLI on macOS when requested
+  community.general.homebrew_cask:
+    name: 1password-cli
+    state: present
+  when:
+    - profile_hermes_voice_enabled | bool
+    - profile_hermes_voice_install_op_cli | bool
+    - ansible_facts.system == 'Darwin'
+  tags: [op, onepassword]
+
+- name: Check 1Password CLI is available
+  ansible.builtin.command:
+    argv:
+      - "{{ profile_op_cli }}"
+      - --version
+  changed_when: false
+  register: profile_hermes_voice_op_version
+  when: profile_hermes_voice_enabled | bool
+  tags: [op, onepassword]
+
+- name: Ensure local bin directory exists
+  ansible.builtin.file:
+    path: "{{ profile_hermes_voice_helper_path | dirname }}"
+    state: directory
+    mode: '0755'
+  when: profile_hermes_voice_enabled | bool
+
+- name: Install Hermes Cartesia 1Password environment helper
+  ansible.builtin.template:
+    src: hermes-cartesia-env.j2
+    dest: "{{ profile_hermes_voice_helper_path }}"
+    mode: '0700'
+  when: profile_hermes_voice_enabled | bool
+
+- name: Check whether local OP service account token already exists in Keychain
+  ansible.builtin.command:
+    argv:
+      - security
+      - find-generic-password
+      - -a
+      - "{{ profile_hermes_voice_keychain_account }}"
+      - -s
+      - "{{ profile_hermes_voice_op_token_keychain_service }}"
+  changed_when: false
+  failed_when: false
+  register: profile_hermes_voice_existing_op_token
+  no_log: true
+  when:
+    - profile_hermes_voice_enabled | bool
+    - ansible_facts.system == 'Darwin'
+    - profile_hermes_voice_create_service_account_token | bool
+
+- name: Create scoped 1Password service account token for Hermes voice access
+  ansible.builtin.command:
+    argv:
+      - "{{ profile_op_cli }}"
+      - service-account
+      - create
+      - "{{ profile_hermes_voice_service_account_name }}"
+      - --vault
+      - "{{ profile_hermes_voice_service_account_vault }}:read_items"
+      - --expires-in
+      - "{{ profile_hermes_voice_service_account_expires_in }}"
+      - --raw
+  environment:
+    OP_ACCOUNT: "{{ profile_hermes_voice_op_account }}"
+  changed_when: true
+  check_mode: false
+  register: profile_hermes_voice_new_op_token
+  no_log: true
+  when:
+    - profile_hermes_voice_enabled | bool
+    - ansible_facts.system == 'Darwin'
+    - profile_hermes_voice_create_service_account_token | bool
+    - profile_hermes_voice_existing_op_token.rc | default(1) != 0
+
+- name: Store OP service account token in macOS Keychain
+  ansible.builtin.command:
+    argv:
+      - security
+      - add-generic-password
+      - -U
+      - -a
+      - "{{ profile_hermes_voice_keychain_account }}"
+      - -s
+      - "{{ profile_hermes_voice_op_token_keychain_service }}"
+      - -D
+      - application password
+      - -j
+      - "{{ profile_hermes_voice_op_token_keychain_comment }}"
+      - -w
+      - "{{ profile_hermes_voice_new_op_token.stdout }}"
+  changed_when: true
+  no_log: true
+  when:
+    - profile_hermes_voice_enabled | bool
+    - ansible_facts.system == 'Darwin'
+    - profile_hermes_voice_create_service_account_token | bool
+    - profile_hermes_voice_new_op_token is defined
+    - profile_hermes_voice_new_op_token.stdout | default('') | length > 0
+
+- name: Verify Cartesia 1Password reference is resolvable when requested
+  ansible.builtin.command:
+    argv:
+      - "{{ profile_hermes_voice_helper_path }}"
+      - --check
+  changed_when: false
+  register: profile_hermes_voice_check
+  no_log: true
+  when:
+    - profile_hermes_voice_enabled | bool
+    - profile_hermes_voice_verify_op_ref | bool
