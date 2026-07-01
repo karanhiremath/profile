@@ -134,18 +134,18 @@ case "$cmd" in
     case "$surface" in
       cli)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"
-        exec hermes chat "${passthrough[@]}"
+        exec hermes chat "${passthrough[@]+"${passthrough[@]}"}"
         ;;
       tui)
         command -v herm >/dev/null 2>&1 || die "herm (TUI) not installed; run bin/hermes/install-tui"
-        exec herm "${passthrough[@]}"
+        exec herm "${passthrough[@]+"${passthrough[@]}"}"
         ;;
       gateway)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"
         [ -n "$platform" ] && export HERMES_GATEWAY_PLATFORM="$platform"
         echo "Launching gateway (platform: ${platform:-from config}). Configure tokens in $home/.env"
         echo "First time? run:  HERMES_HOME=$home hermes gateway setup"
-        exec hermes gateway run "${passthrough[@]}"
+        exec hermes gateway run "${passthrough[@]+"${passthrough[@]}"}"
         ;;
       *) die "unknown surface: $surface (use cli|tui|gateway)" ;;
     esac
