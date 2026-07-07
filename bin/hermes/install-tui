@@ -83,6 +83,7 @@ install -m 0755 "$found_bun" "$BUN_HOME/bin/bun"
 export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
 export npm_config_prefix="$NPM_PREFIX"
 npm install -g --prefix "$NPM_PREFIX" herm-tui
+chmod +x "$NPM_PREFIX/lib/node_modules/herm-tui/src/index.tsx" 2>/dev/null || true
 "$SCRIPT_DIR/apply-nighttide-theme"
 
 cat > "$SHIM_DIR/herm" <<EOF

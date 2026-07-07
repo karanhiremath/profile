@@ -39,6 +39,7 @@ npm install -g --prefix "$NPM_PREFIX" hermes-agent herm-tui
 chmod +x \
   "$NPM_PREFIX/lib/node_modules/hermes-agent/bin/hermes.js" \
   "$NPM_PREFIX/lib/node_modules/hermes-agent/bin/hermes-agent.js" \
+  "$NPM_PREFIX/lib/node_modules/herm-tui/src/index.tsx" \
   2>/dev/null || true
 
 write_shim() {
