@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Launch the work Chief of Staff Hermes profile.
 set -euo pipefail
+
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -8,4 +9,154 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-exec "$SCRIPT_DIR/agents" up chief-of-staff-work "$@"
+
+log() { printf 'cosw: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+resolve_link() {
+  local target="$1" dir next
+  while [ -L "$target" ]; do
+    dir="$(cd -P "$(dirname "$target")" && pwd)"
+    next="$(readlink "$target")"
+    case "$next" in /*) target="$next" ;; *) target="$dir/$next" ;; esac
+  done
+  printf '%s\n' "$target"
+}
+
+forced_host_tools() {
+  local arg next
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --host-tools) return 0 ;;
+      --terminal-backend)
+        next="${1:-}"
+        [ "$next" = "local" ] && return 0
+        [ "$#" -gt 0 ] && shift
+        ;;
+      --terminal-backend=local) return 0 ;;
+      --) break ;;
+    esac
+  done
+  [ "${HERMES_AGENT_TERMINAL_BACKEND:-}" = "local" ] || [ "${TERMINAL_ENV:-}" = "local" ]
+}
+
+ensure_toolchain() {
+  local toolchain bun herm py target
+  toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+  bun="$toolchain/bun/bin/bun"
+  herm="$toolchain/npm/bin/herm"
+  py="$toolchain/venv/bin/python"
+
+  if [ ! -x "$py" ] || [ ! -e "$herm" ]; then
+    log "Hermes toolchain incomplete; running install --skip-private-sync"
+    "$SCRIPT_DIR/install" --skip-private-sync
+  fi
+  if [ ! -x "$bun" ]; then
+    log "Herm TUI Bun runtime missing; running install-tui"
+    "$SCRIPT_DIR/install-tui"
+  fi
+  [ -e "$herm" ] || die "herm binary missing after install: $herm"
+  target="$(resolve_link "$herm")"
+  if [ -f "$target" ] && [ ! -x "$target" ]; then
+    log "fixing non-executable herm entrypoint: $target"
+    chmod 0755 "$target"
+  fi
+}
+
+ensure_podman() {
+  local podman socket image builder
+  podman="${HERMES_DOCKER_BINARY:-$(command -v podman 2>/dev/null || true)}"
+  [ -n "$podman" ] || die "podman not found; install podman or launch with --host-tools"
+  [ -x "$podman" ] || podman="$(command -v "$podman" 2>/dev/null || true)"
+  [ -n "$podman" ] || die "podman not executable: ${HERMES_DOCKER_BINARY:-podman}"
+
+  export HERMES_DOCKER_BINARY="$podman"
+  export TERMINAL_ENV="${TERMINAL_ENV:-docker}"
+  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/root}"
+
+  if ! "$podman" info >/dev/null 2>&1; then
+    log "Podman machine unavailable; starting default machine"
+    "$podman" machine start >/dev/null
+  fi
+  if ! "$podman" info >/dev/null 2>&1; then
+    "$podman" machine list >&2 || true
+    die "podman is installed but not reachable"
+  fi
+
+  socket="$("$podman" machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null | head -n 1 || true)"
+  if [ -n "$socket" ] && [ -S "$socket" ]; then
+    export DOCKER_HOST="${DOCKER_HOST:-unix://$socket}"
+  fi
+
+  image="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
+  export TERMINAL_DOCKER_IMAGE="${TERMINAL_DOCKER_IMAGE:-$image}"
+  export TERMINAL_DOCKER_VOLUMES="${TERMINAL_DOCKER_VOLUMES:-[\"$HOME/src:/root/src\",\"$HOME/src:/home/hermes/src\"]}"
+  export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-false}"
+  if ! "$podman" image inspect "$image" >/dev/null 2>&1; then
+    builder="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh"
+    if [ "${COSW_AUTO_BUILD_IMAGE:-1}" = "1" ] && [ -x "$builder" ]; then
+      log "sandbox image missing; building $image"
+      "$builder" python-node-fedora
+    fi
+  fi
+  "$podman" image inspect "$image" >/dev/null 2>&1 || \
+    die "sandbox image missing: $image (run: ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh python-node-fedora)"
+
+  local home name smoke
+  home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  mkdir -p "$home/sandboxes/docker/default/home" "$home/sandboxes/docker/default/workspace" \
+    "$home/skills" "$home/image_cache" "$home/audio_cache"
+  name="cosw-smoke-$$"
+  smoke="${TMPDIR:-/tmp}/cosw-podman-smoke-$$.log"
+  if ! "$podman" run --rm --init --name "$name" \
+    -w "$TERMINAL_CWD" \
+    --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add CHOWN --cap-add FOWNER \
+    --security-opt no-new-privileges --pids-limit 256 \
+    --tmpfs /tmp:rw,nosuid,size=512m --tmpfs /var/tmp:rw,noexec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=64m \
+    --user "$(id -u):$(id -g)" \
+    -v "$home/sandboxes/docker/default/home:/root" \
+    -v "$home/sandboxes/docker/default/workspace:/workspace" \
+    -v "$HOME/src:/root/src" \
+    -v "$HOME/src:/home/hermes/src" \
+    --cpus 1.0 --memory 5120m \
+    -v "$home/skills:/root/.hermes/skills:ro" \
+    -v "$home/image_cache:/root/.hermes/cache/images:ro" \
+    -v "$home/audio_cache:/root/.hermes/cache/audio:ro" \
+    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -d /home/hermes/src/karan.hiremath' >"$smoke" 2>&1; then
+    cat "$smoke" >&2 || true
+    "$podman" rm -f "$name" >/dev/null 2>&1 || true
+    die "podman sandbox smoke test failed"
+  fi
+  rm -f "$smoke"
+
+  local cid details running
+  while read -r cid; do
+    [ -n "$cid" ] || continue
+    details="$("$podman" inspect "$cid" --format '{{.ImageName}} {{json .Mounts}}' 2>/dev/null || true)"
+    case "$details" in
+      *"$image"*"/root/src"*"/home/hermes/src"*) ;;
+      *)
+        running="$("$podman" inspect "$cid" --format '{{.State.Running}}' 2>/dev/null || true)"
+        if [ "$running" = "true" ]; then
+          log "running stale CoS-W sandbox container remains active: $cid (close cosw before removing)"
+        else
+          log "removing stopped stale CoS-W sandbox container: $cid"
+          "$podman" rm -f "$cid" >/dev/null 2>&1 || true
+        fi
+        ;;
+    esac
+  done < <("$podman" ps -a --filter label=hermes-profile=chief-of-staff-work --format '{{.ID}}' 2>/dev/null || true)
+}
+
+if [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
+  ensure_toolchain
+  if ! forced_host_tools "$@"; then
+    ensure_podman
+  fi
+fi
+
+if forced_host_tools "$@"; then
+  exec "$SCRIPT_DIR/agents" up chief-of-staff-work "$@"
+fi
+exec "$SCRIPT_DIR/agents" up chief-of-staff-work --terminal-backend docker "$@"

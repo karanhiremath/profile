@@ -191,6 +191,21 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
     display = profile.get("display")
     if isinstance(display, dict) and display:
         cfg["display"] = display
+    terminal = profile.get("terminal")
+    override = os.environ.get("HERMES_AGENT_TERMINAL_BACKEND", "").strip()
+    if override:
+        terminal = dict(terminal) if isinstance(terminal, dict) else {}
+        terminal["backend"] = override
+        if override in {"docker", "singularity", "modal", "daytona"} and not terminal.get("cwd"):
+            terminal["cwd"] = "/root"
+        if override == "docker":
+            terminal.setdefault("docker_image", os.environ.get("TERMINAL_DOCKER_IMAGE", "localhost/hermes-agent/python-node:dev"))
+            src = Path.home() / "src"
+            if src.is_dir() and not terminal.get("docker_volumes"):
+                terminal["docker_volumes"] = [f"{src}:/root/src", f"{src}:/home/hermes/src"]
+            terminal.setdefault("docker_persist_across_processes", False)
+    if isinstance(terminal, dict) and terminal:
+        cfg["terminal"] = terminal
     if tts_on:
         cfg["tts"] = {"provider": "cartesia", "model": tts.get("model", "sonic-3.5"), "voice": voice}
     if stt_on:
@@ -263,6 +278,19 @@ def materialize(name: str) -> Path:
     # non-managed keys (e.g. gateway platform tokens) are preserved. Voice keys
     # are written only for voice-enabled agents.
     env_updates: Dict[str, str] = {}
+    terminal_cfg = cfg.get("terminal") if isinstance(cfg.get("terminal"), dict) else {}
+    if terminal_cfg.get("backend") == "docker":
+        env_updates["TERMINAL_ENV"] = "docker"
+        env_updates["TERMINAL_CWD"] = str(terminal_cfg.get("cwd") or "/root")
+        if terminal_cfg.get("docker_image"):
+            env_updates["TERMINAL_DOCKER_IMAGE"] = str(terminal_cfg["docker_image"])
+        if terminal_cfg.get("docker_volumes"):
+            env_updates["TERMINAL_DOCKER_VOLUMES"] = json.dumps(terminal_cfg["docker_volumes"])
+        if "docker_persist_across_processes" in terminal_cfg:
+            env_updates["TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES"] = "true" if terminal_cfg["docker_persist_across_processes"] else "false"
+        docker_bin = os.environ.get("HERMES_DOCKER_BINARY", "").strip()
+        if docker_bin:
+            env_updates["HERMES_DOCKER_BINARY"] = docker_bin
     if uses_voice:
         if base_url:
             env_updates["CARTESIA_BASE_URL"] = base_url
