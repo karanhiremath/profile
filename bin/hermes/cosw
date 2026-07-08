@@ -41,6 +41,18 @@ forced_host_tools() {
   [ "${HERMES_AGENT_TERMINAL_BACKEND:-}" = "local" ] || [ "${TERMINAL_ENV:-}" = "local" ]
 }
 
+json_array() {
+  local out="[" sep="" item esc
+  for item in "$@"; do
+    esc="${item//\\/\\\\}"
+    esc="${esc//\"/\\\"}"
+    out+="$sep\"$esc\""
+    sep=","
+  done
+  out+="]"
+  printf '%s\n' "$out"
+}
+
 ensure_toolchain() {
   local toolchain bun herm py target
   toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
@@ -91,7 +103,28 @@ ensure_podman() {
 
   image="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
   export TERMINAL_DOCKER_IMAGE="${TERMINAL_DOCKER_IMAGE:-$image}"
-  export TERMINAL_DOCKER_VOLUMES="${TERMINAL_DOCKER_VOLUMES:-[\"$HOME/src:/root/src\",\"$HOME/src:/home/hermes/src\"]}"
+
+  local observer_dir volumes
+  observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
+  mkdir -p "$observer_dir"
+  if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
+    "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$observer_dir" >/dev/null || \
+      log "host observer failed to start; continuing without live host snapshot"
+  fi
+
+  volumes=(
+    "$HOME/src:/root/src"
+    "$HOME/src:/home/hermes/src"
+    "$observer_dir:/home/hermes/.cosw-host:ro"
+    "$observer_dir:/root/.cosw-host:ro"
+  )
+  [ ! -d "$HOME/.pi/agent/sessions" ] || volumes+=("$HOME/.pi/agent/sessions:/mnt/host-pi-agent-sessions:ro")
+  [ ! -d "$HOME/.pi/sessions" ] || volumes+=("$HOME/.pi/sessions:/mnt/host-pi-sessions:ro")
+  [ ! -d "$HOME/.claude/projects" ] || volumes+=("$HOME/.claude/projects:/mnt/host-claude-projects:ro")
+  [ ! -d "$HOME/.claude/session-env" ] || volumes+=("$HOME/.claude/session-env:/mnt/host-claude-session-env:ro")
+  [ ! -d "$HOME/.codex/sessions" ] || volumes+=("$HOME/.codex/sessions:/mnt/host-codex-sessions:ro")
+  [ ! -d "$HOME/.codex/process_manager" ] || volumes+=("$HOME/.codex/process_manager:/mnt/host-codex-process-manager:ro")
+  export TERMINAL_DOCKER_VOLUMES="${TERMINAL_DOCKER_VOLUMES:-$(json_array "${volumes[@]}")}"
   export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-false}"
   if ! "$podman" image inspect "$image" >/dev/null 2>&1; then
     builder="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh"
@@ -103,10 +136,13 @@ ensure_podman() {
   "$podman" image inspect "$image" >/dev/null 2>&1 || \
     die "sandbox image missing: $image (run: ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh python-node-fedora)"
 
-  local home name smoke
+  local home name smoke volume_args=() vol
   home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
   mkdir -p "$home/sandboxes/docker/default/home" "$home/sandboxes/docker/default/workspace" \
     "$home/skills" "$home/image_cache" "$home/audio_cache"
+  for vol in "${volumes[@]}"; do
+    volume_args+=("-v" "$vol")
+  done
   name="cosw-smoke-$$"
   smoke="${TMPDIR:-/tmp}/cosw-podman-smoke-$$.log"
   if ! "$podman" run --rm --init --name "$name" \
@@ -117,13 +153,12 @@ ensure_podman() {
     --user "$(id -u):$(id -g)" \
     -v "$home/sandboxes/docker/default/home:/root" \
     -v "$home/sandboxes/docker/default/workspace:/workspace" \
-    -v "$HOME/src:/root/src" \
-    -v "$HOME/src:/home/hermes/src" \
+    "${volume_args[@]}" \
     --cpus 1.0 --memory 5120m \
     -v "$home/skills:/root/.hermes/skills:ro" \
     -v "$home/image_cache:/root/.hermes/cache/images:ro" \
     -v "$home/audio_cache:/root/.hermes/cache/audio:ro" \
-    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -d /home/hermes/src/karan.hiremath' >"$smoke" 2>&1; then
+    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md' >"$smoke" 2>&1; then
     cat "$smoke" >&2 || true
     "$podman" rm -f "$name" >/dev/null 2>&1 || true
     die "podman sandbox smoke test failed"
@@ -135,7 +170,7 @@ ensure_podman() {
     [ -n "$cid" ] || continue
     details="$("$podman" inspect "$cid" --format '{{.ImageName}} {{json .Mounts}}' 2>/dev/null || true)"
     case "$details" in
-      *"$image"*"/root/src"*"/home/hermes/src"*) ;;
+      *"$image"*"/root/src"*"/home/hermes/src"*"/root/.cosw-host"*) ;;
       *)
         running="$("$podman" inspect "$cid" --format '{{.State.Running}}' 2>/dev/null || true)"
         if [ "$running" = "true" ]; then

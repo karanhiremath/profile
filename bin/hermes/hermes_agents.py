@@ -200,6 +200,14 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
             terminal["cwd"] = "/root"
         if override == "docker":
             terminal.setdefault("docker_image", os.environ.get("TERMINAL_DOCKER_IMAGE", "localhost/hermes-agent/python-node:dev"))
+            volumes_env = os.environ.get("TERMINAL_DOCKER_VOLUMES", "").strip()
+            if volumes_env:
+                try:
+                    volumes = json.loads(volumes_env)
+                except json.JSONDecodeError:
+                    volumes = [item.strip() for item in volumes_env.split(",") if item.strip()]
+                if isinstance(volumes, list) and all(isinstance(item, str) for item in volumes):
+                    terminal["docker_volumes"] = volumes
             src = Path.home() / "src"
             if src.is_dir() and not terminal.get("docker_volumes"):
                 terminal["docker_volumes"] = [f"{src}:/root/src", f"{src}:/home/hermes/src"]

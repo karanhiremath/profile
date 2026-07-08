@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Maintain a read-only host coordination snapshot for the CoS-W sandbox.
+# Usage: cosw-host-observer [start|once|status|run] [--state-dir DIR] [--interval SECONDS]
+set -euo pipefail
+
+usage() { sed -n '2,3p' "$0" | sed 's/^# //'; }
+log() { printf 'cosw-host-observer: %s\n' "$*" >&2; }
+
+STATE_DIR="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
+INTERVAL="${COSW_HOST_OBSERVER_INTERVAL:-15}"
+cmd="${1:-start}"
+[ "$#" -gt 0 ] && shift || true
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --state-dir) STATE_DIR="${2:?}"; shift 2 ;;
+    --interval) INTERVAL="${2:?}"; shift 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) log "ERROR: unknown arg: $1"; usage >&2; exit 2 ;;
+  esac
+done
+
+pidfile() { printf '%s/pid' "$STATE_DIR"; }
+
+is_running() {
+  local pid
+  [ -f "$(pidfile)" ] || return 1
+  pid="$(cat "$(pidfile)" 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+snapshot() {
+  mkdir -p "$STATE_DIR"
+  local tmp
+  tmp="$STATE_DIR/.next.$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+
+  date '+%Y-%m-%dT%H:%M:%S%z' > "$tmp/timestamp.txt"
+  hostname > "$tmp/hostname.txt" 2>/dev/null || true
+
+  {
+    printf '# CoS-W host coordination snapshot\n\n'
+    printf -- '- generated: %s\n' "$(cat "$tmp/timestamp.txt")"
+    printf -- '- host: %s\n' "$(cat "$tmp/hostname.txt" 2>/dev/null || printf unknown)"
+    printf -- '- purpose: read-only bridge from Podman sandbox to host agent/session state\n'
+    printf -- '- note: tmux socket bind-mounts are not supported by Podman-on-mac; use these snapshots instead.\n\n'
+    printf '## Files\n\n'
+    printf -- '- `tmux-sessions.txt` — host tmux sessions\n'
+    printf -- '- `tmux-panes.tsv` — host tmux panes, cwd, command, active flag, pid\n'
+    printf -- '- `agent-processes.txt` — narrow host pi/Claude/Codex/Hermes process list\n'
+    printf -- '- `session-files.txt` — recent agent session/log files discovered under mounted state dirs\n'
+  } > "$tmp/SUMMARY.md"
+
+  tmux list-sessions > "$tmp/tmux-sessions.txt" 2>&1 || true
+  tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}	#{window_name}	#{pane_current_path}	#{pane_current_command}	#{pane_active}	#{pane_pid}' \
+    > "$tmp/tmux-panes.tsv" 2>&1 || true
+
+  ps -axo pid,ppid,pgid,stat,etime,comm,args 2>&1 \
+    | awk 'BEGIN{IGNORECASE=1} /(^|[ \/])(pi|claude|codex|herm|hermes|bun)( |$)/ && !/awk/ {print}' \
+    > "$tmp/agent-processes.txt" || true
+
+  {
+    for d in \
+      "$HOME/.pi/agent/sessions" \
+      "$HOME/.pi/sessions" \
+      "$HOME/.claude/projects" \
+      "$HOME/.claude/session-env" \
+      "$HOME/.codex/sessions" \
+      "$HOME/.codex/process_manager"; do
+      [ -e "$d" ] || continue
+      printf '== %s ==\n' "$d"
+      find "$d" -type f -mtime -3 -print 2>/dev/null | sort | tail -200
+      printf '\n'
+    done
+  } > "$tmp/session-files.txt"
+
+  rm -rf "$STATE_DIR/previous"
+  [ ! -d "$STATE_DIR/current" ] || mv "$STATE_DIR/current" "$STATE_DIR/previous"
+  mv "$tmp" "$STATE_DIR/current"
+}
+
+case "$cmd" in
+  once)
+    snapshot
+    printf '%s/current\n' "$STATE_DIR"
+    ;;
+  start)
+    mkdir -p "$STATE_DIR"
+    if is_running; then
+      log "already running pid=$(cat "$(pidfile)") state=$STATE_DIR/current"
+      exit 0
+    fi
+    nohup "$0" run --state-dir "$STATE_DIR" --interval "$INTERVAL" >/dev/null 2>&1 &
+    printf '%s\n' "$!" > "$(pidfile)"
+    log "started pid=$! state=$STATE_DIR/current interval=${INTERVAL}s"
+    ;;
+  run)
+    mkdir -p "$STATE_DIR"
+    printf '%s\n' "$$" > "$(pidfile)"
+    trap 'rm -f "$(pidfile)"' EXIT
+    while true; do
+      snapshot || true
+      sleep "$INTERVAL"
+    done
+    ;;
+  status)
+    if is_running; then
+      printf 'running pid=%s state=%s/current\n' "$(cat "$(pidfile)")" "$STATE_DIR"
+    else
+      printf 'stopped state=%s/current\n' "$STATE_DIR"
+      exit 1
+    fi
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    log "ERROR: unknown command: $cmd"
+    usage >&2
+    exit 2
+    ;;
+esac
