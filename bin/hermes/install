@@ -16,30 +16,39 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
-NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
+# Isolated, toolchain-local pnpm home. pnpm derives its global bin dir, global
+# node_modules (global-dir), and content-addressable store from PNPM_HOME, so
+# setting this scopes the entire pnpm global install into the toolchain.
+PNPM_HOME="${HERMES_PNPM_HOME:-$HERMES_TOOLCHAIN_HOME/pnpm}"
+export PNPM_HOME
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
 BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
 SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 
-for bin in node npm uv git; do
+for bin in node pnpm uv git; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "ERROR: required binary not found: $bin" >&2
     exit 127
   fi
 done
 
-mkdir -p "$HERMES_TOOLCHAIN_HOME" "$NPM_PREFIX" "$SHIM_DIR"
+mkdir -p "$HERMES_TOOLCHAIN_HOME" "$PNPM_HOME" "$SHIM_DIR"
 uv venv --allow-existing --seed "$VENV"
 uv pip install --python "$VENV/bin/python" pip setuptools wheel PyYAML
 
-export PATH="$VENV/bin:$NPM_PREFIX/bin:$PATH"
-export npm_config_prefix="$NPM_PREFIX"
+export PATH="$VENV/bin:$PNPM_HOME:$PATH"
 
-npm install -g --prefix "$NPM_PREFIX" hermes-agent herm-tui
+pnpm add -g hermes-agent herm-tui
+
+# Resolve the pnpm global locations robustly rather than hardcoding pnpm's
+# internal layout (e.g. $PNPM_HOME/global/<v>/node_modules).
+PNPM_GLOBAL_ROOT="$(pnpm root -g)"
+PNPM_BIN="$(pnpm bin -g)"
+
 chmod +x \
-  "$NPM_PREFIX/lib/node_modules/hermes-agent/bin/hermes.js" \
-  "$NPM_PREFIX/lib/node_modules/hermes-agent/bin/hermes-agent.js" \
-  "$NPM_PREFIX/lib/node_modules/herm-tui/src/index.tsx" \
+  "$PNPM_GLOBAL_ROOT/hermes-agent/bin/hermes.js" \
+  "$PNPM_GLOBAL_ROOT/hermes-agent/bin/hermes-agent.js" \
+  "$PNPM_GLOBAL_ROOT/herm-tui/src/index.tsx" \
   2>/dev/null || true
 
 write_shim() {
@@ -49,15 +58,16 @@ write_shim() {
 #!/usr/bin/env bash
 set -euo pipefail
 export HERMES_TOOLCHAIN_HOME="$HERMES_TOOLCHAIN_HOME"
-export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:\$PATH"
+export PNPM_HOME="$PNPM_HOME"
+export PATH="$BUN_HOME/bin:$PNPM_BIN:$VENV/bin:\$PATH"
 exec "$target" "\$@"
 EOF
   chmod 0755 "$SHIM_DIR/$name"
 }
 
-write_shim hermes "$NPM_PREFIX/bin/hermes"
-write_shim hermes-agent "$NPM_PREFIX/bin/hermes-agent"
-write_shim herm "$NPM_PREFIX/bin/herm"
+write_shim hermes "$PNPM_BIN/hermes"
+write_shim hermes-agent "$PNPM_BIN/hermes-agent"
+write_shim herm "$PNPM_BIN/herm"
 write_shim hs "$SCRIPT_DIR/hs"
 write_shim dream "$SCRIPT_DIR/dream"
 write_shim agents "$SCRIPT_DIR/agents"
@@ -86,7 +96,7 @@ User-local shims:
   $SHIM_DIR/pl
 
 Toolchain binaries:
-  $NPM_PREFIX/bin/hermes
-  $NPM_PREFIX/bin/hermes-agent
-  $NPM_PREFIX/bin/herm
+  $PNPM_BIN/hermes
+  $PNPM_BIN/hermes-agent
+  $PNPM_BIN/herm
 EOF

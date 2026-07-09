@@ -23,62 +23,19 @@ fi
 
 MACHINE="$(uname -s)"
 
-check_node_version() {
-    if command -v node >/dev/null 2>&1; then
-        local node_version
-        node_version=$(node --version | sed 's/v//' | cut -d. -f1)
-        if [ "$node_version" -ge 18 ]; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
-ensure_node() {
-    if check_node_version; then
+# node + pnpm are provided by mise (config/mise/config.toml). Guard on pnpm.
+ensure_pnpm() {
+    if command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
         return 0
     fi
-
-    echo "Node.js 18+ is required. Installing/updating Node.js..."
-    case "${MACHINE}" in
-        Darwin)
-            ensure_brew_in_path || {
-                echo "ERROR: Homebrew not found. Please install Homebrew first."
-                exit 1
-            }
-            if brew list node &>/dev/null; then
-                echo "Upgrading Node.js..."
-                brew upgrade node || brew install node
-            else
-                echo "Installing Node.js..."
-                brew install node
-            fi
-            ;;
-        Linux)
-            if command -v apt-get >/dev/null 2>&1; then
-                curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-                sudo apt-get install -y nodejs
-            elif command -v dnf >/dev/null 2>&1; then
-                curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash -
-                sudo dnf install -y nodejs
-            elif command -v yum >/dev/null 2>&1; then
-                curl -fsSL https://rpm.nodesource.com/setup_lts.x | sudo bash -
-                sudo yum install -y nodejs
-            else
-                echo "ERROR: Could not install Node.js. Please install Node.js 18+ manually."
-                exit 1
-            fi
-            ;;
-        *)
-            echo "Unsupported platform: ${MACHINE}"
-            exit 1
-            ;;
-    esac
+    echo "ERROR: node + pnpm are required and are provided by mise."
+    echo "Run 'just mise' (or bin/mise/install), then re-run this installer."
+    exit 1
 }
 
 install_or_update_pi() {
-    echo "Node.js version: $(node --version)"
-    echo "npm version: $(npm --version)"
+    echo "node version: $(node --version)"
+    echo "pnpm version: $(pnpm --version)"
 
     if command -v pi >/dev/null 2>&1; then
         echo "pi already installed. Upgrading ${package_name}..."
@@ -86,7 +43,7 @@ install_or_update_pi() {
         echo "Installing pi..."
     fi
 
-    npm install -g --ignore-scripts "${package_name}"
+    pnpm add -g --ignore-scripts "${package_name}"
 }
 
 configure_pi_agent() {
@@ -141,12 +98,7 @@ NODE
 }
 
 install_messages "start" "$app_name"
-ensure_node
-
-if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    echo "ERROR: Node.js or npm not found after installation."
-    exit 1
-fi
+ensure_pnpm
 
 install_or_update_pi
 configure_pi_agent

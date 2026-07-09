@@ -5,7 +5,7 @@ HOME := "$(echo $HOME)"
 
 
 # Install core tools
-all: git tmux nvim pc
+all: mise git tmux nvim pc
 
 install:
     ./install.sh
@@ -112,6 +112,14 @@ alfred:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/alfred/install.sh
+
+# Install mise (runtime/version manager) + provision node, pnpm, neovim
+mise:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/mise/install
 
 git:
     #!/usr/bin/env bash

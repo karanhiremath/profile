@@ -14,21 +14,14 @@ ln -fns "${PROFILE_DIR}"/bin/nvim/lua "${HOME}"/.config/nvim/lua
 ln -fns "${PROFILE_DIR}"/bin/nvim/after "${HOME}"/.config/nvim/after
 
 app_name="nvim"
-nvim_version_fallback="v0.9.5"  # Fallback for older systems
-bob_install_location="$HOME/.local/share/bob/nvim-bin"
 
 MACHINE="$(uname -s)"
-ARCH="$(uname -m)"
 
 install_messages "start" "$app_name"
 
-# --- Skip if nvim is already installed and working ---
-if [ -x "${bob_install_location}/nvim" ] && "${bob_install_location}/nvim" --version >/dev/null 2>&1; then
-    echo "✓ nvim already installed via bob: $("${bob_install_location}/nvim" --version | head -1)"
-
-    # Ensure symlink exists
-    mkdir -p "${HOME}/.local/bin"
-    ln -sf "${bob_install_location}/nvim" "${HOME}/.local/bin/nvim"
+# --- Skip if nvim is already installed and working (mise shim on PATH) ---
+if command -v nvim >/dev/null 2>&1 && nvim --version >/dev/null 2>&1; then
+    echo "✓ nvim already installed: $(nvim --version | head -1)"
 
     # Sync plugins (fast — lazy.nvim only installs missing ones)
     echo "Syncing plugins..."
@@ -36,116 +29,49 @@ if [ -x "${bob_install_location}/nvim" ] && "${bob_install_location}/nvim" --ver
 
     install_messages "end" "$app_name"
     exit 0
-elif command -v nvim >/dev/null 2>&1 && nvim --version >/dev/null 2>&1; then
-    echo "✓ nvim already installed: $(nvim --version | head -1)"
-
-    echo "Syncing plugins..."
-    "${PROFILE_DIR}/bin/nvim/install-plugins"
-
-    install_messages "end" "$app_name"
-    exit 0
 fi
 
-# --- Fresh install needed ---
-
-install_bob() {
-    if command -v bob >/dev/null 2>&1; then
-        echo "✓ bob-nvim already installed"
-    else
-        echo "Installing bob-nvim..."
-        cargo install bob-nvim --locked
+# --- Fresh install via mise ---
+# neovim is declared in config/mise/config.toml; `mise install neovim`
+# provisions it and exposes the `nvim` shim on PATH.
+install_nvim_mise() {
+    if ! command -v mise >/dev/null 2>&1; then
+        echo "mise not found; installing mise first..."
+        "${PROFILE_DIR}/bin/mise/install"
     fi
+
+    # The Linux mise installer lands in ~/.local/bin, which may not be on this
+    # process's PATH yet (install.sh only wires it into ~/.zshrc).
+    if ! command -v mise >/dev/null 2>&1 && [ -x "${HOME}/.local/bin/mise" ]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+    fi
+
+    echo "Installing latest neovim via mise..."
+    mise install neovim
+
+    # Refresh command lookup so the freshly-installed shim resolves.
+    hash -r 2>/dev/null || true
+
+    command -v nvim >/dev/null 2>&1 && nvim --version >/dev/null 2>&1
 }
 
-try_install_nvim_bob() {
-    echo "Installing latest neovim via bob..."
-
-    install_bob
-
-    export PATH=$PATH:~/.cargo/bin/bob:${bob_install_location}
-
-    if ~/.cargo/bin/bob use latest 2>/dev/null; then
-        if ${bob_install_location}/nvim --version >/dev/null 2>&1; then
-            echo "✓ Neovim installed: $(${bob_install_location}/nvim --version | head -1)"
-            return 0
-        else
-            echo "Neovim installed but failed to run (likely glibc incompatibility)"
-            return 1
-        fi
-    else
-        echo "Failed to install latest neovim"
-        return 1
-    fi
-}
-
-try_install_nvim_bob_fallback() {
-    local version=$1
-    echo "Trying neovim ${version} via bob..."
-
-    install_bob
-
-    export PATH=$PATH:~/.cargo/bin/bob:${bob_install_location}
-
-    if ~/.cargo/bin/bob use "${version}" 2>/dev/null; then
-        if ${bob_install_location}/nvim --version >/dev/null 2>&1; then
-            echo "✓ Neovim ${version} installed"
-            return 0
-        else
-            echo "Neovim ${version} installed but failed to run"
-            return 1
-        fi
-    else
-        echo "Failed to install neovim ${version}"
-        return 1
-    fi
-}
-
-case "${MACHINE}" in
-    Darwin|Mac)
-        echo "Installing nvim on Mac..."
-        if ! command -v cargo >/dev/null 2>&1; then
-            echo "Cargo not found, installing via Homebrew..."
+if install_nvim_mise; then
+    echo "✓ Neovim installed via mise: $(nvim --version | head -1)"
+else
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "mise install failed; falling back to Homebrew..."
             brew install neovim
-        else
-            if ! try_install_nvim_bob; then
-                echo "Latest failed, trying ${nvim_version_fallback}..."
-                if try_install_nvim_bob_fallback "${nvim_version_fallback}"; then
-                    touch "${PROFILE_DIR}/bin/nvim/.use-old-lspconfig"
-                else
-                    echo "Bob failed, falling back to Homebrew..."
-                    brew install neovim
-                fi
-            fi
-        fi
-        ;;
-    Linux|*)
-        echo "Installing nvim on Linux..."
-        if ! command -v cargo >/dev/null 2>&1; then
-            echo "ERROR: cargo is required but not installed. Please install Rust/Cargo first."
+            ;;
+        Linux|*)
+            echo "ERROR: Failed to install neovim via mise." >&2
             exit 1
-        fi
-
-        if ! try_install_nvim_bob; then
-            echo "Latest failed, trying ${nvim_version_fallback}..."
-            if try_install_nvim_bob_fallback "${nvim_version_fallback}"; then
-                touch "${PROFILE_DIR}/bin/nvim/.use-old-lspconfig"
-            else
-                echo "ERROR: Failed to install neovim via bob"
-                exit 1
-            fi
-        fi
-        ;;
-esac
+            ;;
+    esac
+fi
 
 # Install plugins
 echo "Installing nvim plugins..."
 "${PROFILE_DIR}/bin/nvim/install-plugins"
-
-# Symlink bob-managed nvim into ~/.local/bin for PATH access
-if [ -x "${bob_install_location}/nvim" ]; then
-    mkdir -p "${HOME}/.local/bin"
-    ln -sf "${bob_install_location}/nvim" "${HOME}/.local/bin/nvim"
-    echo "✓ Symlinked nvim → ~/.local/bin/nvim"
-fi
 
 install_messages "end" "$app_name"

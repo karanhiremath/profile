@@ -39,7 +39,7 @@ if [ -z "${DOCKER_HOST:-}" ] && command -v podman >/dev/null 2>&1; then
   unset _podman_socket
 fi
 
-# The npm hermes launcher picks the first python3 on PATH. Keep the Hermes venv
+# The hermes launcher picks the first python3 on PATH. Keep the Hermes venv
 # ahead of Homebrew/system Python so `hermes` resolves hermes_cli correctly.
 _hermes_path_prepend() {
   case ":${PATH}:" in
@@ -49,7 +49,7 @@ _hermes_path_prepend() {
 }
 
 _hermes_path_prepend "${HERMES_TOOLCHAIN}/venv/bin"
-_hermes_path_prepend "${HERMES_TOOLCHAIN}/npm/bin"
+_hermes_path_prepend "${HERMES_TOOLCHAIN}/pnpm"
 _hermes_path_prepend "${HERMES_TOOLCHAIN}/bun/bin"
 export PATH
 

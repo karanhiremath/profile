@@ -292,7 +292,7 @@ path_prepend() {
 path_prepend "${real_home}/.local/bin"
 path_prepend "${real_home}/.cargo/bin"
 path_prepend "${HERMES_TOOLCHAIN}/venv/bin"
-path_prepend "${HERMES_TOOLCHAIN}/npm/bin"
+path_prepend "${HERMES_TOOLCHAIN}/pnpm"
 path_prepend "${HERMES_TOOLCHAIN}/bun/bin"
 export PATH
 if command -v zsh >/dev/null 2>&1; then

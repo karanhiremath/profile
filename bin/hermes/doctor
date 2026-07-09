@@ -3,22 +3,22 @@
 set -euo pipefail
 
 HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
-NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
+PNPM_HOME="${HERMES_PNPM_HOME:-$HERMES_TOOLCHAIN_HOME/pnpm}"
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
 BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
 PRIVATE_DIR="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}"
 SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
-export PATH="$SHIM_DIR:$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
+export PATH="$SHIM_DIR:$BUN_HOME/bin:$PNPM_HOME:$VENV/bin:$PATH"
 
 printf 'toolchain=%s\n' "$HERMES_TOOLCHAIN_HOME"
-printf 'npm_prefix=%s\n' "$NPM_PREFIX"
+printf 'pnpm_home=%s\n' "$PNPM_HOME"
 printf 'python_venv=%s\n' "$VENV"
 printf 'bun_home=%s\n' "$BUN_HOME"
 printf 'private_dir=%s\n' "$PRIVATE_DIR"
 printf 'shim_dir=%s\n' "$SHIM_DIR"
 
 for bin in hermes hermes-agent herm; do
-  path="$NPM_PREFIX/bin/$bin"
+  path="$PNPM_HOME/$bin"
   if [ -x "$path" ]; then
     printf '%s=%s\n' "$bin" "$path"
   else

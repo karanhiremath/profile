@@ -1,6 +1,6 @@
 export MYSQL_PS1="\R:\m:\s\ \u\ [db\ \d]\ >\ "
-export EDITOR="$HOME/.local/share/bob/nvim-bin/nvim"
-export VISUAL="$HOME/.local/share/bob/nvim-bin/nvim"
+export EDITOR="nvim"
+export VISUAL="nvim"
 
 alias ls='ls -GFh'
 
@@ -167,9 +167,6 @@ alias vi="nvim"
 
 # update pi coding agent
 alias pi-update="${PROFILE_DIR}/bin/pi/install"
-
-# use bob
-alias nvim="~/.local/share/bob/nvim-bin/nvim"
 
 # pi-code session manager (tmux + nvim + pi)
 # Binary built from profile/bin/pc (Rust). Install: just pc

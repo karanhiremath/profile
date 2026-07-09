@@ -15,11 +15,41 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 HOME = Path.home()
-NPM_PREFIX = Path(os.environ.get("HERMES_NPM_PREFIX", HOME / ".local/share/hermes-toolchain/npm"))
-HERM_TUI = NPM_PREFIX / "lib/node_modules/herm-tui"
+
+
+def _herm_tui_dir() -> Path:
+    """Locate the pnpm-global herm-tui install directory.
+
+    Resolution order (robust across pnpm's internal global layout):
+      1. HERMES_PNPM_GLOBAL_ROOT (exported by install-tui after `pnpm root -g`)
+      2. `pnpm root -g` at runtime
+      3. glob under the toolchain-local PNPM_HOME
+    """
+    root_env = os.environ.get("HERMES_PNPM_GLOBAL_ROOT")
+    if root_env:
+        return Path(root_env) / "herm-tui"
+    try:
+        root = subprocess.run(
+            ["pnpm", "root", "-g"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        if root:
+            return Path(root) / "herm-tui"
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    pnpm_home = Path(
+        os.environ.get("HERMES_PNPM_HOME", HOME / ".local/share/hermes-toolchain/pnpm")
+    )
+    matches = sorted(pnpm_home.glob("global/*/node_modules/herm-tui"))
+    if matches:
+        return matches[-1]
+    return pnpm_home / "global/5/node_modules/herm-tui"
+
+
+HERM_TUI = _herm_tui_dir()
 THEMES = HERM_TUI / "themes"
 INDEX = HERM_TUI / "index.js"
 

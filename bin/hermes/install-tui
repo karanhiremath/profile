@@ -17,12 +17,14 @@ done
 
 HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
 BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
-NPM_PREFIX="${HERMES_NPM_PREFIX:-$HERMES_TOOLCHAIN_HOME/npm}"
+# Isolated, toolchain-local pnpm home (see bin/hermes/install for rationale).
+PNPM_HOME="${HERMES_PNPM_HOME:-$HERMES_TOOLCHAIN_HOME/pnpm}"
+export PNPM_HOME
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
 SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 REPO="oven-sh/bun"
 
-for bin in curl unzip shasum npm; do
+for bin in curl unzip shasum pnpm; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "ERROR: required binary not found: $bin" >&2
     exit 127
@@ -57,7 +59,7 @@ tmp="$(mktemp -d)"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 
-mkdir -p "$BUN_HOME/bin" "$NPM_PREFIX" "$SHIM_DIR"
+mkdir -p "$BUN_HOME/bin" "$PNPM_HOME" "$SHIM_DIR"
 
 curl -fsSL "$base_url/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt"
 curl -fsSL "$base_url/$asset" -o "$tmp/$asset"
@@ -80,18 +82,25 @@ if [ -z "$found_bun" ]; then
 fi
 install -m 0755 "$found_bun" "$BUN_HOME/bin/bun"
 
-export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:$PATH"
-export npm_config_prefix="$NPM_PREFIX"
-npm install -g --prefix "$NPM_PREFIX" herm-tui
-chmod +x "$NPM_PREFIX/lib/node_modules/herm-tui/src/index.tsx" 2>/dev/null || true
+export PATH="$BUN_HOME/bin:$PNPM_HOME:$VENV/bin:$PATH"
+pnpm add -g herm-tui
+
+# Resolve pnpm global locations robustly instead of hardcoding the layout.
+PNPM_GLOBAL_ROOT="$(pnpm root -g)"
+PNPM_BIN="$(pnpm bin -g)"
+chmod +x "$PNPM_GLOBAL_ROOT/herm-tui/src/index.tsx" 2>/dev/null || true
+
+# Let the theme installer find the pnpm-global herm-tui install directly.
+export HERMES_PNPM_GLOBAL_ROOT="$PNPM_GLOBAL_ROOT"
 "$SCRIPT_DIR/apply-nighttide-theme"
 
 cat > "$SHIM_DIR/herm" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export HERMES_TOOLCHAIN_HOME="$HERMES_TOOLCHAIN_HOME"
-export PATH="$BUN_HOME/bin:$NPM_PREFIX/bin:$VENV/bin:\$PATH"
-exec "$NPM_PREFIX/bin/herm" "\$@"
+export PNPM_HOME="$PNPM_HOME"
+export PATH="$BUN_HOME/bin:$PNPM_BIN:$VENV/bin:\$PATH"
+exec "$PNPM_BIN/herm" "\$@"
 EOF
 chmod 0755 "$SHIM_DIR/herm"
 
@@ -99,7 +108,7 @@ cat <<EOF
 Hermes TUI runtime installed.
 
 bun=$BUN_HOME/bin/bun
-herm=$NPM_PREFIX/bin/herm
+herm=$PNPM_BIN/herm
 shim=$SHIM_DIR/herm
 version=$($BUN_HOME/bin/bun --version)
 EOF

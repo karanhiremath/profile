@@ -47,5 +47,8 @@ path=("$HOME/.local/bin" "$HOME/bin" $path)
 path+=("$HOME/.cargo/bin")
 export PATH
 
+# Activate mise after PATH setup so its shims (node, pnpm, neovim) take precedence.
+command -v mise >/dev/null 2>&1 && eval "$(mise activate zsh)"
+
 # doesnt seem to have an arm64 build for mac
 # eval "$(starship init zsh)"

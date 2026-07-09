@@ -30,10 +30,10 @@ if command -v copilot-cli >/dev/null 2>&1 || command -v github-copilot >/dev/nul
     if command -v brew >/dev/null 2>&1 && brew list copilot-cli >/dev/null 2>&1; then
         echo "Upgrading via Homebrew..."
         brew upgrade copilot-cli || echo "GitHub Copilot CLI is already up to date"
-    # Try to upgrade via npm if installed that way
-    elif command -v npm >/dev/null 2>&1 && npm list -g @github/copilot >/dev/null 2>&1; then
-        echo "Upgrading via npm..."
-        npm update -g @github/copilot || echo "GitHub Copilot CLI is already up to date"
+    # Try to upgrade via pnpm if installed that way
+    elif command -v pnpm >/dev/null 2>&1 && pnpm list -g @github/copilot >/dev/null 2>&1; then
+        echo "Upgrading via pnpm..."
+        pnpm add -g @github/copilot || echo "GitHub Copilot CLI is already up to date"
     # Try to upgrade via gh extension if installed that way
     elif command -v gh >/dev/null 2>&1 && gh extension list | grep -q "github/gh-copilot"; then
         echo "Upgrading GitHub Copilot CLI extension..."
@@ -41,7 +41,6 @@ if command -v copilot-cli >/dev/null 2>&1 || command -v github-copilot >/dev/nul
     else
         echo "GitHub Copilot CLI is already installed"
     fi
-    # Try to upgrade via npm if installed that way (add logic here if needed)
     exit 0
 fi
 
@@ -56,34 +55,34 @@ case "${MACHINE}" in
             # Check if the tap/formula exists
             if brew search copilot-cli | grep -q "copilot-cli"; then
                 brew install copilot-cli || {
-                    echo "Homebrew installation failed, falling back to npm..."
-                    if command -v npm >/dev/null 2>&1; then
-                        echo "Installing GitHub Copilot CLI via npm..."
-                        npm install -g @github/copilot
+                    echo "Homebrew installation failed, falling back to pnpm..."
+                    if command -v pnpm >/dev/null 2>&1; then
+                        echo "Installing GitHub Copilot CLI via pnpm..."
+                        pnpm add -g @github/copilot
                     else
-                        echo "ERROR: npm not found. Please install Node.js/npm or run: just node"
+                        echo "ERROR: pnpm not found. node + pnpm are provided by mise; run: just mise"
                         exit 1
                     fi
                 }
             else
-                echo "Homebrew formula not found, falling back to npm..."
-                if command -v npm >/dev/null 2>&1; then
-                    echo "Installing GitHub Copilot CLI via npm..."
-                    npm install -g @github/copilot
+                echo "Homebrew formula not found, falling back to pnpm..."
+                if command -v pnpm >/dev/null 2>&1; then
+                    echo "Installing GitHub Copilot CLI via pnpm..."
+                    pnpm add -g @github/copilot
                 else
-                    echo "ERROR: npm not found. Please install Node.js/npm or run: just node"
+                    echo "ERROR: pnpm not found. node + pnpm are provided by mise; run: just mise"
                     exit 1
                 fi
             fi
-        # Use npm if available
-        elif command -v npm >/dev/null 2>&1; then
-            echo "Installing GitHub Copilot CLI via npm..."
-            npm install -g @github/copilot
+        # Use pnpm if available
+        elif command -v pnpm >/dev/null 2>&1; then
+            echo "Installing GitHub Copilot CLI via pnpm..."
+            pnpm add -g @github/copilot
         else
-            echo "ERROR: Neither Homebrew nor npm found."
-            echo "Please install either Homebrew (recommended) or Node.js/npm"
+            echo "ERROR: Neither Homebrew nor pnpm found."
+            echo "Please install either Homebrew (recommended) or mise (provides node + pnpm)"
             echo "Homebrew: https://brew.sh"
-            echo "Node.js: https://nodejs.org or run: just node"
+            echo "mise: run 'just mise' (or bin/mise/install)"
             exit 1
         fi
         ;;

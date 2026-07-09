@@ -88,3 +88,6 @@ function frameworkpython {
 export PROMPT_COMMAND='PS1="\[\$(tput bold)\]\[\$(tput setaf 9)\]\D{%Y-%m-%d %H:%M:%S} \[\$(tput setaf 11)\]| \[\$(tput setaf 12)\]\u\[\$(tput setaf 9)\]@\h \[\$(tput setaf 11)\]| \[\$(tput setaf 9)\]\w\[\$(tput setaf 11)\]\$(venv_seperator)\[\$(tput setaf 9)\]\$(venv)\[\$(tput setaf 11)\]\n\[\$(git_color)\]\$(git_branch) \[\$(tput setaf 11)\]> \[\$(tput sgr0)\]\[\$(tput bold)\]"'
 
 source ~/profile/iterm2_shell_integration.bash
+
+# Activate mise after PATH setup so its shims (node, pnpm, neovim) take precedence.
+command -v mise >/dev/null 2>&1 && eval "$(mise activate bash)"

@@ -40,7 +40,7 @@ fi
 
 # --- Prerequisites ---
 
-# Install cargo (needed for bob-nvim)
+# Install cargo (needed for bin/pc — the Rust pi-code session manager)
 install_app "cargo"
 . "$HOME/.cargo/env"
 
@@ -68,6 +68,13 @@ if [[ "${MACHINE}" == "Mac" ]]; then
         echo "Added Homebrew to PATH in ~/.zshrc"
     fi
 fi
+
+# --- Runtime/version manager (mise) ---
+# mise provides node + pnpm (CLI installers) and neovim. Bootstrap it before the
+# core tools since `just nvim` now installs neovim via mise.
+echo ""
+echo "Installing mise (runtime/version manager)..."
+install_app "mise"
 
 # --- Core tools ---
 

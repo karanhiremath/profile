@@ -76,13 +76,13 @@ bin/hermes/agents new my-voice          # scaffold profiles/my-voice.yaml from T
 
 Defaults:
 - toolchain: `${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain`
-- npm prefix: `<toolchain>/npm`
+- pnpm home: `<toolchain>/pnpm` (global bin, global-dir, and store all scoped here via `PNPM_HOME`)
 - Python venv: `<toolchain>/venv`
 - Bun runtime: `<toolchain>/bun`
 - private repo: `git@github.com:karanhiremath/hermes.git`
 - private checkout: `$HOME/src/hermes`
 
-The installer uses `uv venv`, installs the small Python helper dependency (`PyYAML`), and prepends the venv to `PATH` while running npm so package lifecycle Python installs land in the Hermes toolchain venv, not system Python.
+The installer uses `uv venv`, installs the small Python helper dependency (`PyYAML`), and prepends the venv to `PATH` while running pnpm so package lifecycle Python installs land in the Hermes toolchain venv, not system Python. Node itself is supplied by mise; only the Hermes packages are installed into the isolated pnpm global.
 
 The TUI installer downloads the Bun release asset for the current OS/arch, verifies it against `SHASUMS256.txt`, and installs it under the Hermes toolchain instead of using the global Bun installer.
 

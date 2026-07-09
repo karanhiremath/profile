@@ -1,0 +1,8 @@
+# mise tool declarations for the profile dev environment.
+# Symlinked to ~/.config/mise/config.toml by bin/mise/install.
+# `mise install` provisions everything below; shell activation
+# (eval "$(mise activate <shell>)") puts the shims on PATH.
+[tools]
+node = "lts"
+pnpm = "latest"
+neovim = "latest"

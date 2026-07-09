@@ -1,0 +1,87 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+usage() {
+    cat <<'EOF'
+Usage: bin/mise/install [--help]
+
+Install mise (the version/runtime manager), symlink the repo mise config into
+~/.config/mise/config.toml, and run `mise install` to provision the declared
+tools (node, pnpm, neovim).
+
+macOS: installs via Homebrew (brew install mise).
+Linux: installs via the official script at https://mise.run (lands in
+       ~/.local/bin/mise).
+
+Idempotent: re-running upgrades/repairs the install and re-syncs the config.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="mise"
+MACHINE="$(uname -s)"
+
+install_messages "start" "$app_name"
+
+# --- Install mise if absent ---
+if command -v mise >/dev/null 2>&1; then
+    echo "✓ mise already installed: $(mise --version)"
+else
+    case "${MACHINE}" in
+        Darwin|Mac)
+            echo "Installing mise via Homebrew..."
+            brew install mise
+            ;;
+        Linux|*)
+            echo "Installing mise via https://mise.run ..."
+            curl -fsSL https://mise.run | sh
+            ;;
+    esac
+fi
+
+# The Linux installer lands in ~/.local/bin, which may not be on PATH yet for
+# this process. Make mise resolvable before we use it below.
+if ! command -v mise >/dev/null 2>&1; then
+    if [ -x "${HOME}/.local/bin/mise" ]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+    else
+        echo "ERROR: mise not found on PATH after install." >&2
+        exit 1
+    fi
+fi
+
+# --- Symlink the repo mise config into place ---
+mkdir -p "${HOME}/.config/mise"
+ln -fns "${PROFILE_DIR}"/config/mise/config.toml "${HOME}"/.config/mise/config.toml
+echo "✓ Linked mise config → ~/.config/mise/config.toml"
+
+# --- Provision the declared tools (node, pnpm, neovim) ---
+echo "Installing tools declared in mise config..."
+mise install
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "mise installed. Tools provisioned from ~/.config/mise/config.toml."
+echo "Ensure your shell activates mise: eval \"\$(mise activate zsh|bash)\""
+echo "(already wired in zsh_profile.sh / bash_profile.sh)."
+echo ""
