@@ -590,6 +590,15 @@ ai-toolkit:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/ai-toolkit/install-all
 
+# Report which managed dev tools have an upstream update available (read-only;
+# installs NOTHING). Pass --json for structured output. See bin/update-scan/scan.
+update-scan *FLAGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/update-scan/scan {{FLAGS}}
+
 podman:
     # Install and configure podman for testing
     #!/usr/bin/env bash

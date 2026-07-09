@@ -1,0 +1,299 @@
+#!/bin/bash
+#
+# bin/update-scan/scan — upstream update scanner for profile-managed dev tools.
+#
+# PROFILE-LOCAL REFERENCE IMPLEMENTATION.
+# This is a pure, read-only *upstream-version reporter*: it tells you which
+# managed dev tools have a newer version available upstream. It deliberately:
+#   - installs / upgrades NOTHING (surface-for-review only), and
+#   - has ZERO dependency on cdev / cartesia-security (cscan/caudit/cpatch).
+# The `profile` repo is tool-only and MUST NEVER depend on cdev/cartesia-security
+# (hard boundary in ~/.claude/CLAUDE.md). The pinned-manifest + cscan-gated +
+# controlled-bump ("actually apply the update") variant belongs in a separate
+# cdev layer — future RFD, not here.
+#
+# All version queries are read-only registry / `mise outdated` lookups (safe):
+#   - `mise outdated` / `mise ls` / `mise latest`  (runtime version metadata)
+#   - `pnpm ls -g`                                 (locally installed globals)
+#   - `npm view <pkg> version`                     (npm registry read)
+#   - `cursor-agent --version`                     (local binary self-report)
+# Each source is best-effort and continue-on-failure: one tool being
+# unreachable never aborts the rest of the scan.
+#
+# Exit status:
+#   0  scan completed (update-available is DATA, not an error).
+#   >0 the scanner itself failed (bad args, unwritable temp, etc.).
+
+set -uo pipefail   # NOT -e: a single failing probe must not abort the scan.
+
+# ---------------------------------------------------------------------------
+# Locate the profile repo (mirror the installer convention).
+# ---------------------------------------------------------------------------
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+MISE_CONFIG="${PROFILE_DIR}/config/mise/config.toml"
+
+# ---------------------------------------------------------------------------
+# Make the managed toolchains resolvable, best-effort. These are the same
+# PNPM homes the installers use:
+#   - default pnpm global   -> ~/.local/share/pnpm         (claude, copilot, pi)
+#   - hermes toolchain pnpm -> ~/.local/share/hermes-toolchain/pnpm (hermes-*)
+# ---------------------------------------------------------------------------
+DEFAULT_PNPM_HOME="${PNPM_HOME:-${HOME}/.local/share/pnpm}"
+HERMES_PNPM_HOME="${HERMES_PNPM_HOME:-${XDG_DATA_HOME:-${HOME}/.local/share}/hermes-toolchain/pnpm}"
+for d in "${HOME}/.local/bin" "/opt/homebrew/bin" "${DEFAULT_PNPM_HOME}" "${DEFAULT_PNPM_HOME}/bin"; do
+    case ":${PATH}:" in *":${d}:"*) ;; *) [ -d "$d" ] && PATH="${d}:${PATH}" ;; esac
+done
+export PATH
+
+# ---------------------------------------------------------------------------
+# Args
+# ---------------------------------------------------------------------------
+OUTPUT="table"
+usage() {
+    cat <<'EOF'
+Usage: bin/update-scan/scan [--json] [--help]
+
+Read-only upstream update scanner for profile-managed dev tools. Reports which
+managed tools have an upstream update available. Installs / upgrades NOTHING.
+
+Options:
+  --json     Emit structured JSON instead of the human-readable table.
+             Array of objects: {tool, installed, latest, update_available, source}
+             update_available is true / false / null (null = not comparable,
+             e.g. tool not installed or no clean upstream version endpoint).
+  --help,-h  Show this help.
+
+Sources scanned (each best-effort, continue-on-failure):
+  mise runtimes      node, pnpm, neovim, uv   (from config/mise/config.toml)
+  pnpm-global CLIs   claude, copilot, pi, hermes-agent, herm-tui
+  cursor-cli         curl-installed; no clean upstream version endpoint
+
+Exit 0 on a completed scan (an available update is data, not an error);
+nonzero only on scanner failure.
+EOF
+}
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --json) OUTPUT="json"; shift ;;
+        -h|--help|help) usage; exit 0 ;;
+        *) echo "ERROR: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Results accumulator. One TSV record per tool:
+#   tool <TAB> installed <TAB> latest <TAB> update_available <TAB> source
+# update_available is the literal JSON token: true | false | null.
+# installed/latest are human strings (may be sentinels like "not-installed",
+# "unreachable", "no-endpoint"); these map to JSON null in --json output.
+# ---------------------------------------------------------------------------
+RESULTS="$(mktemp "${TMPDIR:-/tmp}/update-scan.XXXXXX")" || {
+    echo "ERROR: could not create temp file" >&2; exit 1
+}
+trap 'rm -f "$RESULTS"' EXIT
+
+emit() { # tool installed latest update_available source
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >>"$RESULTS"
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Resolve a tool that may only exist as a mise shim.
+resolve_bin() { # name -> prints path or empty
+    if have "$1"; then command -v "$1"; return 0; fi
+    if have mise; then mise which "$1" 2>/dev/null; fi
+}
+
+# ---------------------------------------------------------------------------
+# 1. mise-managed runtimes (node, pnpm, neovim, uv).
+#    Tool list is DERIVED from config/mise/config.toml [tools] — not hardcoded.
+#    `mise outdated` is the primary signal; `mise ls`/`mise latest` fill in the
+#    up-to-date / not-installed cases.
+# ---------------------------------------------------------------------------
+scan_mise() {
+    if ! have mise; then
+        # No mise: report every configured runtime as unreachable, don't abort.
+        parse_runtimes | while IFS=$'\t' read -r name _req; do
+            [ -n "$name" ] && emit "$name" "unreachable" "unreachable" "null" "mise(absent)"
+        done
+        return 0
+    fi
+
+    # One outdated snapshot for the whole toolset (object keyed by tool name).
+    local outdated_json
+    outdated_json="$(mise outdated --json 2>/dev/null)" || outdated_json="{}"
+    [ -n "$outdated_json" ] || outdated_json="{}"
+
+    parse_runtimes | while IFS=$'\t' read -r name req; do
+        [ -n "$name" ] || continue
+        local cur lat od
+
+        # Is this runtime reported outdated? mise outdated --json entries carry
+        # .current and .latest.
+        od="$(printf '%s' "$outdated_json" | jq -r --arg t "$name" \
+            'if (.[$t]|type)=="object" then "\(.[$t].current // "")\t\(.[$t].latest // "")" else "" end' 2>/dev/null)"
+
+        if [ -n "$od" ] && [ "$od" != $'\t' ]; then
+            cur="${od%%$'\t'*}"; lat="${od##*$'\t'}"
+            emit "$name" "${cur:-unknown}" "${lat:-unknown}" "true" "mise"
+            continue
+        fi
+
+        # Not outdated: get installed version from `mise ls`.
+        cur="$(mise ls --installed --json "$name" 2>/dev/null | jq -r \
+            '([.[]|select(.active==true)]|.[0].version) // (.[-1].version) // empty' 2>/dev/null)"
+
+        if [ -n "$cur" ]; then
+            # Installed and not in the outdated set => up to date.
+            emit "$name" "$cur" "$cur" "false" "mise"
+        else
+            # Not installed via mise on this host. Show upstream latest for the
+            # requested channel (informative); update? is null (nothing to compare).
+            lat="$(mise latest "${name}@${req:-latest}" 2>/dev/null | tail -n1 | tr -d '[:space:]')"
+            emit "$name" "not-installed" "${lat:-unreachable}" "null" "mise"
+        fi
+    done
+}
+
+# Parse [tools] table from config/mise/config.toml -> "name<TAB>request" lines.
+parse_runtimes() {
+    [ -f "$MISE_CONFIG" ] || return 0
+    awk '
+        /^[[:space:]]*\[tools\]/ { in_tools=1; next }
+        /^[[:space:]]*\[/        { in_tools=0 }
+        in_tools && /=/ {
+            gsub(/[ \t"]/, "")
+            n=index($0,"="); if(n){ print substr($0,1,n-1) "\t" substr($0,n+1) }
+        }
+    ' "$MISE_CONFIG"
+}
+
+# ---------------------------------------------------------------------------
+# 2. pnpm-global coding CLIs.
+#    Explicit list matching the installers (bin/{claude,copilot-cli,pi,hermes}).
+#    Installed  <- pnpm ls -g (under the pnpm home each installer uses).
+#    Latest     <- npm view <pkg> version (read-only npm registry query).
+# ---------------------------------------------------------------------------
+# label | npm package | pnpm home
+PNPM_CLIS=(
+    "claude|@anthropic-ai/claude-code|${DEFAULT_PNPM_HOME}"
+    "copilot|@github/copilot|${DEFAULT_PNPM_HOME}"
+    "pi|@earendil-works/pi-coding-agent|${DEFAULT_PNPM_HOME}"
+    "hermes-agent|hermes-agent|${HERMES_PNPM_HOME}"
+    "herm-tui|herm-tui|${HERMES_PNPM_HOME}"
+)
+
+pnpm_installed_version() { # pkg pnpm_home -> version or empty
+    local pkg="$1" home="$2" pnpm_bin
+    pnpm_bin="$(resolve_bin pnpm)"
+    [ -n "$pnpm_bin" ] || return 0
+    PNPM_HOME="$home" "$pnpm_bin" ls -g --json 2>/dev/null | jq -r \
+        --arg p "$pkg" '[.[]?.dependencies[$p]?.version // empty] | .[0] // empty' 2>/dev/null
+}
+
+npm_latest_version() { # pkg -> version or empty
+    local pkg="$1" npm_bin
+    npm_bin="$(resolve_bin npm)"
+    [ -n "$npm_bin" ] || return 0
+    "$npm_bin" view "$pkg" version 2>/dev/null | tail -n1 | tr -d '[:space:]'
+}
+
+scan_pnpm_clis() {
+    local pnpm_present="yes"
+    have pnpm || [ -n "$(resolve_bin pnpm)" ] || pnpm_present="no"
+
+    local entry label pkg home installed latest update
+    for entry in "${PNPM_CLIS[@]}"; do
+        IFS='|' read -r label pkg home <<<"$entry"
+
+        if [ "$pnpm_present" = "yes" ]; then
+            installed="$(pnpm_installed_version "$pkg" "$home")"
+            [ -n "$installed" ] || installed="not-installed"
+        else
+            installed="unreachable(pnpm)"
+        fi
+
+        latest="$(npm_latest_version "$pkg")"
+        [ -n "$latest" ] || latest="unreachable"
+
+        # update? only meaningful when both sides are real versions.
+        case "$installed" in
+            not-installed|unreachable*) update="null" ;;
+            *)
+                case "$latest" in
+                    unreachable) update="null" ;;
+                    "$installed") update="false" ;;
+                    *) update="true" ;;
+                esac
+                ;;
+        esac
+
+        emit "$label" "$installed" "$latest" "$update" "pnpm-global"
+    done
+}
+
+# ---------------------------------------------------------------------------
+# 3. cursor-cli (curl-installed via https://cursor.com/install).
+#    Installed <- cursor-agent --version. There is NO clean public upstream
+#    version endpoint, so `latest` is intentionally unresolved rather than a
+#    guess, and update? is null. (Noted, per design — do not fail the scan.)
+# ---------------------------------------------------------------------------
+scan_cursor() {
+    local installed
+    if have cursor-agent; then
+        installed="$(cursor-agent --version 2>/dev/null | tail -n1 | tr -d '[:space:]')"
+        [ -n "$installed" ] || installed="unknown"
+    else
+        installed="not-installed"
+    fi
+    emit "cursor-cli" "$installed" "no-endpoint" "null" "cursor(curl)"
+}
+
+# ---------------------------------------------------------------------------
+# Run all sources (each self-contained / continue-on-failure).
+# ---------------------------------------------------------------------------
+scan_mise
+scan_pnpm_clis
+scan_cursor
+
+# ---------------------------------------------------------------------------
+# Render.
+# ---------------------------------------------------------------------------
+if [ "$OUTPUT" = "json" ]; then
+    # Map installed/latest sentinels to null; update_available token -> bool/null.
+    jq -R -s '
+        [ split("\n")[] | select(length>0) | split("\t")
+          | { tool: .[0],
+              installed: (if (.[1]|test("^(not-installed|unreachable.*|unknown|no-endpoint)$")) then null else .[1] end),
+              latest:    (if (.[2]|test("^(unreachable.*|no-endpoint|unknown)$")) then null else .[2] end),
+              update_available: (.[3] | if . == "true" then true elif . == "false" then false else null end),
+              source: .[4] }
+        ]
+    ' "$RESULTS"
+else
+    {
+        printf 'tool\tinstalled\tlatest\tupdate?\tsource\n'
+        # update token -> friendly glyph.
+        while IFS=$'\t' read -r tool installed latest update source; do
+            case "$update" in
+                true)  u="yes" ;;
+                false) u="no" ;;
+                *)     u="-" ;;
+            esac
+            printf '%s\t%s\t%s\t%s\t%s\n' "$tool" "$installed" "$latest" "$u" "$source"
+        done <"$RESULTS"
+    } | column -t -s $'\t'
+
+    echo
+    updates="$(awk -F'\t' '$4=="true"{c++} END{print c+0}' "$RESULTS")"
+    echo "${updates} update(s) available. Nothing was installed or modified (read-only scan)."
+fi
+
+exit 0
