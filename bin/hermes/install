@@ -133,8 +133,8 @@ write_shim() {
 # hermes/hermes-agent run their .js entrypoints via mise node (`command node`).
 # herm's entrypoint is herm-tui's bin (a .tsx run via its own bun loader), so
 # exec it directly and let its shebang pick the interpreter (bun is on PATH).
-write_shim hermes       command node "$hermes_entry"
-write_shim hermes-agent command node "$hermes_agent_entry"
+write_shim hermes       node "$hermes_entry"
+write_shim hermes-agent node "$hermes_agent_entry"
 write_shim herm         "$herm_entry"
 write_shim hs "$SCRIPT_DIR/hs"
 write_shim dream "$SCRIPT_DIR/dream"
