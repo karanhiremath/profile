@@ -76,6 +76,20 @@ echo ""
 echo "Installing mise (runtime/version manager)..."
 install_app "mise"
 
+# --- Neutralize vestigial ~/.npmrc prefix ---
+# Pre-migration hosts carried `prefix=~/.local` in ~/.npmrc. Post mise+pnpm that
+# is vestigial AND harmful: it made pnpm's global-bin-dir resolve to $SHIM_DIR
+# (~/.local/bin), so hermes shims exec'd themselves (self-recursion). node/npm
+# now come from mise; no hand-set prefix belongs here. Strip only the ~/.local
+# prefix line (leave any other prefix untouched); back up first; drop the file
+# if it empties. No-op when the vestige is absent.
+if [[ -f ~/.npmrc ]] && grep -Eq '^[[:space:]]*prefix[[:space:]]*=[[:space:]]*(~|\$\{?HOME\}?)/\.local[[:space:]]*$' ~/.npmrc; then
+    cp ~/.npmrc ~/.npmrc.bak
+    grep -Ev '^[[:space:]]*prefix[[:space:]]*=[[:space:]]*(~|\$\{?HOME\}?)/\.local[[:space:]]*$' ~/.npmrc.bak > ~/.npmrc
+    if [[ ! -s ~/.npmrc ]]; then rm -f ~/.npmrc; fi
+    echo "✓ Removed vestigial 'prefix=~/.local' from ~/.npmrc (backup: ~/.npmrc.bak)"
+fi
+
 # --- Core tools ---
 
 echo ""
