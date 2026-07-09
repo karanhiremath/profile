@@ -33,7 +33,23 @@ for bin in node pnpm uv git; do
 done
 
 mkdir -p "$HERMES_TOOLCHAIN_HOME" "$PNPM_HOME/bin" "$SHIM_DIR"
-uv venv --allow-existing --seed "$VENV"
+
+# Pin the toolchain venv to Python 3.13. hermes-agent's npm postinstall
+# pip-installs hermes-agent==0.18.2, whose Requires-Python is >=3.11,<3.14, so
+# the venv MUST be <3.14 — mise's default Python (e.g. 3.14) breaks the install.
+# uv fetches CPython 3.13 on demand; no mise change needed. Do NOT bump this back
+# to the default without confirming hermes-agent supports the newer Python.
+HERMES_VENV_PYTHON="3.13"
+if [ -x "$VENV/bin/python" ]; then
+  _venv_ver="$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+  if [ "$_venv_ver" != "$HERMES_VENV_PYTHON" ]; then
+    # --allow-existing will not downgrade an existing (e.g. 3.14) venv, so a
+    # version mismatch must be recreated from scratch.
+    echo "Recreating hermes venv: found Python ${_venv_ver:-unknown}, need ${HERMES_VENV_PYTHON}"
+    rm -rf "$VENV"
+  fi
+fi
+uv venv --python "$HERMES_VENV_PYTHON" --allow-existing --seed "$VENV"
 uv pip install --python "$VENV/bin/python" pip setuptools wheel PyYAML
 
 # pnpm's global bin dir is $PNPM_HOME/bin and MUST be on PATH before `pnpm add -g`
