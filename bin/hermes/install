@@ -32,16 +32,19 @@ for bin in node pnpm uv git; do
   fi
 done
 
-mkdir -p "$HERMES_TOOLCHAIN_HOME" "$PNPM_HOME" "$SHIM_DIR"
+mkdir -p "$HERMES_TOOLCHAIN_HOME" "$PNPM_HOME/bin" "$SHIM_DIR"
 uv venv --allow-existing --seed "$VENV"
 uv pip install --python "$VENV/bin/python" pip setuptools wheel PyYAML
 
-export PATH="$VENV/bin:$PNPM_HOME:$PATH"
+# pnpm's global bin dir is $PNPM_HOME/bin and MUST be on PATH before `pnpm add -g`
+# (otherwise pnpm refuses to install and `pnpm bin -g`/`pnpm root -g` return an
+# error string instead of a path).
+export PATH="$VENV/bin:$PNPM_HOME/bin:$PATH"
 
 pnpm add -g hermes-agent herm-tui
 
 # Resolve the pnpm global locations robustly rather than hardcoding pnpm's
-# internal layout (e.g. $PNPM_HOME/global/<v>/node_modules).
+# internal layout ($PNPM_HOME/bin and $PNPM_HOME/global/<v>).
 PNPM_GLOBAL_ROOT="$(pnpm root -g)"
 PNPM_BIN="$(pnpm bin -g)"
 

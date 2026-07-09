@@ -50,5 +50,11 @@ export PATH
 # Activate mise after PATH setup so its shims (node, pnpm, neovim) take precedence.
 command -v mise >/dev/null 2>&1 && eval "$(mise activate zsh)"
 
+# pnpm global bin: `pnpm add -g` installs CLIs here AND requires this dir on PATH
+# (otherwise pnpm errors "The configured global bin directory is not in PATH").
+export PNPM_HOME="${HOME}/.local/share/pnpm"
+path=("$PNPM_HOME/bin" $path)
+export PATH
+
 # doesnt seem to have an arm64 build for mac
 # eval "$(starship init zsh)"

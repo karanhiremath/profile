@@ -21,6 +21,19 @@ from pathlib import Path
 HOME = Path.home()
 
 
+def _under_root(root: Path) -> Path | None:
+    """Given a pnpm global root, return the herm-tui dir if present.
+
+    `pnpm root -g` may return either the global node_modules dir or its parent
+    (layout differs across pnpm versions, e.g. v11 -> $PNPM_HOME/global/v11), so
+    check both `<root>/herm-tui` and `<root>/node_modules/herm-tui`.
+    """
+    for candidate in (root / "herm-tui", root / "node_modules" / "herm-tui"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _herm_tui_dir() -> Path:
     """Locate the pnpm-global herm-tui install directory.
 
@@ -31,22 +44,31 @@ def _herm_tui_dir() -> Path:
     """
     root_env = os.environ.get("HERMES_PNPM_GLOBAL_ROOT")
     if root_env:
+        found = _under_root(Path(root_env))
+        if found:
+            return found
         return Path(root_env) / "herm-tui"
     try:
         root = subprocess.run(
             ["pnpm", "root", "-g"], capture_output=True, text=True, check=True
         ).stdout.strip()
+        # pnpm returns an error string (not a path) when its global bin dir is
+        # not on PATH; guard by requiring the resolved dir to exist.
         if root:
-            return Path(root) / "herm-tui"
+            found = _under_root(Path(root))
+            if found:
+                return found
     except (OSError, subprocess.CalledProcessError):
         pass
     pnpm_home = Path(
         os.environ.get("HERMES_PNPM_HOME", HOME / ".local/share/hermes-toolchain/pnpm")
     )
-    matches = sorted(pnpm_home.glob("global/*/node_modules/herm-tui"))
+    matches = sorted(pnpm_home.glob("global/*/herm-tui")) + sorted(
+        pnpm_home.glob("global/*/node_modules/herm-tui")
+    )
     if matches:
         return matches[-1]
-    return pnpm_home / "global/5/node_modules/herm-tui"
+    return pnpm_home / "global/v11/node_modules/herm-tui"
 
 
 HERM_TUI = _herm_tui_dir()

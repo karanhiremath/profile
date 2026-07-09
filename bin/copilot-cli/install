@@ -22,6 +22,21 @@ app_name="copilot-cli"
 MACHINE="$(uname -s)"
 ARCH="$(uname -m)"
 
+# pnpm requires its global bin dir on PATH before `pnpm add -g`/`pnpm list -g`
+# will run. Wire it up whenever pnpm is available (node + pnpm come from mise).
+ensure_pnpm_home() {
+    export PNPM_HOME="${PNPM_HOME:-${HOME}/.local/share/pnpm}"
+    mkdir -p "${PNPM_HOME}/bin"
+    case ":${PATH}:" in
+        *":${PNPM_HOME}/bin:"*) ;;
+        *) export PATH="${PNPM_HOME}/bin:${PATH}" ;;
+    esac
+}
+
+if command -v pnpm >/dev/null 2>&1; then
+    ensure_pnpm_home
+fi
+
 # Check if copilot-cli command already exists (installed via any method)
 if command -v copilot-cli >/dev/null 2>&1 || command -v github-copilot >/dev/null 2>&1; then
     echo "GitHub Copilot CLI already installed. Checking for updates..."

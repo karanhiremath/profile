@@ -49,7 +49,7 @@ _hermes_path_prepend() {
 }
 
 _hermes_path_prepend "${HERMES_TOOLCHAIN}/venv/bin"
-_hermes_path_prepend "${HERMES_TOOLCHAIN}/pnpm"
+_hermes_path_prepend "${HERMES_TOOLCHAIN}/pnpm/bin"
 _hermes_path_prepend "${HERMES_TOOLCHAIN}/bun/bin"
 export PATH
 

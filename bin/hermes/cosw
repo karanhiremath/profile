@@ -57,7 +57,7 @@ ensure_toolchain() {
   local toolchain bun herm py target
   toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
   bun="$toolchain/bun/bin/bun"
-  herm="$toolchain/pnpm/herm"
+  herm="$toolchain/pnpm/bin/herm"
   py="$toolchain/venv/bin/python"
 
   if [ ! -x "$py" ] || [ ! -e "$herm" ]; then

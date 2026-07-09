@@ -26,6 +26,13 @@ MACHINE="$(uname -s)"
 # node + pnpm are provided by mise (config/mise/config.toml). Guard on pnpm.
 ensure_pnpm() {
     if command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+        # pnpm requires its global bin dir on PATH before `pnpm add -g` will run.
+        export PNPM_HOME="${PNPM_HOME:-${HOME}/.local/share/pnpm}"
+        mkdir -p "${PNPM_HOME}/bin"
+        case ":${PATH}:" in
+            *":${PNPM_HOME}/bin:"*) ;;
+            *) export PATH="${PNPM_HOME}/bin:${PATH}" ;;
+        esac
         return 0
     fi
     echo "ERROR: node + pnpm are required and are provided by mise."

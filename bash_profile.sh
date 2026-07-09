@@ -91,3 +91,11 @@ source ~/profile/iterm2_shell_integration.bash
 
 # Activate mise after PATH setup so its shims (node, pnpm, neovim) take precedence.
 command -v mise >/dev/null 2>&1 && eval "$(mise activate bash)"
+
+# pnpm global bin: `pnpm add -g` installs CLIs here AND requires this dir on PATH
+# (otherwise pnpm errors "The configured global bin directory is not in PATH").
+export PNPM_HOME="${HOME}/.local/share/pnpm"
+case ":${PATH}:" in
+  *":${PNPM_HOME}/bin:"*) ;;
+  *) export PATH="${PNPM_HOME}/bin:${PATH}" ;;
+esac

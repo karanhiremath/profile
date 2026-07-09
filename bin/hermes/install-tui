@@ -59,7 +59,7 @@ tmp="$(mktemp -d)"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 
-mkdir -p "$BUN_HOME/bin" "$PNPM_HOME" "$SHIM_DIR"
+mkdir -p "$BUN_HOME/bin" "$PNPM_HOME/bin" "$SHIM_DIR"
 
 curl -fsSL "$base_url/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt"
 curl -fsSL "$base_url/$asset" -o "$tmp/$asset"
@@ -82,7 +82,8 @@ if [ -z "$found_bun" ]; then
 fi
 install -m 0755 "$found_bun" "$BUN_HOME/bin/bun"
 
-export PATH="$BUN_HOME/bin:$PNPM_HOME:$VENV/bin:$PATH"
+# pnpm's global bin dir ($PNPM_HOME/bin) MUST be on PATH before `pnpm add -g`.
+export PATH="$BUN_HOME/bin:$PNPM_HOME/bin:$VENV/bin:$PATH"
 pnpm add -g herm-tui
 
 # Resolve pnpm global locations robustly instead of hardcoding the layout.
