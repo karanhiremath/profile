@@ -270,6 +270,25 @@ _agents_completions() {
 }
 compdef _agents_completions agents
 
+# Hermes toolchain env. pnpm provides the hermes/hermes-agent/herm launchers on
+# PATH (~/.local/bin); they need the isolated toolchain's Python venv + bun on
+# PATH and HERMES_TOOLCHAIN_HOME exported to resolve. Guarded + idempotent:
+# no-op until the toolchain is installed, so dotfiles don't error pre-install.
+_hermes_toolchain_home="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+if [ -x "${_hermes_toolchain_home}/venv/bin/python" ]; then
+    export HERMES_TOOLCHAIN_HOME="${_hermes_toolchain_home}"
+    case ":${PATH}:" in
+        *":${HERMES_TOOLCHAIN_HOME}/venv/bin:"*) ;;
+        *) PATH="${HERMES_TOOLCHAIN_HOME}/venv/bin:${PATH}" ;;
+    esac
+    case ":${PATH}:" in
+        *":${HERMES_TOOLCHAIN_HOME}/bun/bin:"*) ;;
+        *) PATH="${HERMES_TOOLCHAIN_HOME}/bun/bin:${PATH}" ;;
+    esac
+    export PATH
+fi
+unset _hermes_toolchain_home
+
 # Hermes voice/agent launcher (profiles -> isolated agents; CLI/TUI/gateway)
 alias agents="$HOME/src/profile/bin/hermes/agents"
 alias cos="$HOME/src/profile/bin/hermes/cos"

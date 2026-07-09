@@ -70,40 +70,6 @@ chmod +x \
   "$PNPM_GLOBAL_ROOT/herm-tui/src/index.tsx" \
   2>/dev/null || true
 
-# Resolve a package's REAL bin entrypoint (absolute path) from its package.json
-# "bin" field. The hermes/hermes-agent/herm shims must exec this file directly,
-# NOT the pnpm global bin symlink ($PNPM_BIN/<name>): on the real host
-# `pnpm bin -g` == $SHIM_DIR (~/.local/bin), so a shim targeting $PNPM_BIN/<name>
-# would BE its own path and exec itself -> infinite recursion (E2BIG). Neither
-# PNPM_HOME, npm prefix, nor pnpm config reliably relocate that bin dir, so the
-# fix is structural: always target the package's .js/.tsx entrypoint.
-resolve_pkg_bin() {
-  local pkg_dir="$1" bin_name="$2"
-  command node -e '
-const fs = require("fs"), path = require("path");
-const [pkgDir, binName] = process.argv.slice(1);
-const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8"));
-const bin = pkg.bin;
-let rel;
-if (typeof bin === "string") rel = bin;
-else if (bin && typeof bin === "object") rel = bin[binName] || Object.values(bin)[0];
-if (!rel) process.exit(3);
-process.stdout.write(path.resolve(pkgDir, rel));
-' "$pkg_dir" "$bin_name"
-}
-
-HERMES_AGENT_DIR="$PNPM_GLOBAL_ROOT/hermes-agent"
-HERM_TUI_DIR="$PNPM_GLOBAL_ROOT/herm-tui"
-
-# Resolve the three package entrypoints, falling back to the known layout (the
-# same paths the chmod block above targets) if package.json can't be read.
-hermes_entry="$(resolve_pkg_bin "$HERMES_AGENT_DIR" hermes 2>/dev/null || true)"
-[ -n "$hermes_entry" ] || hermes_entry="$HERMES_AGENT_DIR/bin/hermes.js"
-hermes_agent_entry="$(resolve_pkg_bin "$HERMES_AGENT_DIR" hermes-agent 2>/dev/null || true)"
-[ -n "$hermes_agent_entry" ] || hermes_agent_entry="$HERMES_AGENT_DIR/bin/hermes-agent.js"
-herm_entry="$(resolve_pkg_bin "$HERM_TUI_DIR" herm 2>/dev/null || true)"
-[ -n "$herm_entry" ] || herm_entry="$HERM_TUI_DIR/src/index.tsx"
-
 # write_shim <name> <exec-token>...
 # Emits $SHIM_DIR/<name>: exports the toolchain env, then exec's the given
 # command. The FINAL token is the target file and must never equal the shim's
@@ -130,12 +96,15 @@ write_shim() {
   chmod 0755 "$shim"
 }
 
-# hermes/hermes-agent run their .js entrypoints via mise node (`command node`).
-# herm's entrypoint is herm-tui's bin (a .tsx run via its own bun loader), so
-# exec it directly and let its shebang pick the interpreter (bun is on PATH).
-write_shim hermes       node "$hermes_entry"
-write_shim hermes-agent node "$hermes_agent_entry"
-write_shim herm         "$herm_entry"
+# hermes / hermes-agent / herm are intentionally NOT shimmed: `pnpm add -g`
+# above installs pnpm's own launchers into the pnpm global bin dir (which is on
+# PATH). On hosts with `~/.npmrc prefix=~/.local` that dir IS $SHIM_DIR
+# (~/.local/bin) and cannot be relocated by any per-invocation override, so a
+# custom shim would collide with pnpm's launcher — and only pnpm's launcher
+# resolves the .pnpm virtual store correctly. Their toolchain env
+# (HERMES_TOOLCHAIN_HOME + venv/bun on PATH) is injected by the shell profile
+# (see the Hermes toolchain block in myprofile.sh). Only the profile-script
+# commands below get env-setting shims (no pnpm collision — they aren't packages).
 write_shim hs "$SCRIPT_DIR/hs"
 write_shim dream "$SCRIPT_DIR/dream"
 write_shim agents "$SCRIPT_DIR/agents"
@@ -151,10 +120,7 @@ fi
 cat <<EOF
 Hermes toolchain installed.
 
-User-local shims:
-  $SHIM_DIR/hermes
-  $SHIM_DIR/hermes-agent
-  $SHIM_DIR/herm
+User-local shims (profile scripts, env-setting):
   $SHIM_DIR/hs
   $SHIM_DIR/dream
   $SHIM_DIR/agents
@@ -163,8 +129,7 @@ User-local shims:
   $SHIM_DIR/pm
   $SHIM_DIR/pl
 
-Package entrypoints (exec'd by the shims above):
-  hermes       -> node $hermes_entry
-  hermes-agent -> node $hermes_agent_entry
-  herm         -> $herm_entry
+hermes / hermes-agent / herm: provided by pnpm's own global launchers on PATH
+($PNPM_BIN). Their toolchain env (HERMES_TOOLCHAIN_HOME + venv/bun on PATH) is
+injected by the shell profile (Hermes toolchain block in myprofile.sh).
 EOF
