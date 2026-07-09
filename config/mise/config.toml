@@ -6,3 +6,4 @@
 node = "lts"
 pnpm = "latest"
 neovim = "latest"
+uv = "latest"

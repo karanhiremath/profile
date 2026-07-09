@@ -4,11 +4,92 @@ APP_BIN := "$(pwd)/bin"
 HOME := "$(echo $HOME)"
 
 
-# Install core tools
-all: mise git tmux nvim pc
+# Install core tools + full coding-dev environment
+all: mise git tmux nvim pc dev
 
 install:
     ./install.sh
+
+# Stand up the full coding-dev environment in one command (idempotent):
+# mise (-> node, pnpm, uv, neovim) then the coding CLIs (claude, pi,
+# copilot-cli, hermes). mise runs FIRST so the CLI installers find node/pnpm/uv.
+# Resilient: a failing installer is reported and the rest still run; a summary
+# prints at the end and `just dev` exits non-zero if any step failed.
+# Usage: just dev [--help]
+dev *FLAGS:
+    #!/usr/bin/env bash
+    # NOTE: intentionally NOT `set -e` — this recipe must continue past a single
+    # installer failure. Each step's rc is captured explicitly instead.
+    set -uo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+
+    case "{{FLAGS}}" in
+        --help|-h)
+            cat <<'EOF'
+    just dev — stand up the full coding-dev environment (idempotent).
+
+    Runs, in order:
+      1. bin/mise/install         mise + node, pnpm, uv, neovim
+      2. bin/claude/install       Claude Code CLI       (pnpm global)
+      3. bin/pi/install           pi coding agent       (pnpm global)
+      4. bin/copilot-cli/install  GitHub Copilot CLI
+      5. bin/hermes/install       Hermes isolated toolchain (uses mise's uv)
+
+    mise runs first so the CLI installers find node/pnpm/uv on PATH.
+    Resilient: a failing step is reported and the rest continue; a summary
+    prints at the end and the recipe exits non-zero if any step failed.
+    EOF
+            exit 0
+            ;;
+        "") : ;;
+        *)
+            echo "just dev: unknown argument '{{FLAGS}}' (try: just dev --help)" >&2
+            exit 2
+            ;;
+    esac
+
+    step_names=()
+    step_rcs=()
+    run_step() {
+        local label="$1"; shift
+        echo ""
+        echo "=== ${label} ==="
+        if "$@"; then
+            step_names+=("$label"); step_rcs+=(0)
+        else
+            local rc=$?
+            step_names+=("$label"); step_rcs+=("$rc")
+            echo "!! ${label} FAILED (rc=${rc}); continuing with remaining installers..." >&2
+        fi
+    }
+
+    # mise MUST run first: it provides node/pnpm/uv used by every CLI installer.
+    run_step "mise"        ./bin/mise/install
+    run_step "claude"      ./bin/claude/install
+    run_step "pi"          ./bin/pi/install
+    run_step "copilot-cli" ./bin/copilot-cli/install
+    run_step "hermes"      ./bin/hermes/install
+
+    echo ""
+    echo "=== coding-dev environment summary ==="
+    failed=0
+    for i in "${!step_names[@]}"; do
+        if [ "${step_rcs[$i]}" -eq 0 ]; then
+            printf '  ok    %s\n' "${step_names[$i]}"
+        else
+            printf '  FAIL  %s (rc=%s)\n' "${step_names[$i]}" "${step_rcs[$i]}"
+            failed=1
+        fi
+    done
+
+    if [ "$failed" -ne 0 ]; then
+        echo "" >&2
+        echo "One or more installers failed; see logs above." >&2
+        exit 1
+    fi
+    echo ""
+    echo "✓ coding-dev environment ready"
 
 # Install Ansible dependencies without mutating profile state
 ansible-bootstrap:
