@@ -44,7 +44,7 @@ if command -v claude-code >/dev/null 2>&1; then
     echo "Claude Code already installed. Checking for updates..."
     ensure_pnpm
     echo "Upgrading Claude Code via pnpm..."
-    pnpm add -g @anthropic-ai/claude-code
+    pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code
     exit 0
 fi
 
@@ -59,7 +59,7 @@ echo "pnpm version: $(pnpm --version)"
 echo "Installing Claude Code..."
 case "${MACHINE}" in
     Darwin|Linux)
-        pnpm add -g @anthropic-ai/claude-code
+        pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code
         ;;
     *)
         echo "Unsupported platform: ${MACHINE}"

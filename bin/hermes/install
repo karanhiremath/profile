@@ -41,7 +41,7 @@ uv pip install --python "$VENV/bin/python" pip setuptools wheel PyYAML
 # error string instead of a path).
 export PATH="$VENV/bin:$PNPM_HOME/bin:$PATH"
 
-pnpm add -g hermes-agent herm-tui
+pnpm add -g --allow-build=hermes-agent --allow-build=herm-tui hermes-agent herm-tui
 
 # Resolve the pnpm global locations robustly rather than hardcoding pnpm's
 # internal layout ($PNPM_HOME/bin and $PNPM_HOME/global/<v>).

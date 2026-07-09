@@ -84,7 +84,7 @@ install -m 0755 "$found_bun" "$BUN_HOME/bin/bun"
 
 # pnpm's global bin dir ($PNPM_HOME/bin) MUST be on PATH before `pnpm add -g`.
 export PATH="$BUN_HOME/bin:$PNPM_HOME/bin:$VENV/bin:$PATH"
-pnpm add -g herm-tui
+pnpm add -g --allow-build=herm-tui herm-tui
 
 # Resolve pnpm global locations robustly instead of hardcoding the layout.
 PNPM_GLOBAL_ROOT="$(pnpm root -g)"
