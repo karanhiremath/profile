@@ -18,8 +18,8 @@ printf 'private_dir=%s\n' "$PRIVATE_DIR"
 printf 'shim_dir=%s\n' "$SHIM_DIR"
 
 for bin in hermes hermes-agent herm; do
-  path="$PNPM_HOME/bin/$bin"
-  if [ -x "$path" ]; then
+  path="$(command -v "$bin" 2>/dev/null || true)"
+  if [ -n "$path" ]; then
     printf '%s=%s\n' "$bin" "$path"
   else
     printf '%s=missing\n' "$bin"

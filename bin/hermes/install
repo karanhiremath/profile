@@ -60,14 +60,32 @@ export PATH="$VENV/bin:$PNPM_HOME/bin:$PATH"
 pnpm add -g --allow-build=hermes-agent --allow-build=herm-tui hermes-agent herm-tui
 
 # Resolve the pnpm global locations robustly rather than hardcoding pnpm's
-# internal layout ($PNPM_HOME/bin and $PNPM_HOME/global/<v>).
+# internal layout. pnpm v11 may keep package dirs below hashed project dirs
+# under global/<v>, while `pnpm root -g` returns only the aggregate root.
 PNPM_GLOBAL_ROOT="$(pnpm root -g)"
 PNPM_BIN="$(pnpm bin -g)"
+PNPM_LIST_JSON="$(pnpm list -g --depth 0 --json)"
+
+resolve_global_pkg_dir() {
+  local pkg_name="$1"
+  printf '%s' "$PNPM_LIST_JSON" | command node -e '
+const fs = require("fs");
+const pkgName = process.argv[1];
+const data = JSON.parse(fs.readFileSync(0, "utf8"));
+const deps = data && data[0] && data[0].dependencies || {};
+const pkg = deps[pkgName];
+if (!pkg || !pkg.path) process.exit(3);
+process.stdout.write(pkg.path);
+' "$pkg_name"
+}
+
+HERMES_AGENT_DIR="$(resolve_global_pkg_dir hermes-agent)"
+HERM_TUI_DIR="$(resolve_global_pkg_dir herm-tui)"
 
 chmod +x \
-  "$PNPM_GLOBAL_ROOT/hermes-agent/bin/hermes.js" \
-  "$PNPM_GLOBAL_ROOT/hermes-agent/bin/hermes-agent.js" \
-  "$PNPM_GLOBAL_ROOT/herm-tui/src/index.tsx" \
+  "$HERMES_AGENT_DIR/bin/hermes.js" \
+  "$HERMES_AGENT_DIR/bin/hermes-agent.js" \
+  "$HERM_TUI_DIR/src/index.tsx" \
   2>/dev/null || true
 
 # write_shim <name> <exec-token>...

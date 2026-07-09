@@ -41,6 +41,43 @@ forced_host_tools() {
   [ "${HERMES_AGENT_TERMINAL_BACKEND:-}" = "local" ] || [ "${TERMINAL_ENV:-}" = "local" ]
 }
 
+strip_cosw_args() {
+  COSW_ARGS=()
+  local arg next
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --host-tools)
+        export TERMINAL_ENV="${TERMINAL_ENV:-local}"
+        ;;
+      --terminal-backend)
+        next="${1:-}"
+        case "$next" in
+          local|docker)
+            export TERMINAL_ENV="$next"
+            [ "$#" -gt 0 ] && shift
+            ;;
+          *)
+            COSW_ARGS+=("$arg")
+            [ "$#" -gt 0 ] && { COSW_ARGS+=("$1"); shift; }
+            ;;
+        esac
+        ;;
+      --terminal-backend=local)
+        export TERMINAL_ENV=local
+        ;;
+      --terminal-backend=docker)
+        export TERMINAL_ENV=docker
+        ;;
+      --)
+        COSW_ARGS+=("--" "$@")
+        break
+        ;;
+      *) COSW_ARGS+=("$arg") ;;
+    esac
+  done
+}
+
 json_array() {
   local out="[" sep="" item esc
   for item in "$@"; do
@@ -54,10 +91,11 @@ json_array() {
 }
 
 ensure_toolchain() {
-  local toolchain bun herm py target
+  local toolchain bun herm py target shim_dir
   toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+  shim_dir="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
   bun="$toolchain/bun/bin/bun"
-  herm="$toolchain/pnpm/bin/herm"
+  herm="$shim_dir/herm"
   py="$toolchain/venv/bin/python"
 
   if [ ! -x "$py" ] || [ ! -e "$herm" ]; then
@@ -191,7 +229,5 @@ if [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
   fi
 fi
 
-if forced_host_tools "$@"; then
-  exec "$SCRIPT_DIR/agents" up chief-of-staff-work "$@"
-fi
-exec "$SCRIPT_DIR/agents" up chief-of-staff-work --terminal-backend docker "$@"
+strip_cosw_args "$@"
+exec "$SCRIPT_DIR/agents" up chief-of-staff-work "${COSW_ARGS[@]}"
