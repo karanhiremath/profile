@@ -83,6 +83,7 @@ echo "Installing core tools..."
 just git
 just tmux
 just nvim
+just fzf
 
 # --- Platform-specific ---
 

@@ -73,7 +73,10 @@ chmod +x \
 write_shim() {
   local name="$1"
   local target="$2"
-  cat > "$SHIM_DIR/$name" <<EOF
+  local dst="$SHIM_DIR/$name"
+  local tmp
+  tmp="$(mktemp "$SHIM_DIR/.${name}.XXXXXX")"
+  cat > "$tmp" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export HERMES_TOOLCHAIN_HOME="$HERMES_TOOLCHAIN_HOME"
@@ -81,7 +84,8 @@ export PNPM_HOME="$PNPM_HOME"
 export PATH="$BUN_HOME/bin:$PNPM_BIN:$VENV/bin:\$PATH"
 exec "$target" "\$@"
 EOF
-  chmod 0755 "$SHIM_DIR/$name"
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$dst"
 }
 
 write_shim hermes "$PNPM_BIN/hermes"
