@@ -15,7 +15,7 @@ just ansible-bootstrap
 just ansible-plan
 PROFILE_ALLOW_HOST_MUTATION=1 just ansible-apply
 PROFILE_ALLOW_HOST_MUTATION=1 just ansible-apply-tags dotfiles
-PROFILE_ALLOW_HOST_MUTATION=1 PROFILE_INSTALL_TOOLS=1 TOOLS='["git","tmux","nvim"]' just ansible-apply-tags cli_tools
+PROFILE_ALLOW_HOST_MUTATION=1 PROFILE_INSTALL_TOOLS=1 TOOLS='["git","tmux","nvim","fzf"]' just ansible-apply-tags cli_tools
 ```
 
 ## SSH authorized_keys from 1Password
