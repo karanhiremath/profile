@@ -11,6 +11,33 @@ autoload -Uz promptinit && promptinit
 autoload -Uz compinit
 compinit
 
+# fzf key bindings/completion for package-manager installs.
+if command -v fzf >/dev/null 2>&1; then
+    if [[ -r "${HOME}/.fzf.zsh" ]]; then
+        source "${HOME}/.fzf.zsh"
+    else
+        fzf_zsh_dirs=()
+        if command -v brew >/dev/null 2>&1; then
+            fzf_brew_prefix="$(brew --prefix fzf 2>/dev/null || true)"
+            [[ -n "${fzf_brew_prefix}" ]] && fzf_zsh_dirs+=("${fzf_brew_prefix}/shell")
+        fi
+        fzf_zsh_dirs+=(
+            "${HOME}/.fzf/shell"
+            "/usr/share/doc/fzf/examples"
+            "/usr/share/fzf"
+            "/opt/homebrew/opt/fzf/shell"
+            "/usr/local/opt/fzf/shell"
+        )
+        for fzf_zsh_dir in "${fzf_zsh_dirs[@]}"; do
+            [[ -r "${fzf_zsh_dir}/completion.zsh" ]] && source "${fzf_zsh_dir}/completion.zsh" && break
+        done
+        for fzf_zsh_dir in "${fzf_zsh_dirs[@]}"; do
+            [[ -r "${fzf_zsh_dir}/key-bindings.zsh" ]] && source "${fzf_zsh_dir}/key-bindings.zsh" && break
+        done
+        unset fzf_brew_prefix fzf_zsh_dir fzf_zsh_dirs
+    fi
+fi
+
 source "${PROFILE_DIR}/myprofile.sh"
 
 # Load version control information

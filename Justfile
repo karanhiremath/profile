@@ -5,7 +5,7 @@ HOME := "$(echo $HOME)"
 
 
 # Install core tools + full coding-dev environment
-all: mise git tmux nvim pc dev
+all: mise git tmux nvim fzf pc dev
 
 install:
     ./install.sh
@@ -239,6 +239,14 @@ nvim:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/nvim/install
+
+# Install/upgrade fzf
+fzf:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/fzf/install
 
 # Build and install pc (pi-code session manager)
 pc:
