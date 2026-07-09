@@ -22,6 +22,40 @@ if [ -f ~/profile/git-completion.bash ]; then
   source ~/profile/git-completion.bash
 fi
 
+# fzf key bindings/completion for package-manager installs.
+if command -v fzf >/dev/null 2>&1; then
+  if [ -r "${HOME}/.fzf.bash" ]; then
+    source "${HOME}/.fzf.bash"
+  else
+    fzf_shell_dirs=()
+    if command -v brew >/dev/null 2>&1; then
+      fzf_brew_prefix="$(brew --prefix fzf 2>/dev/null || true)"
+      if [ -n "${fzf_brew_prefix}" ]; then
+        fzf_shell_dirs+=("${fzf_brew_prefix}/shell")
+      fi
+    fi
+    fzf_shell_dirs+=(
+      "${HOME}/.fzf/shell"
+      "/usr/share/doc/fzf/examples"
+      "/usr/share/fzf"
+      "/opt/homebrew/opt/fzf/shell"
+      "/usr/local/opt/fzf/shell"
+    )
+    for fzf_shell_dir in "${fzf_shell_dirs[@]}"; do
+      if [ -r "${fzf_shell_dir}/completion.bash" ]; then
+        source "${fzf_shell_dir}/completion.bash"
+        break
+      fi
+    done
+    for fzf_shell_dir in "${fzf_shell_dirs[@]}"; do
+      if [ -r "${fzf_shell_dir}/key-bindings.bash" ]; then
+        source "${fzf_shell_dir}/key-bindings.bash"
+        break
+      fi
+    done
+    unset fzf_brew_prefix fzf_shell_dir fzf_shell_dirs
+  fi
+fi
 
 function git_color {
   local git_status="$(git status 2> /dev/null)"

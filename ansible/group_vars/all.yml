@@ -34,6 +34,7 @@ profile_core_tools:
   - git
   - tmux
   - nvim
+  - fzf
 
 profile_mac_brew_packages: []
 profile_mac_brew_casks: []

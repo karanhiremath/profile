@@ -28,7 +28,13 @@ require("lazy").setup({
             vim.keymap.set('n', '<leader>ff', builtin.find_files, {})
             vim.keymap.set('n', '<leader>fg', builtin.live_grep, {})
             vim.keymap.set('n', '<leader>fb', builtin.buffers, {})
-            vim.keymap.set('n', '<leader>fh', builtin.help_tags, {})
+            vim.keymap.set('n', '<leader>fh', function()
+                local herm = vim.fn.exepath('herm')
+                if herm == '' then herm = 'herm' end
+                vim.cmd('tabnew')
+                vim.cmd('terminal ' .. vim.fn.shellescape(herm) .. ' tui')
+                vim.cmd('startinsert')
+            end, { desc = 'Hermes: open TUI' })
 
             local telescope = require('telescope')
 
