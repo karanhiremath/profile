@@ -150,6 +150,8 @@ write_shim dream "$SCRIPT_DIR/dream"
 write_shim agents "$SCRIPT_DIR/agents"
 write_shim cos "$SCRIPT_DIR/cos"
 write_shim cosw "$SCRIPT_DIR/cosw"
+write_shim cosw-host-control "$SCRIPT_DIR/cosw-host-control"
+write_shim cosw-hostctl "$SCRIPT_DIR/cosw-hostctl"
 write_shim pm "$SCRIPT_DIR/pm"
 write_shim pl "$SCRIPT_DIR/pl"
 
@@ -169,6 +171,8 @@ User-local shims:
   $SHIM_DIR/agents
   $SHIM_DIR/cos
   $SHIM_DIR/cosw
+  $SHIM_DIR/cosw-host-control
+  $SHIM_DIR/cosw-hostctl
   $SHIM_DIR/pm
   $SHIM_DIR/pl
 

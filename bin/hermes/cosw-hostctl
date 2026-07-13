@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Sandbox client for the allowlisted CoS-W host-control broker."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+import uuid
+from pathlib import Path
+
+DEFAULT_STATE = Path(os.environ.get("COSW_HOST_CONTROL_MOUNT", "/mnt/cosw-host-control"))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("action", choices=("ensure-pm", "ensure-pl", "notify-pm", "status"))
+    parser.add_argument("project")
+    parser.add_argument("--message")
+    parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
+    args = parser.parse_args()
+    if args.action == "notify-pm" and not args.message:
+        parser.error("notify-pm requires --message")
+    root = args.state_dir
+    requests = root / "requests"
+    responses = root / "responses"
+    request_id = f"{int(time.time())}-{uuid.uuid4().hex}"
+    request = {"id": request_id, "action": args.action, "project": args.project}
+    if args.message:
+        request["message"] = args.message
+    tmp = requests / f".{request_id}.tmp"
+    final = requests / f"{request_id}.json"
+    tmp.write_text(json.dumps(request, separators=(",", ":")) + "\n", encoding="utf-8")
+    # Request directory traversal is restricted to host + sandbox identities.
+    # NFS/rootless UID translation otherwise leaves host unable to read a 0600
+    # file atomically created by the subordinate sandbox UID.
+    tmp.chmod(0o666)
+    tmp.replace(final)
+    response = responses / f"{request_id}.json"
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        if response.exists():
+            value = json.loads(response.read_text(encoding="utf-8"))
+            print(json.dumps(value, indent=2, sort_keys=True))
+            return 0 if value.get("ok") else 1
+        time.sleep(0.1)
+    raise SystemExit(f"timed out waiting for host response: {request_id}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

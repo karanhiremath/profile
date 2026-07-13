@@ -14,6 +14,8 @@ Commands:
   project_sessions.py resolve <project>
   project_sessions.py pm <project> [--dry-run]
   project_sessions.py pl <project> [--dry-run]
+  project_sessions.py ensure-pm <project> [--dry-run]
+  project_sessions.py ensure-pl <project> [--dry-run]
 """
 
 from __future__ import annotations
@@ -194,8 +196,7 @@ def attach_or_switch(session: str, dry_run: bool) -> int:
     return subprocess.call(cmd)
 
 
-def cmd_pm(project_name: str, dry_run: bool) -> int:
-    project = find_project(project_name)
+def ensure_pm(project: dict[str, Any], dry_run: bool) -> tuple[str, bool]:
     session = session_name(project, "pm")
     created = False
     if not tmux_exists(session):
@@ -212,10 +213,46 @@ def cmd_pm(project_name: str, dry_run: bool) -> int:
     emit_project_event(
         project,
         kind,
-        f"{kind} manifest event: pm command routed project {project.get('name')} to tmux session {session}.",
+        f"{kind} manifest event: PM session ensured for project {project.get('name')} at {session}.",
         session,
         dry_run,
     )
+    return session, created
+
+
+def ensure_pl(project: dict[str, Any], dry_run: bool) -> tuple[str, bool]:
+    session = session_name(project, "pl")
+    created = False
+    if not tmux_exists(session):
+        cwd = workdir(project)
+        new_cmd = ["tmux", "new-session", "-d", "-s", session, "-c", str(cwd)]
+        if dry_run:
+            print(" ".join(shlex.quote(c) for c in new_cmd))
+        else:
+            cwd.mkdir(parents=True, exist_ok=True)
+            subprocess.check_call(new_cmd)
+            created = True
+    kind = "project_lead_started" if created else "project_lead_attached"
+    emit_project_event(
+        project,
+        kind,
+        f"{kind} manifest event: PL implementation session ensured for project {project.get('name')} at {session}.",
+        session,
+        dry_run,
+    )
+    return session, created
+
+
+def cmd_ensure(project_name: str, kind: str, dry_run: bool) -> int:
+    project = find_project(project_name)
+    session, created = ensure_pm(project, dry_run) if kind == "pm" else ensure_pl(project, dry_run)
+    print(json.dumps({"project": project.get("name"), "kind": kind, "session": session, "created": created}))
+    return 0
+
+
+def cmd_pm(project_name: str, dry_run: bool) -> int:
+    project = find_project(project_name)
+    session, _ = ensure_pm(project, dry_run)
     return attach_or_switch(session, dry_run)
 
 
@@ -244,7 +281,7 @@ def main(argv: list[str]) -> int:
     sub.add_parser("names")
     r = sub.add_parser("resolve")
     r.add_argument("project")
-    for name in ("pm", "pl"):
+    for name in ("pm", "pl", "ensure-pm", "ensure-pl"):
         p = sub.add_parser(name)
         p.add_argument("project")
         p.add_argument("--dry-run", action="store_true")
@@ -264,6 +301,10 @@ def main(argv: list[str]) -> int:
         return cmd_pm(args.project, args.dry_run)
     if args.cmd == "pl":
         return cmd_pl(args.project, args.dry_run)
+    if args.cmd == "ensure-pm":
+        return cmd_ensure(args.project, "pm", args.dry_run)
+    if args.cmd == "ensure-pl":
+        return cmd_ensure(args.project, "pl", args.dry_run)
     raise SystemExit(f"ERROR: unknown command {args.cmd}")
 
 
