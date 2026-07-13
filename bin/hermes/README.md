@@ -32,6 +32,9 @@ cos                         # agents up chief-of-staff
 cosw                        # agents up chief-of-staff-work
 pm <project>                # attach/start the Hermes PM TUI session for project
 pl <project>                # attach the project-lead implementation tmux session
+cosw-hostctl ensure-pm <project>  # sandbox-safe, detached host PM creation
+cosw-hostctl ensure-pl <project>  # sandbox-safe, detached PL session creation
+cosw-hostctl notify-pm <project> --message '<bounded instruction>'
 bin/hermes/project_sessions.py list
 bin/hermes/project_sessions.py resolve <project>
 ```
@@ -44,6 +47,8 @@ Project registries are searched in:
 4. `bin/hermes/projects`
 
 A PM-managed handoff is incomplete unless the project event bus receives a `pm_action_required` event telling the PM to register/spawn the replacement Pi coding agent with the handoff prompt. Profile owns the wrappers; project-specific event types, handoffs, kanban/Linear references, and guardrails live in the project registry.
+
+`cosw` keeps its terminal sandboxed and does not expose the raw host tmux socket. Instead, `cosw-host-control` accepts only registry-resolved `ensure-pm`, `ensure-pl`, `notify-pm`, and `status` requests through private request/response directories. The launcher also stages gcloud CLI user credentials into the writable container layer and mounts the host Cloud SDK read-only; ADC is intentionally not copied.
 
 ## Voice agents (`agents`)
 
