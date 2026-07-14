@@ -90,6 +90,17 @@ json_array() {
   printf '%s\n' "$out"
 }
 
+start_host_manager() {
+  local profile_home="$1" state runtime bin
+  state="$profile_home/host-control"
+  runtime="${XDG_RUNTIME_DIR:-/tmp/hermes-$(id -u)}/hermes-sandbox-manager/chief-of-staff-work"
+  bin="$state/bin"
+  mkdir -p "$bin" "$runtime"
+  install -m 0755 "$SCRIPT_DIR/cosw-hostctl" "$bin/cosw-hostctl"
+  "$SCRIPT_DIR/cosw-host-control" start --state-dir "$state" --socket-dir "$runtime" >/dev/null
+  printf '%s %s\n' "$state" "$runtime"
+}
+
 ensure_toolchain() {
   local toolchain bun herm py target shim_dir
   toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
@@ -123,7 +134,11 @@ ensure_podman() {
 
   export HERMES_DOCKER_BINARY="$podman"
   export TERMINAL_ENV="${TERMINAL_ENV:-docker}"
-  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/root}"
+  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/workspace}"
+  # Map image uid 1000 to the invoking host identity. This keeps dedicated
+  # worktree writes host-owned without making the whole source tree writable.
+  export TERMINAL_DOCKER_EXTRA_ARGS="${TERMINAL_DOCKER_EXTRA_ARGS:-[\"--userns=keep-id:uid=1000,gid=1000\"]}"
+  export TERMINAL_DOCKER_ENV="${TERMINAL_DOCKER_ENV:-{\"HERMES_SANDBOX_ID\":\"chief-of-staff-work\"}}"
 
   if ! "$podman" info >/dev/null 2>&1; then
     log "Podman machine unavailable; starting default machine"
@@ -142,19 +157,26 @@ ensure_podman() {
   image="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
   export TERMINAL_DOCKER_IMAGE="${TERMINAL_DOCKER_IMAGE:-$image}"
 
-  local observer_dir volumes
+  local observer_dir profile_home workspace host_control_dir manager_runtime volumes
   observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
-  mkdir -p "$observer_dir"
+  profile_home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  workspace="${COSW_WORKSPACE:-$HOME/src/karan.hiremath}"
+  [ -d "$workspace" ] || die "COSW workspace does not exist: $workspace"
+  mkdir -p "$observer_dir" "$profile_home"
+  read -r host_control_dir manager_runtime < <(start_host_manager "$profile_home")
   if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
     "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$observer_dir" >/dev/null || \
       log "host observer failed to start; continuing without live host snapshot"
   fi
 
   volumes=(
-    "$HOME/src:/root/src"
-    "$HOME/src:/home/hermes/src"
+    "$HOME/src:/root/src:ro"
+    "$HOME/src:/home/hermes/src:ro"
+    "$workspace:/workspace"
     "$observer_dir:/home/hermes/.cosw-host:ro"
     "$observer_dir:/root/.cosw-host:ro"
+    "$manager_runtime:/run/hermes-manager:ro"
+    "$host_control_dir/bin/cosw-hostctl:/usr/local/bin/cosw-hostctl:ro"
   )
   [ ! -d "$HOME/.pi/agent/sessions" ] || volumes+=("$HOME/.pi/agent/sessions:/mnt/host-pi-agent-sessions:ro")
   [ ! -d "$HOME/.pi/sessions" ] || volumes+=("$HOME/.pi/sessions:/mnt/host-pi-sessions:ro")
@@ -175,7 +197,7 @@ ensure_podman() {
     die "sandbox image missing: $image (run: ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh python-node-fedora)"
 
   local home name smoke volume_args=() vol
-  home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  home="$profile_home"
   mkdir -p "$home/sandboxes/docker/default/home" "$home/sandboxes/docker/default/workspace" \
     "$home/skills" "$home/image_cache" "$home/audio_cache"
   for vol in "${volumes[@]}"; do
@@ -187,16 +209,15 @@ ensure_podman() {
     -w "$TERMINAL_CWD" \
     --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add CHOWN --cap-add FOWNER \
     --security-opt no-new-privileges --pids-limit 256 \
-    --tmpfs /tmp:rw,nosuid,size=512m --tmpfs /var/tmp:rw,noexec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=64m \
-    --user "$(id -u):$(id -g)" \
+    --tmpfs /tmp:rw,nosuid,size=512m --tmpfs /var/tmp:rw,noexec,nosuid,size=256m \
+    --userns=keep-id:uid=1000,gid=1000 \
     -v "$home/sandboxes/docker/default/home:/root" \
-    -v "$home/sandboxes/docker/default/workspace:/workspace" \
     "${volume_args[@]}" \
     --cpus 1.0 --memory 5120m \
     -v "$home/skills:/root/.hermes/skills:ro" \
     -v "$home/image_cache:/root/.hermes/cache/images:ro" \
     -v "$home/audio_cache:/root/.hermes/cache/audio:ro" \
-    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md' >"$smoke" 2>&1; then
+    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md && test -w /workspace && test -S /run/hermes-manager/manager.sock && test -x /usr/local/bin/cosw-hostctl && cosw-hostctl fleet-status >/dev/null && ! touch /home/hermes/src/.cosw-readonly-probe 2>/dev/null' >"$smoke" 2>&1; then
     cat "$smoke" >&2 || true
     "$podman" rm -f "$name" >/dev/null 2>&1 || true
     die "podman sandbox smoke test failed"
@@ -208,7 +229,7 @@ ensure_podman() {
     [ -n "$cid" ] || continue
     details="$("$podman" inspect "$cid" --format '{{.ImageName}} {{json .Mounts}}' 2>/dev/null || true)"
     case "$details" in
-      *"$image"*"/root/src"*"/home/hermes/src"*"/root/.cosw-host"*) ;;
+      *"$image"*"/root/src"*"/home/hermes/src"*"/workspace"*"/run/hermes-manager"*"/root/.cosw-host"*) ;;
       *)
         running="$("$podman" inspect "$cid" --format '{{.State.Running}}' 2>/dev/null || true)"
         if [ "$running" = "true" ]; then

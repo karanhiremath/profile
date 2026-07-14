@@ -1,0 +1,61 @@
+services:
+  otel-collector:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.120.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./collector.yaml:/etc/otelcol/config.yaml:ro
+      - ${HERMES_FLEET_MANAGER_AUDIT:?set HERMES_FLEET_MANAGER_AUDIT}:/var/log/hermes-manager/events.jsonl:ro
+    extra_hosts:
+      - host.containers.internal:host-gateway
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  prometheus:
+    image: docker.io/prom/prometheus:v2.53.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    ports:
+      - 127.0.0.1:9091:9090
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  loki:
+    image: docker.io/grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./loki.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  grafana:
+    image: docker.io/grafana/grafana:11.4.0
+    ports:
+      - 127.0.0.1:3034:3000
+    environment:
+      GF_SECURITY_ADMIN_USER: ${HERMES_FLEET_GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${HERMES_FLEET_GRAFANA_ADMIN_PASSWORD:?set HERMES_FLEET_GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:

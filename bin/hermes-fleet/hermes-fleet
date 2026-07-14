@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Run the local-only Hermes Fleet observability stack.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OTEL="$ROOT/otel"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/hermes-fleet"
+AUDIT="${HERMES_FLEET_MANAGER_AUDIT:-$HOME/.local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/host-control/audit/events.jsonl}"
+PIDFILE="$STATE/observer.pid"
+LOG="$STATE/observer.log"
+
+usage() {
+  cat <<'EOF'
+Usage: hermes-fleet <start|stop|status|observer>
+
+start     Start localhost observer, OTel Collector, Prometheus, Loki, Grafana.
+stop      Stop the local stack and observer.
+status    Show local component status.
+observer  Run only the localhost projection server in the foreground.
+
+Required for start:
+  HERMES_FLEET_GRAFANA_ADMIN_PASSWORD  Grafana local admin password.
+
+All listeners bind to 127.0.0.1. Remote/Tailscale exposure is intentionally
+not configured by this tool.
+EOF
+}
+
+compose() {
+  export HERMES_FLEET_MANAGER_AUDIT="$AUDIT"
+  podman compose -f "$OTEL/podman-compose.yaml" "$@"
+}
+
+running() {
+  [ -f "$PIDFILE" ] || return 1
+  kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+}
+
+start_observer() {
+  mkdir -p "$STATE" "$(dirname "$AUDIT")"
+  touch "$AUDIT"
+  chmod 0600 "$AUDIT"
+  if running; then return 0; fi
+  nohup "$ROOT/observer" --audit "$AUDIT" >"$LOG" 2>&1 &
+  printf '%s\n' "$!" >"$PIDFILE"
+  for _ in $(seq 1 40); do
+    curl -fsS http://127.0.0.1:9470/healthz >/dev/null 2>&1 && return 0
+    sleep 0.1
+  done
+  echo "hermes-fleet: observer failed to start; see $LOG" >&2
+  return 1
+}
+
+stop_observer() {
+  if running; then kill "$(cat "$PIDFILE")" 2>/dev/null || true; fi
+  rm -f "$PIDFILE"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  start)
+    [ -n "${HERMES_FLEET_GRAFANA_ADMIN_PASSWORD:-}" ] || {
+      echo "hermes-fleet: set HERMES_FLEET_GRAFANA_ADMIN_PASSWORD" >&2
+      exit 2
+    }
+    command -v podman >/dev/null || { echo "hermes-fleet: podman not found" >&2; exit 1; }
+    start_observer
+    compose up -d
+    printf 'Hermes Fleet: http://127.0.0.1:3034\n'
+    ;;
+  stop)
+    compose down
+    stop_observer
+    ;;
+  status)
+    printf 'observer=%s url=http://127.0.0.1:9470\n' "$(running && printf running || printf stopped)"
+    compose ps
+    ;;
+  observer)
+    exec "$ROOT/observer" --audit "$AUDIT"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

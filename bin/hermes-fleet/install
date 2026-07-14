@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Install the Hermes Fleet local observability commands.
+set -euo pipefail
+
+usage() {
+  printf 'Usage: %s [--help]\n' "$(basename "$0")"
+}
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+  "") ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="${APP_BIN:-$HOME/.local/bin}"
+mkdir -p "$BIN"
+chmod 0755 "$ROOT/hermes-fleet" "$ROOT/observer"
+ln -sfn "$ROOT/hermes-fleet" "$BIN/hermes-fleet"
+printf 'installed %s\n' "$BIN/hermes-fleet"

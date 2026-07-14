@@ -659,6 +659,13 @@ mac:
     just opentofu
     just steampipe
 
+hermes-fleet:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/hermes-fleet/install
+
 # Test commands
 test: podman
     # Run tests on all OS variants
