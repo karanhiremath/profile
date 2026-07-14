@@ -62,12 +62,12 @@ def prepare(root: Path, runtime: Path) -> None:
     audit.mkdir(parents=True, exist_ok=True)
     runtime.mkdir(parents=True, exist_ok=True)
     root.chmod(0o700)
-    requests.chmod(0o730)
-    responses.chmod(0o750)
+    requests.chmod(0o700)
+    responses.chmod(0o700)
     audit.chmod(0o700)
-    # XDG_RUNTIME_DIR remains private on the host. The mounted child directory
-    # must be traversable by the remapped sandbox uid so it can reach the socket.
-    runtime.chmod(0o711)
+    # keep-id maps sandbox uid 1000 to the host operator, so no world-accessible
+    # traversal or socket mode is needed.
+    runtime.chmod(0o700)
 
 
 def project_command(*args: str) -> Any:
@@ -301,10 +301,20 @@ def audit(root: Path, request: dict[str, Any], response: dict[str, Any], started
     path.chmod(0o600)
 
 
-def process(request: dict[str, Any], root: Path, peer_uid: int | None = None) -> dict[str, Any]:
+def process(
+    request: dict[str, Any],
+    root: Path,
+    peer_uid: int | None = None,
+    authenticated_sandbox_id: str | None = None,
+) -> dict[str, Any]:
     started = time.monotonic()
+    request = dict(request)
     request_id = str(request.get("id") or "")
     try:
+        if peer_uid is not None and peer_uid != os.getuid():
+            raise PermissionError("socket peer uid does not match manager uid")
+        if authenticated_sandbox_id:
+            request["sandbox_id"] = authenticated_sandbox_id
         response = handle(request)
     except Exception as exc:  # responses intentionally exclude tracebacks and secrets
         response = {
@@ -317,7 +327,7 @@ def process(request: dict[str, Any], root: Path, peer_uid: int | None = None) ->
     return response
 
 
-def process_file(path: Path, root: Path, responses: Path) -> None:
+def process_file(path: Path, root: Path, responses: Path, authenticated_sandbox_id: str | None = None) -> None:
     request_id = path.stem
     try:
         if path.stat().st_size > MAX_REQUEST_BYTES:
@@ -325,14 +335,14 @@ def process_file(path: Path, root: Path, responses: Path) -> None:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("request must be an object")
-        response = process(raw, root)
+        response = process(raw, root, authenticated_sandbox_id=authenticated_sandbox_id)
         request_id = str(raw.get("id") or request_id)
     except Exception as exc:
         response = {"schema_version": SCHEMA, "id": request_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
     tmp = responses / f".{request_id}.{os.getpid()}.tmp"
     final = responses / f"{request_id}.json"
     tmp.write_text(json.dumps(response, separators=(",", ":")) + "\n", encoding="utf-8")
-    tmp.chmod(0o644)
+    tmp.chmod(0o600)
     tmp.replace(final)
     path.unlink(missing_ok=True)
 
@@ -364,14 +374,14 @@ def read_request(conn: socket.socket) -> dict[str, Any]:
     return raw
 
 
-def run(root: Path, runtime: Path, interval: float) -> int:
+def run(root: Path, runtime: Path, interval: float, sandbox_id: str | None = None) -> int:
     prepare(root, runtime)
     requests, responses, pidfile = state_paths(root)
     path = runtime / "manager.sock"
     path.unlink(missing_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(path))
-    path.chmod(0o666)
+    path.chmod(0o600)
     server.listen(16)
     server.settimeout(interval)
     pidfile.write_text(f"{os.getpid()}\n", encoding="utf-8")
@@ -392,12 +402,18 @@ def run(root: Path, runtime: Path, interval: float) -> int:
             if conn is not None:
                 with conn:
                     try:
-                        response = process(read_request(conn), root, peer_uid(conn))
+                        uid = peer_uid(conn)
+                        response = process(
+                            read_request(conn),
+                            root,
+                            uid if uid is not None else -1,
+                            authenticated_sandbox_id=sandbox_id,
+                        )
                     except Exception as exc:
                         response = {"schema_version": SCHEMA, "id": "", "ok": False, "error": f"{type(exc).__name__}: {exc}"}
                     conn.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
             for item in sorted(requests.glob("*.json")):
-                process_file(item, root, responses)
+                process_file(item, root, responses, sandbox_id)
     finally:
         server.close()
         path.unlink(missing_ok=True)
@@ -419,13 +435,14 @@ def main() -> int:
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--socket-dir", type=Path, default=DEFAULT_SOCKET_DIR)
     parser.add_argument("--interval", type=float, default=0.2)
+    parser.add_argument("--sandbox-id")
     args = parser.parse_args()
     root = args.state_dir.expanduser().resolve()
     runtime = args.socket_dir.expanduser().resolve()
     prepare(root, runtime)
     _, _, pidfile = state_paths(root)
     if args.command == "run":
-        return run(root, runtime, args.interval)
+        return run(root, runtime, args.interval, args.sandbox_id)
     if args.command == "status":
         print(json.dumps({"running": is_running(pidfile), "state": str(root), "socket": str(runtime / "manager.sock")}))
         return 0 if is_running(pidfile) else 1
@@ -438,7 +455,18 @@ def main() -> int:
     log = root / "broker.log"
     with log.open("ab") as stream:
         subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "run", "--state-dir", str(root), "--socket-dir", str(runtime), "--interval", str(args.interval)],
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "run",
+                "--state-dir",
+                str(root),
+                "--socket-dir",
+                str(runtime),
+                "--interval",
+                str(args.interval),
+                *(["--sandbox-id", args.sandbox_id] if args.sandbox_id else []),
+            ],
             stdin=subprocess.DEVNULL,
             stdout=stream,
             stderr=stream,

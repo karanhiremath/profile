@@ -8,6 +8,17 @@ Local-only sandbox-manager observability for Hermes.
 just hermes-fleet
 ```
 
+## COSW workspace
+
+The sandbox launcher refuses the primary checkout and requires a linked Git
+worktree for its only broad read-write mount. Create a dedicated worktree under
+`~/src/karan.hiremath-worktrees/cosw-workspace`, or set `COSW_WORKSPACE` to an
+existing linked worktree root. The rest of `~/src` is mounted read-only.
+
+The keep-id mapping binds sandbox uid 1000 to the host operator. Manager state,
+its Unix socket, and spool fallback therefore remain owner-only (`0700`/`0600`)
+instead of relying on world-writable coordination files.
+
 ## Start
 
 Start or upgrade the COSW host manager first. Then provide a local Grafana

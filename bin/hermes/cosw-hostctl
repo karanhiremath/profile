@@ -12,8 +12,27 @@ import time
 import uuid
 from pathlib import Path
 
-DEFAULT_STATE = Path(os.environ.get("COSW_HOST_CONTROL_MOUNT", "/mnt/cosw-host-control"))
-DEFAULT_SOCKET = Path(os.environ.get("COSW_HOST_CONTROL_SOCKET", "/run/hermes-manager/manager.sock"))
+def default_state() -> Path:
+    if value := os.environ.get("COSW_HOST_CONTROL_MOUNT"):
+        return Path(value)
+    if Path("/run/hermes-manager").exists():
+        return Path("/mnt/cosw-host-control")
+    data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return data / "hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/host-control"
+
+
+def default_socket() -> Path:
+    if value := os.environ.get("COSW_HOST_CONTROL_SOCKET"):
+        return Path(value)
+    sandbox = Path("/run/hermes-manager/manager.sock")
+    if sandbox.exists():
+        return sandbox
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/hermes-{os.getuid()}"))
+    return runtime / "hermes-sandbox-manager/chief-of-staff-work/manager.sock"
+
+
+DEFAULT_STATE = default_state()
+DEFAULT_SOCKET = default_socket()
 SCHEMA = "sandbox.manager.v1"
 
 
@@ -60,7 +79,7 @@ def via_spool(root: Path, request: dict[str, object], timeout: float) -> dict[st
     tmp = requests / f".{request_id}.tmp"
     final = requests / f"{request_id}.json"
     tmp.write_text(json.dumps(request, separators=(",", ":")) + "\n", encoding="utf-8")
-    tmp.chmod(0o666)
+    tmp.chmod(0o600)
     tmp.replace(final)
     response = responses / f"{request_id}.json"
     deadline = time.monotonic() + timeout
@@ -69,6 +88,7 @@ def via_spool(root: Path, request: dict[str, object], timeout: float) -> dict[st
             value = json.loads(response.read_text(encoding="utf-8"))
             if not isinstance(value, dict):
                 raise ValueError("host manager returned a non-object")
+            response.unlink(missing_ok=True)
             return value
         time.sleep(0.1)
     raise TimeoutError(f"timed out waiting for host response: {request_id}")

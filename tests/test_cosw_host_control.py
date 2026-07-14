@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,6 +98,46 @@ class HostControlTest(unittest.TestCase):
     def test_expired_request_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "request expired"):
             self.module.identity({"id": "r5", "expires_at": "2020-01-01T00:00:00Z"})
+
+    def test_prepare_keeps_state_and_socket_parent_owner_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            runtime = Path(tmp) / "runtime"
+            self.module.prepare(root, runtime)
+            for path in (root, root / "requests", root / "responses", root / "audit", runtime):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+
+    def test_process_rejects_a_foreign_socket_peer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            self.module.prepare(root, Path(tmp) / "runtime")
+            response = self.module.process(
+                {"id": "r6", "action": "fleet-status"},
+                root,
+                peer_uid=os.getuid() + 1,
+            )
+            self.assertFalse(response["ok"])
+            self.assertIn("PermissionError", response["error"])
+
+    def test_process_binds_identity_to_the_mounted_manager_socket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "state"
+            self.module.prepare(root, Path(tmp) / "runtime")
+            seen = {}
+
+            def handler(request):
+                seen.update(request)
+                return {"schema_version": "sandbox.manager.v1", "id": request["id"], "ok": True}
+
+            with patch.object(self.module, "handle", side_effect=handler):
+                response = self.module.process(
+                    {"id": "r7", "action": "fleet-status", "sandbox_id": "spoofed"},
+                    root,
+                    peer_uid=os.getuid(),
+                    authenticated_sandbox_id="chief-of-staff-work",
+                )
+            self.assertTrue(response["ok"])
+            self.assertEqual(seen["sandbox_id"], "chief-of-staff-work")
 
 
 if __name__ == "__main__":
