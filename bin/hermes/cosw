@@ -201,8 +201,15 @@ ensure_podman() {
   observer_dir="${COSW_HOST_OBSERVER_DIR:-${HERMES_AGENTS_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents}/chief-of-staff-work/host-observer}"
   mkdir -p "$observer_dir"
   if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
+    # Fresh state has no `current` snapshot yet. Publish once synchronously
+    # before starting the periodic observer so the sandbox smoke test cannot
+    # race a potentially slow first inventory.
+    if [ ! -f "$observer_dir/current/SUMMARY.md" ]; then
+      "$SCRIPT_DIR/cosw-host-observer" once --state-dir "$observer_dir" >/dev/null || \
+        die "host observer could not publish initial snapshot: $observer_dir"
+    fi
     "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$observer_dir" >/dev/null || \
-      log "host observer failed to start; continuing without live host snapshot"
+      die "host observer failed to start: $observer_dir"
   fi
 
   volumes=(

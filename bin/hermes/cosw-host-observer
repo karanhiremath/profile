@@ -29,11 +29,11 @@ is_running() {
 }
 
 stat_mtime() {
-  stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || printf '0'
+  stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null || printf '0'
 }
 
 stat_size() {
-  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null || printf '0'
+  stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null || printf '0'
 }
 
 emit_recent_files() {
@@ -47,7 +47,7 @@ emit_recent_files() {
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$mtime" "$size" "$label" "$file" "$sandbox_dir/$rel" "$rel"
     done |
     sort -nr |
-    head -n "$limit"
+    head -n "$limit" || true
 }
 
 snapshot() {
