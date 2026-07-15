@@ -23,6 +23,45 @@ resolve_link() {
   printf '%s\n' "$target"
 }
 
+strip_cosw_args() {
+  COSW_ARGS=()
+  COSW_DISPATCH_DOCTOR=0
+  local arg next
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --dispatch-doctor|--bootstrap-only)
+        COSW_DISPATCH_DOCTOR=1
+        ;;
+      --host-tools)
+        export HERMES_AGENT_TERMINAL_BACKEND=local
+        export TERMINAL_ENV=local
+        ;;
+      --terminal-backend)
+        next="${1:-}"
+        case "$next" in
+          local|docker)
+            export HERMES_AGENT_TERMINAL_BACKEND="$next"
+            export TERMINAL_ENV="$next"
+            [ "$#" -gt 0 ] && shift
+            ;;
+          *) die "--terminal-backend requires local or docker" ;;
+        esac
+        ;;
+      --terminal-backend=local|--terminal-backend=docker)
+        next="${arg#*=}"
+        export HERMES_AGENT_TERMINAL_BACKEND="$next"
+        export TERMINAL_ENV="$next"
+        ;;
+      --)
+        COSW_ARGS+=("--" "$@")
+        break
+        ;;
+      *) COSW_ARGS+=("$arg") ;;
+    esac
+  done
+}
+
 forced_host_tools() {
   local arg next
   while [ "$#" -gt 0 ]; do
@@ -41,41 +80,50 @@ forced_host_tools() {
   [ "${HERMES_AGENT_TERMINAL_BACKEND:-}" = "local" ] || [ "${TERMINAL_ENV:-}" = "local" ]
 }
 
-strip_cosw_args() {
-  COSW_ARGS=()
-  local arg next
-  while [ "$#" -gt 0 ]; do
-    arg="$1"; shift
-    case "$arg" in
-      --host-tools)
-        export TERMINAL_ENV="${TERMINAL_ENV:-local}"
-        ;;
-      --terminal-backend)
-        next="${1:-}"
-        case "$next" in
-          local|docker)
-            export TERMINAL_ENV="$next"
-            [ "$#" -gt 0 ] && shift
-            ;;
-          *)
-            COSW_ARGS+=("$arg")
-            [ "$#" -gt 0 ] && { COSW_ARGS+=("$1"); shift; }
-            ;;
-        esac
-        ;;
-      --terminal-backend=local)
-        export TERMINAL_ENV=local
-        ;;
-      --terminal-backend=docker)
-        export TERMINAL_ENV=docker
-        ;;
-      --)
-        COSW_ARGS+=("--" "$@")
-        break
-        ;;
-      *) COSW_ARGS+=("$arg") ;;
-    esac
-  done
+ensure_dispatch_bootstrap() {
+  local toolchain py profile_home state runtime bin result
+  toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+  py="$toolchain/venv/bin/python"
+  [ -x "$py" ] || die "Hermes Python is unavailable: $py (run bin/hermes/install)"
+  if ! result="$("$py" "$SCRIPT_DIR/project_sessions.py" doctor 2>&1)"; then
+    printf '%s\n' "$result" >&2
+    die "COSW project dispatch bootstrap failed; apply the remediation above"
+  fi
+  profile_home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  state="$profile_home/host-control"
+  runtime="${COSW_HOST_CONTROL_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp/hermes-$(id -u)}/hermes-sandbox-manager/chief-of-staff-work}"
+  bin="$state/bin"
+  mkdir -p "$bin" "$runtime"
+  chmod 0700 "$profile_home" "$state" "$runtime" 2>/dev/null || true
+  install -m 0755 "$SCRIPT_DIR/cosw-hostctl" "$bin/cosw-hostctl"
+  if ! "$SCRIPT_DIR/cosw-host-control" start \
+      --state-dir "$state" --socket-dir "$runtime" --sandbox-id chief-of-staff-work >/dev/null; then
+    die "COSW host manager failed to start; inspect $state/broker.log"
+  fi
+  # A manager may survive a profile pull. Probe the current protocol and replace
+  # only that dedicated helper when its socket/action set is stale.
+  if [ ! -S "$runtime/manager.sock" ] || ! "$bin/cosw-hostctl" bootstrap \
+      --socket "$runtime/manager.sock" --timeout 10 >/dev/null 2>&1; then
+    log "restarting stale COSW host manager after dispatch protocol upgrade"
+    "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ ! -e "$state/pid" ] && break
+      sleep 0.1
+    done
+    "$SCRIPT_DIR/cosw-host-control" start \
+      --state-dir "$state" --socket-dir "$runtime" --sandbox-id chief-of-staff-work >/dev/null || \
+      die "COSW host manager failed to restart; inspect $state/broker.log"
+  fi
+  [ -S "$runtime/manager.sock" ] || die "COSW host manager did not create $runtime/manager.sock"
+  "$bin/cosw-hostctl" bootstrap --socket "$runtime/manager.sock" --timeout 10 >/dev/null || \
+    die "COSW host manager bootstrap probe failed; inspect $state/broker.log"
+  export PATH="$bin:$PATH"
+  export COSW_HOST_CONTROL_SOCKET="$runtime/manager.sock"
+  export COSW_HOST_CONTROL_MOUNT="$state"
+  export HERMES_PERSONA_APPEND_FILE="$SCRIPT_DIR/bootstrap/cosw-dispatch.md"
+  COSW_DISPATCH_STATE="$state"
+  COSW_DISPATCH_RUNTIME="$runtime"
+  COSW_DISPATCH_CLIENT="$bin/cosw-hostctl"
 }
 
 json_array() {
@@ -122,8 +170,13 @@ ensure_podman() {
   [ -n "$podman" ] || die "podman not executable: ${HERMES_DOCKER_BINARY:-podman}"
 
   export HERMES_DOCKER_BINARY="$podman"
-  export TERMINAL_ENV="${TERMINAL_ENV:-docker}"
-  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/root}"
+  export HERMES_AGENT_TERMINAL_BACKEND=docker
+  export TERMINAL_ENV=docker
+  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/workspace}"
+  # Keep the sandbox uid authenticated as the invoking host user for the
+  # private Unix-socket bridge; do not mount the raw host tmux socket.
+  export TERMINAL_DOCKER_EXTRA_ARGS="${TERMINAL_DOCKER_EXTRA_ARGS:-[\"--userns=keep-id:uid=1000,gid=1000\"]}"
+  export TERMINAL_DOCKER_ENV="${TERMINAL_DOCKER_ENV:-{\"COSW_HOST_CONTROL_SOCKET\":\"/run/hermes-manager/manager.sock\",\"HERMES_SANDBOX_ID\":\"chief-of-staff-work\"}}"
 
   if ! "$podman" info >/dev/null 2>&1; then
     log "Podman machine unavailable; starting default machine"
@@ -143,6 +196,8 @@ ensure_podman() {
   export TERMINAL_DOCKER_IMAGE="${TERMINAL_DOCKER_IMAGE:-$image}"
 
   local observer_dir volumes
+  [ -n "${COSW_DISPATCH_RUNTIME:-}" ] || die "internal error: dispatch manager was not bootstrapped"
+  [ -x "${COSW_DISPATCH_CLIENT:-}" ] || die "internal error: sandbox dispatch client is unavailable"
   observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
   mkdir -p "$observer_dir"
   if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
@@ -155,6 +210,8 @@ ensure_podman() {
     "$HOME/src:/home/hermes/src"
     "$observer_dir:/home/hermes/.cosw-host:ro"
     "$observer_dir:/root/.cosw-host:ro"
+    "$COSW_DISPATCH_RUNTIME:/run/hermes-manager:ro"
+    "$COSW_DISPATCH_CLIENT:/usr/local/bin/cosw-hostctl:ro"
   )
   [ ! -d "$HOME/.pi/agent/sessions" ] || volumes+=("$HOME/.pi/agent/sessions:/mnt/host-pi-agent-sessions:ro")
   [ ! -d "$HOME/.pi/sessions" ] || volumes+=("$HOME/.pi/sessions:/mnt/host-pi-sessions:ro")
@@ -187,8 +244,8 @@ ensure_podman() {
     -w "$TERMINAL_CWD" \
     --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add CHOWN --cap-add FOWNER \
     --security-opt no-new-privileges --pids-limit 256 \
-    --tmpfs /tmp:rw,nosuid,size=512m --tmpfs /var/tmp:rw,noexec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=64m \
-    --user "$(id -u):$(id -g)" \
+    --tmpfs /tmp:rw,nosuid,size=512m --tmpfs /var/tmp:rw,noexec,nosuid,size=256m \
+    --userns=keep-id:uid=1000,gid=1000 \
     -v "$home/sandboxes/docker/default/home:/root" \
     -v "$home/sandboxes/docker/default/workspace:/workspace" \
     "${volume_args[@]}" \
@@ -196,7 +253,7 @@ ensure_podman() {
     -v "$home/skills:/root/.hermes/skills:ro" \
     -v "$home/image_cache:/root/.hermes/cache/images:ro" \
     -v "$home/audio_cache:/root/.hermes/cache/audio:ro" \
-    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md' >"$smoke" 2>&1; then
+    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md && test -w /workspace && test -S /run/hermes-manager/manager.sock && test -x /usr/local/bin/cosw-hostctl && cosw-hostctl bootstrap >/dev/null' >"$smoke" 2>&1; then
     cat "$smoke" >&2 || true
     "$podman" rm -f "$name" >/dev/null 2>&1 || true
     die "podman sandbox smoke test failed"
@@ -208,7 +265,7 @@ ensure_podman() {
     [ -n "$cid" ] || continue
     details="$("$podman" inspect "$cid" --format '{{.ImageName}} {{json .Mounts}}' 2>/dev/null || true)"
     case "$details" in
-      *"$image"*"/root/src"*"/home/hermes/src"*"/root/.cosw-host"*) ;;
+      *"$image"*"/root/src"*"/home/hermes/src"*"/run/hermes-manager"*"/root/.cosw-host"*) ;;
       *)
         running="$("$podman" inspect "$cid" --format '{{.State.Running}}' 2>/dev/null || true)"
         if [ "$running" = "true" ]; then
@@ -222,12 +279,22 @@ ensure_podman() {
   done < <("$podman" ps -a --filter label=hermes-profile=chief-of-staff-work --format '{{.ID}}' 2>/dev/null || true)
 }
 
+strip_cosw_args "$@"
+
 if [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
   ensure_toolchain
-  if ! forced_host_tools "$@"; then
-    ensure_podman
-  fi
+fi
+# Dispatch bootstrap is mandatory even when expensive Podman checks are skipped:
+# a COSW session without its registry/host bridge is not a usable dispatcher.
+ensure_dispatch_bootstrap
+
+if [ "$COSW_DISPATCH_DOCTOR" = "1" ]; then
+  exec "$COSW_DISPATCH_CLIENT" bootstrap --socket "$COSW_HOST_CONTROL_SOCKET"
 fi
 
-strip_cosw_args "$@"
+if ! forced_host_tools; then
+  [ "${COSW_SKIP_PREFLIGHT:-0}" = "1" ] || ensure_podman
+else
+  export HERMES_AGENT_TERMINAL_BACKEND=local
+fi
 exec "$SCRIPT_DIR/agents" up chief-of-staff-work "${COSW_ARGS[@]}"

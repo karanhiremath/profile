@@ -2,6 +2,30 @@
 # Show non-secret Hermes toolchain status.
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Usage: doctor [--dispatch]
+  --dispatch  also fail-closed validate COSW registries, PM profiles, tmux, and bridge commands
+EOF
+}
+CHECK_DISPATCH=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dispatch) CHECK_DISPATCH=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'doctor: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
 HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
 PNPM_HOME="${HERMES_PNPM_HOME:-$HERMES_TOOLCHAIN_HOME/pnpm}"
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
@@ -51,6 +75,15 @@ if command -v herm >/dev/null 2>&1 && command -v bun >/dev/null 2>&1; then
   else
     printf 'herm_help=failed\n'
   fi
+fi
+
+if [ "$CHECK_DISPATCH" = "1" ]; then
+  [ -x "$VENV/bin/python" ] || { printf 'cosw_dispatch=failed python unavailable\n' >&2; exit 1; }
+  "$VENV/bin/python" "$SCRIPT_DIR/project_sessions.py" doctor
+  for command in cosw-host-control cosw-hostctl; do
+    [ -x "$SCRIPT_DIR/$command" ] || { printf 'cosw_dispatch=failed missing %s\n' "$command" >&2; exit 1; }
+  done
+  printf 'cosw_dispatch=ok\n'
 fi
 
 if [ -d "$PRIVATE_DIR/.git" ]; then

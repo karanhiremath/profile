@@ -197,7 +197,7 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         terminal = dict(terminal) if isinstance(terminal, dict) else {}
         terminal["backend"] = override
         if override in {"docker", "singularity", "modal", "daytona"} and not terminal.get("cwd"):
-            terminal["cwd"] = "/root"
+            terminal["cwd"] = os.environ.get("TERMINAL_CWD") or ("/workspace" if override == "docker" else "/root")
         if override == "docker":
             terminal.setdefault("docker_image", os.environ.get("TERMINAL_DOCKER_IMAGE", "localhost/hermes-agent/python-node:dev"))
             volumes_env = os.environ.get("TERMINAL_DOCKER_VOLUMES", "").strip()
@@ -212,6 +212,26 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
             if src.is_dir() and not terminal.get("docker_volumes"):
                 terminal["docker_volumes"] = [f"{src}:/root/src", f"{src}:/home/hermes/src"]
             terminal.setdefault("docker_persist_across_processes", False)
+            extra_args_env = os.environ.get("TERMINAL_DOCKER_EXTRA_ARGS", "").strip()
+            if extra_args_env:
+                try:
+                    extra_args = json.loads(extra_args_env)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(f"ERROR: TERMINAL_DOCKER_EXTRA_ARGS must be a JSON array: {exc}") from exc
+                if not isinstance(extra_args, list) or not all(isinstance(item, str) for item in extra_args):
+                    raise SystemExit("ERROR: TERMINAL_DOCKER_EXTRA_ARGS must be a JSON array of strings")
+                terminal["docker_extra_args"] = extra_args
+            docker_env_raw = os.environ.get("TERMINAL_DOCKER_ENV", "").strip()
+            if docker_env_raw:
+                try:
+                    docker_env = json.loads(docker_env_raw)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(f"ERROR: TERMINAL_DOCKER_ENV must be a JSON object: {exc}") from exc
+                if not isinstance(docker_env, dict) or not all(
+                    isinstance(key, str) and isinstance(value, str) for key, value in docker_env.items()
+                ):
+                    raise SystemExit("ERROR: TERMINAL_DOCKER_ENV must be a JSON object of string values")
+                terminal["docker_env"] = docker_env
     if isinstance(terminal, dict) and terminal:
         cfg["terminal"] = terminal
     if tts_on:
@@ -276,8 +296,19 @@ def materialize(name: str) -> Path:
     if herm_prefs:
         _merge_json_file(home / "herm" / "tui.json", herm_prefs)
 
-    # SOUL.md — persona.
+    # SOUL.md — persona plus a launcher-supplied, generic bootstrap contract.
+    # The append file is intentionally explicit rather than discovered from the
+    # work repo, so generic launchers can expose capabilities without embedding
+    # project-specific state in profile tooling.
     persona = (profile.get("persona") or "").strip()
+    append_path = os.environ.get("HERMES_PERSONA_APPEND_FILE", "").strip()
+    if append_path:
+        source = Path(append_path).expanduser()
+        if not source.is_file():
+            raise SystemExit(f"ERROR: HERMES_PERSONA_APPEND_FILE is unavailable: {source}")
+        appendix = source.read_text(encoding="utf-8").strip()
+        if appendix:
+            persona = f"{persona}\n\n{appendix}" if persona else appendix
     if persona:
         (home / "SOUL.md").write_text(persona + "\n", encoding="utf-8")
 

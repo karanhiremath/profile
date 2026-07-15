@@ -32,8 +32,11 @@ cos                         # agents up chief-of-staff
 cosw                        # agents up chief-of-staff-work
 pm <project>                # attach/start the Hermes PM TUI session for project
 pl <project>                # attach the project-lead implementation tmux session
-cosw-hostctl ensure-pm <project>  # sandbox-safe, detached host PM creation
-cosw-hostctl ensure-pl <project>  # sandbox-safe, detached PL session creation
+cosw --dispatch-doctor              # fail-closed registry/bridge bootstrap check
+cosw-hostctl bootstrap              # sandbox-safe project discovery + liveness
+cosw-hostctl ensure-pm <project>    # sandbox-safe, detached host PM creation
+cosw-hostctl ensure-pl <project>    # sandbox-safe, detached PL session creation
+cosw-hostctl dispatch-pm <project> --message '<PM action>' --handoff /abs/path --wait-ack 120
 cosw-hostctl notify-pm <project> --message '<bounded instruction>'
 bin/hermes/project_sessions.py list
 bin/hermes/project_sessions.py resolve <project>
@@ -48,7 +51,11 @@ Project registries are searched in:
 
 A PM-managed handoff is incomplete unless the project event bus receives a `pm_action_required` event telling the PM to register/spawn the replacement Pi coding agent with the handoff prompt. Profile owns the wrappers; project-specific event types, handoffs, kanban/Linear references, and guardrails live in the project registry.
 
-`cosw` keeps its terminal sandboxed and does not expose the raw host tmux socket. Instead, `cosw-host-control` accepts only registry-resolved `ensure-pm`, `ensure-pl`, `notify-pm`, and `status` requests through private request/response directories. The launcher also stages gcloud CLI user credentials into the writable container layer and mounts the host Cloud SDK read-only; ADC is intentionally not copied.
+`cosw` keeps its terminal sandboxed and does not expose the raw host tmux socket. On every launch it validates registries, project schemas, PM profiles, tmux, event destinations, and commands; starts or protocol-upgrades a private Unix-socket manager; injects the generic dispatch operating contract into the fresh persona; and verifies `cosw-hostctl bootstrap` from the Podman sandbox before starting Herm. Startup fails with remediation instead of creating a dispatcher that cannot dispatch.
+
+`dispatch-pm` is the reliable CoS → PM path. The host manager resolves the registry alias, appends `pm_action_required` to every registered writable bus destination, starts the PM if missing, waits for the Herm pane, and safely pastes the bounded action into the active pane. Its response is a transport acknowledgement. With `--wait-ack`, the client separately waits for a PM-authored `pm_action_acknowledged` event carrying the dispatch ID. Generic mechanics remain here; project names, session names, paths, and guardrails remain in registry repos.
+
+Existing installs: update the profile checkout, run `bin/hermes/install --skip-private-sync` (to install the two bridge shims), then run `bin/hermes/doctor --dispatch` and `cosw --dispatch-doctor`. The launcher automatically replaces an older dedicated COSW manager process when its protocol probe fails; no COSW state deletion is required.
 
 ## Voice agents (`agents`)
 
