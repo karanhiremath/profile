@@ -89,7 +89,7 @@ ensure_dispatch_bootstrap() {
     printf '%s\n' "$result" >&2
     die "COSW project dispatch bootstrap failed; apply the remediation above"
   fi
-  profile_home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  profile_home="${HERMES_AGENTS_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents}/chief-of-staff-work/profiles/chief-of-staff-work"
   state="$profile_home/host-control"
   runtime="${COSW_HOST_CONTROL_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp/hermes-$(id -u)}/hermes-sandbox-manager/chief-of-staff-work}"
   bin="$state/bin"
@@ -198,7 +198,7 @@ ensure_podman() {
   local observer_dir volumes
   [ -n "${COSW_DISPATCH_RUNTIME:-}" ] || die "internal error: dispatch manager was not bootstrapped"
   [ -x "${COSW_DISPATCH_CLIENT:-}" ] || die "internal error: sandbox dispatch client is unavailable"
-  observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
+  observer_dir="${COSW_HOST_OBSERVER_DIR:-${HERMES_AGENTS_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents}/chief-of-staff-work/host-observer}"
   mkdir -p "$observer_dir"
   if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
     "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$observer_dir" >/dev/null || \
@@ -232,7 +232,7 @@ ensure_podman() {
     die "sandbox image missing: $image (run: ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh python-node-fedora)"
 
   local home name smoke volume_args=() vol
-  home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  home="${HERMES_AGENTS_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents}/chief-of-staff-work/profiles/chief-of-staff-work"
   mkdir -p "$home/sandboxes/docker/default/home" "$home/sandboxes/docker/default/workspace" \
     "$home/skills" "$home/image_cache" "$home/audio_cache"
   for vol in "${volumes[@]}"; do

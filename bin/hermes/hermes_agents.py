@@ -91,6 +91,8 @@ def find_profile(name: str) -> Path:
 
 
 def _data_home() -> Path:
+    if override := os.environ.get("HERMES_AGENTS_DATA_HOME"):
+        return Path(override).expanduser()
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "hermes-agents"
 
