@@ -28,26 +28,37 @@ def _under_root(root: Path) -> Path | None:
     (layout differs across pnpm versions, e.g. v11 -> $PNPM_HOME/global/v11), so
     check both `<root>/herm-tui` and `<root>/node_modules/herm-tui`.
     """
-    for candidate in (root / "herm-tui", root / "node_modules" / "herm-tui"):
+    candidates = [root / "herm-tui", root / "node_modules" / "herm-tui"]
+    # pnpm v11 may place global packages under a hash/project directory, e.g.
+    #   <global>/v11/<hash>/node_modules/herm-tui
+    # while `pnpm root -g` reports only <global>/v11.
+    candidates.extend(sorted(root.glob("*/herm-tui")))
+    candidates.extend(sorted(root.glob("*/node_modules/herm-tui")))
+    for candidate in candidates:
         if candidate.exists():
             return candidate
     return None
 
 
 def _herm_tui_dir() -> Path:
-    """Locate the pnpm-global herm-tui install directory.
+    """Locate the active herm-tui install/source directory.
 
-    Resolution order (robust across pnpm's internal global layout):
-      1. HERMES_PNPM_GLOBAL_ROOT (exported by install-tui after `pnpm root -g`)
-      2. `pnpm root -g` at runtime
-      3. glob under the toolchain-local PNPM_HOME
+    Resolution order:
+      1. HERMES_HERM_TUI_DIR (install-tui exports this; may be ~/src/herm)
+      2. HERMES_PNPM_GLOBAL_ROOT / `pnpm root -g`
+      3. toolchain-local pnpm global store
+      4. legacy npm-global install used by older profile shims
+      5. local fork checkout at ~/src/herm
     """
+    direct_env = os.environ.get("HERMES_HERM_TUI_DIR")
+    if direct_env and Path(direct_env).exists():
+        return Path(direct_env)
+
     root_env = os.environ.get("HERMES_PNPM_GLOBAL_ROOT")
     if root_env:
         found = _under_root(Path(root_env))
         if found:
             return found
-        return Path(root_env) / "herm-tui"
     try:
         root = subprocess.run(
             ["pnpm", "root", "-g"], capture_output=True, text=True, check=True
@@ -68,10 +79,21 @@ def _herm_tui_dir() -> Path:
     )
     if matches:
         return matches[-1]
+
+    toolchain = Path(os.environ.get("HERMES_TOOLCHAIN_HOME", HOME / ".local/share/hermes-toolchain"))
+    npm_home = Path(os.environ.get("HERMES_NPM_HOME", toolchain / "npm"))
+    legacy = npm_home / "lib/node_modules/herm-tui"
+    if legacy.exists():
+        return legacy
+
+    local_fork = HOME / "src/herm"
+    if local_fork.exists():
+        return local_fork
     return pnpm_home / "global/v11/node_modules/herm-tui"
 
 
 HERM_TUI = _herm_tui_dir()
+BUILTIN_THEMES = HERM_TUI / "src/theme/themes"
 THEMES = HERM_TUI / "themes"
 INDEX = HERM_TUI / "index.js"
 
@@ -214,15 +236,25 @@ def nighttide_theme(
 
 
 THEME_VARIANTS = {
-    # Backward-compatible alias: if a profile already points at nighttide, it
-    # remains personal unless the path is clearly work-scoped below.
-    "nighttide": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
+    # Match the herm-tui fork's built-in names. `nighttide` is the work/ember
+    # default; `nighttide-violet` is the personal/default variant. Keep legacy
+    # aliases for older generated installs.
+    "nighttide": (WORK_ACCENT, WORK_PRIMARY_TEXT, WORK_LINE_COLOR),
+    "nighttide-ember": (WORK_ACCENT, WORK_PRIMARY_TEXT, WORK_LINE_COLOR),
+    "nighttide-violet": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
     "nighttide-personal": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
     "nighttide-work": (WORK_ACCENT, WORK_PRIMARY_TEXT, WORK_LINE_COLOR),
 }
 
 
 def write_themes() -> None:
+    # The local herm-tui fork carries Nighttide as built-ins under src/theme;
+    # do not dirty that checkout with generated runtime copies. Package builds
+    # without those built-ins still get generated themes under <pkg>/themes.
+    if (BUILTIN_THEMES / "nighttide.json").exists() and (
+        BUILTIN_THEMES / "nighttide-violet.json"
+    ).exists():
+        return
     THEMES.mkdir(parents=True, exist_ok=True)
     for name, (accent, primary, line_color) in THEME_VARIANTS.items():
         (THEMES / f"{name}.json").write_text(
@@ -259,9 +291,15 @@ def ensure_registry() -> None:
 
 
 def is_work_home(home: Path) -> bool:
-    parts = set(home.parts)
+    parts = {part.lower() for part in home.parts}
     name = home.name.lower()
-    return "work" in parts or "chief-of-staff-work" in parts or name.endswith("-work")
+    return (
+        "work" in parts
+        or "chief-of-staff-work" in parts
+        or name == "hwork"
+        or name.startswith("work-")
+        or name.endswith("-work")
+    )
 
 
 def theme_for_home(home: Path) -> str:
@@ -292,9 +330,17 @@ def candidate_homes() -> list[Path]:
         homes.extend(p for p in profiles.iterdir() if p.is_dir())
 
     # Standalone Hermes Agent profile homes, plus their nested profile homes.
+    # Walk with os.walk(onerror=...) so unreadable subtrees (e.g. an agent's
+    # sandbox-auth/gcloud/logs) are skipped instead of raising PermissionError.
     agents = HOME / ".local/share/hermes-agents"
     if agents.exists():
-        homes.extend(p for p in agents.rglob("*") if (p / "config.yaml").exists() or (p / "SOUL.md").exists())
+        for dirpath, _dirnames, _filenames in os.walk(agents, onerror=lambda _e: None):
+            d = Path(dirpath)
+            try:
+                if (d / "config.yaml").exists() or (d / "SOUL.md").exists():
+                    homes.append(d)
+            except OSError:
+                continue
 
     seen = set()
     ordered = []
