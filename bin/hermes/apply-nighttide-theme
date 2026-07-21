@@ -28,7 +28,13 @@ def _under_root(root: Path) -> Path | None:
     (layout differs across pnpm versions, e.g. v11 -> $PNPM_HOME/global/v11), so
     check both `<root>/herm-tui` and `<root>/node_modules/herm-tui`.
     """
-    for candidate in (root / "herm-tui", root / "node_modules" / "herm-tui"):
+    candidates = [root / "herm-tui", root / "node_modules" / "herm-tui"]
+    # pnpm v11 may place global packages under a hash/project directory, e.g.
+    #   <global>/v11/<hash>/node_modules/herm-tui
+    # while `pnpm root -g` reports only <global>/v11.
+    candidates.extend(sorted(root.glob("*/herm-tui")))
+    candidates.extend(sorted(root.glob("*/node_modules/herm-tui")))
+    for candidate in candidates:
         if candidate.exists():
             return candidate
     return None
@@ -42,12 +48,15 @@ def _herm_tui_dir() -> Path:
       2. `pnpm root -g` at runtime
       3. glob under the toolchain-local PNPM_HOME
     """
+    direct_env = os.environ.get("HERMES_HERM_TUI_DIR")
+    if direct_env and Path(direct_env).exists():
+        return Path(direct_env)
+
     root_env = os.environ.get("HERMES_PNPM_GLOBAL_ROOT")
     if root_env:
         found = _under_root(Path(root_env))
         if found:
             return found
-        return Path(root_env) / "herm-tui"
     try:
         root = subprocess.run(
             ["pnpm", "root", "-g"], capture_output=True, text=True, check=True
@@ -294,7 +303,13 @@ def candidate_homes() -> list[Path]:
     # Standalone Hermes Agent profile homes, plus their nested profile homes.
     agents = HOME / ".local/share/hermes-agents"
     if agents.exists():
-        homes.extend(p for p in agents.rglob("*") if (p / "config.yaml").exists() or (p / "SOUL.md").exists())
+        for dirpath, _dn, _fn in os.walk(agents, onerror=lambda _e: None):
+            d = Path(dirpath)
+            try:
+                if (d / "config.yaml").exists() or (d / "SOUL.md").exists():
+                    homes.append(d)
+            except OSError:
+                continue
 
     seen = set()
     ordered = []

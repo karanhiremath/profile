@@ -41,6 +41,46 @@ forced_host_tools() {
   [ "${HERMES_AGENT_TERMINAL_BACKEND:-}" = "local" ] || [ "${TERMINAL_ENV:-}" = "local" ]
 }
 
+strip_cosw_args() {
+  COSW_ARGS=()
+  local arg next
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --refresh-gh-auth|--refresh-sandbox-auth)
+        COSW_REFRESH_GH_AUTH_ONLY=1
+        ;;
+      --host-tools)
+        export TERMINAL_ENV="${TERMINAL_ENV:-local}"
+        ;;
+      --terminal-backend)
+        next="${1:-}"
+        case "$next" in
+          local|docker)
+            export TERMINAL_ENV="$next"
+            [ "$#" -gt 0 ] && shift
+            ;;
+          *)
+            COSW_ARGS+=("$arg")
+            [ "$#" -gt 0 ] && { COSW_ARGS+=("$1"); shift; }
+            ;;
+        esac
+        ;;
+      --terminal-backend=local)
+        export TERMINAL_ENV=local
+        ;;
+      --terminal-backend=docker)
+        export TERMINAL_ENV=docker
+        ;;
+      --)
+        COSW_ARGS+=("--" "$@")
+        break
+        ;;
+      *) COSW_ARGS+=("$arg") ;;
+    esac
+  done
+}
+
 json_array() {
   local out="[" sep="" item esc
   for item in "$@"; do
@@ -53,11 +93,225 @@ json_array() {
   printf '%s\n' "$out"
 }
 
+stage_gh_auth_for_sandbox() {
+  local profile_home="$1" src="$HOME/.config/gh" dst tmp
+  [ "${COSW_GH_AUTH:-1}" = "1" ] || return 0
+  [ -f "$src/hosts.yml" ] || return 0
+  dst="$profile_home/sandbox-auth/gh"
+  tmp="$profile_home/sandbox-auth/gh.tmp.$$"
+  mkdir -p "$tmp"
+  [ ! -f "$src/config.yml" ] || cp "$src/config.yml" "$tmp/config.yml"
+  cp "$src/hosts.yml" "$tmp/hosts.yml"
+  # The container runs as uid 1000 and bind-mounted host files appear as root.
+  # Keep the host parent private (profile_home is 0700) but make these staged
+  # copies world-readable inside the read-only mount so gh can read them.
+  chmod 0444 "$tmp"/*.yml
+  chmod 0555 "$tmp"
+  if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+    # Preserve the directory inode so already-running containers with this
+    # directory bind-mounted read-only see refreshed files after host auth
+    # rotation. Replacing the directory would leave those mounts pinned to the
+    # old/deleted inode until the sandbox is restarted.
+    chmod u+w "$dst" 2>/dev/null || true
+    chmod u+w "$dst"/*.yml 2>/dev/null || true
+    rm -f "$dst/hosts.yml" "$dst/config.yml"
+    cp "$tmp"/*.yml "$dst/"
+    chmod 0444 "$dst"/*.yml
+    chmod 0555 "$dst"
+    chmod -R u+w "$tmp" 2>/dev/null || true
+    rm -rf "$tmp"
+  else
+    if [ -e "$dst" ]; then
+      chmod -R u+w "$dst" 2>/dev/null || true
+      rm -rf "$dst"
+    fi
+    mv "$tmp" "$dst"
+  fi
+  printf '%s\n' "$dst"
+}
+
+stage_gh_gitconfig_for_sandbox() {
+  local profile_home="$1" dst
+  [ "${COSW_GH_AUTH:-1}" = "1" ] || return 0
+  dst="$profile_home/sandbox-auth/gitconfig"
+  mkdir -p "$(dirname "$dst")"
+  [ ! -e "$dst" ] || chmod u+w "$dst" 2>/dev/null || true
+  cat >"$dst" <<'EOF'
+[user]
+	name = Karan Hiremath
+	email = karan.hiremath@cartesia.ai
+[safe]
+	directory = *
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+[credential "https://github.com"]
+	helper =
+	helper = !gh auth git-credential
+[credential "https://gist.github.com"]
+	helper =
+	helper = !gh auth git-credential
+EOF
+  chmod 0444 "$dst"
+  printf '%s\n' "$dst"
+}
+
+stage_readable_skills_for_sandbox() {
+  local profile_home="$1" src="$profile_home/skills" dst tmp
+  [ -d "$src" ] || return 0
+  dst="$profile_home/sandbox-readable/skills"
+  tmp="$profile_home/sandbox-readable/skills.tmp.$$"
+  mkdir -p "$tmp"
+  cp -R "$src/." "$tmp/"
+  chmod -R a+rX "$tmp" 2>/dev/null || true
+  chmod 0555 "$tmp" 2>/dev/null || true
+  if [ -e "$dst" ]; then
+    chmod -R u+w "$dst" 2>/dev/null || true
+    rm -rf "$dst"
+  fi
+  mv "$tmp" "$dst"
+  printf '%s\n' "$dst"
+}
+
+stage_auth_dir_for_sandbox() {
+  local profile_home="$1" name="$2" src="$3" dst tmp
+  [ -d "$src" ] || return 0
+  dst="$profile_home/sandbox-auth/$name"
+  tmp="$profile_home/sandbox-auth/$name.tmp.$$"
+  mkdir -p "$tmp"
+  cp -R "$src/." "$tmp/"
+  find "$tmp" -type d -exec chmod 0555 {} + 2>/dev/null || true
+  find "$tmp" -type f -exec chmod 0444 {} + 2>/dev/null || true
+  if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+    # Preserve the directory inode so existing read-only bind mounts keep seeing
+    # refreshed auth. Copy over current files without an empty-window delete;
+    # stale cache files are safer than transiently missing auth during a plan.
+    chmod -R u+w "$dst" 2>/dev/null || true
+    cp -R "$tmp/." "$dst/"
+    find "$dst" -type d -exec chmod 0555 {} + 2>/dev/null || true
+    find "$dst" -type f -exec chmod 0444 {} + 2>/dev/null || true
+    chmod -R u+w "$tmp" 2>/dev/null || true
+    rm -rf "$tmp"
+  else
+    if [ -e "$dst" ]; then
+      chmod -R u+w "$dst" 2>/dev/null || true
+      rm -rf "$dst"
+    fi
+    mv "$tmp" "$dst"
+  fi
+  printf '%s\n' "$dst"
+}
+
+stage_aws_auth_for_sandbox() {
+  local profile_home="$1" src="$HOME/.aws"
+  [ "${COSW_AWS_AUTH:-1}" = "1" ] || return 0
+  [ -d "$src" ] || return 0
+  # Stage readable copies under the private profile home instead of mounting the
+  # host ~/.aws directly: bind-mounted 0600 files are unreadable to the sandbox
+  # uid. Never print these files; they may contain SSO/session auth material.
+  stage_auth_dir_for_sandbox "$profile_home" aws "$src"
+}
+
+stage_op_auth_for_sandbox() {
+  local profile_home="$1" src="$HOME/.config/op"
+  [ "${COSW_OP_AUTH:-1}" = "1" ] || return 0
+  [ -d "$src" ] || return 0
+  # 1Password CLI account metadata/session state; never print contents.
+  stage_auth_dir_for_sandbox "$profile_home" op "$src"
+}
+
+refresh_running_gh_auth() {
+  local podman="$1" gh_auth_dir="$2" gh_gitconfig="${3:-}" skills_ro_dir="${4:-}" aws_auth_dir="${5:-}" op_auth_dir="${6:-}" cid name ok=0 failed=0
+  [ -n "$gh_auth_dir" ] || return 0
+  [ -f "$gh_auth_dir/hosts.yml" ] || return 0
+  while read -r cid; do
+    [ -n "$cid" ] || continue
+    name="$($podman inspect "$cid" --format '{{.Name}}' 2>/dev/null || printf '%s' "$cid")"
+    [ "${COSW_AUTH_SYNC_QUIET:-0}" = "1" ] || log "refreshing sandbox auth in running sandbox $name"
+    "$podman" exec -u 0 "$cid" sh -lc 'mkdir -p /home/hermes/.config/gh /root/.config/gh; chmod 0755 /home/hermes/.config /root/.config 2>/dev/null || true; chmod u+w /home/hermes/.config/gh /root/.config/gh 2>/dev/null || true' >/dev/null 2>&1 || true
+    if "$podman" cp "$gh_auth_dir/." "$cid:/home/hermes/.config/gh/" >/dev/null 2>&1; then
+      "$podman" exec -u 0 "$cid" sh -lc 'cp -f /home/hermes/.config/gh/*.yml /root/.config/gh/ 2>/dev/null || true; chmod 0555 /home/hermes/.config/gh /root/.config/gh 2>/dev/null || true; chmod 0444 /home/hermes/.config/gh/*.yml /root/.config/gh/*.yml 2>/dev/null || true' >/dev/null 2>&1 || true
+    fi
+    if [ -n "$gh_gitconfig" ] && [ -f "$gh_gitconfig" ]; then
+      "$podman" cp "$gh_gitconfig" "$cid:/home/hermes/.gitconfig" >/dev/null 2>&1 || true
+      "$podman" cp "$gh_gitconfig" "$cid:/root/.gitconfig" >/dev/null 2>&1 || true
+      "$podman" exec -u 0 "$cid" sh -lc 'chmod 0444 /home/hermes/.gitconfig /root/.gitconfig 2>/dev/null || true' >/dev/null 2>&1 || true
+    fi
+    if [ -n "$skills_ro_dir" ] && [ -d "$skills_ro_dir" ]; then
+      if ! "$podman" exec "$cid" test -f /home/hermes/.hermes/skills/workflows/handoff-bootstrap/SKILL.md 2>/dev/null; then
+        "$podman" exec -u 0 "$cid" sh -lc 'mkdir -p /home/hermes/.hermes/skills; chmod -R u+w /home/hermes/.hermes/skills 2>/dev/null || true' >/dev/null 2>&1 || true
+        "$podman" cp "$skills_ro_dir/." "$cid:/home/hermes/.hermes/skills/" >/dev/null 2>&1 || true
+        "$podman" exec -u 0 "$cid" sh -lc 'chmod -R a+rX /home/hermes/.hermes 2>/dev/null || true' >/dev/null 2>&1 || true
+      fi
+    fi
+    if [ -n "$aws_auth_dir" ] && [ -d "$aws_auth_dir" ]; then
+      "$podman" exec -u 0 "$cid" sh -lc 'mkdir -p /home/hermes/.aws /root/.aws; chmod -R u+w /home/hermes/.aws /root/.aws 2>/dev/null || true' >/dev/null 2>&1 || true
+      "$podman" cp "$aws_auth_dir/." "$cid:/home/hermes/.aws/" >/dev/null 2>&1 || true
+      "$podman" cp "$aws_auth_dir/." "$cid:/root/.aws/" >/dev/null 2>&1 || true
+      "$podman" exec -u 0 "$cid" sh -lc 'chmod -R a+rX /home/hermes/.aws /root/.aws 2>/dev/null || true' >/dev/null 2>&1 || true
+    fi
+    if [ -n "$op_auth_dir" ] && [ -d "$op_auth_dir" ]; then
+      "$podman" exec -u 0 "$cid" sh -lc 'mkdir -p /home/hermes/.config/op /root/.config/op; chmod -R u+w /home/hermes/.config/op /root/.config/op 2>/dev/null || true' >/dev/null 2>&1 || true
+      "$podman" cp "$op_auth_dir/." "$cid:/home/hermes/.config/op/" >/dev/null 2>&1 || true
+      "$podman" cp "$op_auth_dir/." "$cid:/root/.config/op/" >/dev/null 2>&1 || true
+      "$podman" exec -u 0 "$cid" sh -lc 'chmod -R a+rX /home/hermes/.config/op /root/.config/op 2>/dev/null || true' >/dev/null 2>&1 || true
+    fi
+    if "$podman" exec "$cid" sh -lc 'HOME=/home/hermes gh auth status -h github.com >/dev/null 2>&1 && HOME=/home/hermes git config --global credential.https://github.com.helper >/dev/null 2>&1' >/dev/null 2>&1; then
+      ok=$((ok + 1))
+    else
+      [ "${COSW_AUTH_SYNC_QUIET:-0}" = "1" ] || log "sandbox auth refresh did not validate in running sandbox $name"
+      failed=$((failed + 1))
+    fi
+  done < <("$podman" ps --filter label=hermes-profile=chief-of-staff-work --format '{{.ID}}' 2>/dev/null || true)
+  [ "$ok$failed" = "00" ] || [ "${COSW_AUTH_SYNC_QUIET:-0}" = "1" ] || log "running sandbox auth refresh: ok=$ok failed=$failed"
+  [ "$failed" -eq 0 ]
+}
+
+sync_sandbox_auth_once() {
+  local profile_home="$1" podman="${2:-}" gh_auth_dir gh_gitconfig skills_ro_dir aws_auth_dir op_auth_dir
+  mkdir -p "$profile_home"
+  gh_auth_dir="$(stage_gh_auth_for_sandbox "$profile_home" || true)"
+  gh_gitconfig="$(stage_gh_gitconfig_for_sandbox "$profile_home" || true)"
+  skills_ro_dir="$(stage_readable_skills_for_sandbox "$profile_home" || true)"
+  aws_auth_dir="$(stage_aws_auth_for_sandbox "$profile_home" || true)"
+  op_auth_dir="$(stage_op_auth_for_sandbox "$profile_home" || true)"
+  if [ -n "$podman" ] && [ -x "$podman" ] && [ -n "$gh_auth_dir" ]; then
+    refresh_running_gh_auth "$podman" "$gh_auth_dir" "$gh_gitconfig" "$skills_ro_dir" "$aws_auth_dir" "$op_auth_dir" || true
+  fi
+}
+
+start_sandbox_auth_sync() {
+  local profile_home="$1" podman="$2" pidfile logdir logfile pid script
+  [ "${COSW_AUTH_SYNC:-1}" = "1" ] || return 0
+  logdir="$profile_home/logs"
+  mkdir -p "$profile_home/sandbox-auth" "$logdir"
+  pidfile="$profile_home/sandbox-auth/auth-sync.pid"
+  logfile="$logdir/sandbox-auth-sync.log"
+  if [ -f "$pidfile" ]; then
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  script="$SCRIPT_DIR/$(basename "$SOURCE")"
+  nohup env COSW_AUTH_SYNC_QUIET=1 COSW_SKIP_PREFLIGHT=1 "$script" --sandbox-auth-sync-daemon "$profile_home" "$podman" >>"$logfile" 2>&1 &
+  printf '%s\n' "$!" >"$pidfile"
+}
+
+run_sandbox_auth_sync_daemon() {
+  local profile_home="$1" podman="$2" interval
+  interval="${COSW_AUTH_SYNC_INTERVAL:-30}"
+  while :; do
+    sync_sandbox_auth_once "$profile_home" "$podman" || true
+    sleep "$interval"
+  done
+}
+
 ensure_toolchain() {
-  local toolchain bun herm py target
+  local toolchain bun herm py target shim_dir
   toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+  shim_dir="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
   bun="$toolchain/bun/bin/bun"
-  herm="$toolchain/pnpm/bin/herm"
+  herm="$shim_dir/herm"
   py="$toolchain/venv/bin/python"
 
   if [ ! -x "$py" ] || [ ! -e "$herm" ]; then
@@ -84,8 +338,12 @@ ensure_podman() {
   [ -n "$podman" ] || die "podman not executable: ${HERMES_DOCKER_BINARY:-podman}"
 
   export HERMES_DOCKER_BINARY="$podman"
+  export HERMES_AGENT_TERMINAL_BACKEND="${HERMES_AGENT_TERMINAL_BACKEND:-docker}"
   export TERMINAL_ENV="${TERMINAL_ENV:-docker}"
-  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/root}"
+  # Keep the agent context cwd host-readable.  The Docker sandbox has /workspace
+  # mounted separately; using /root here makes the host-side prompt builder stat
+  # /root/.git and crash with EACCES before the container turn can start.
+  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/workspace}"
 
   if ! "$podman" info >/dev/null 2>&1; then
     log "Podman machine unavailable; starting default machine"
@@ -104,9 +362,16 @@ ensure_podman() {
   image="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
   export TERMINAL_DOCKER_IMAGE="${TERMINAL_DOCKER_IMAGE:-$image}"
 
-  local observer_dir volumes
+  local observer_dir profile_home gh_auth_dir gh_gitconfig skills_ro_dir aws_auth_dir op_auth_dir volumes
   observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
-  mkdir -p "$observer_dir"
+  profile_home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  mkdir -p "$observer_dir" "$profile_home"
+  chmod 0700 "$profile_home" 2>/dev/null || true
+  gh_auth_dir="$(stage_gh_auth_for_sandbox "$profile_home" || true)"
+  gh_gitconfig="$(stage_gh_gitconfig_for_sandbox "$profile_home" || true)"
+  skills_ro_dir="$(stage_readable_skills_for_sandbox "$profile_home" || true)"
+  aws_auth_dir="$(stage_aws_auth_for_sandbox "$profile_home" || true)"
+  op_auth_dir="$(stage_op_auth_for_sandbox "$profile_home" || true)"
   if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
     "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$observer_dir" >/dev/null || \
       log "host observer failed to start; continuing without live host snapshot"
@@ -118,6 +383,14 @@ ensure_podman() {
     "$observer_dir:/home/hermes/.cosw-host:ro"
     "$observer_dir:/root/.cosw-host:ro"
   )
+  if [ -n "$gh_auth_dir" ]; then
+    volumes+=("$gh_auth_dir:/home/hermes/.config/gh:ro" "$gh_auth_dir:/root/.config/gh:ro")
+    refresh_running_gh_auth "$podman" "$gh_auth_dir" "$gh_gitconfig" "$skills_ro_dir" "$aws_auth_dir" "$op_auth_dir" || true
+  fi
+  [ -z "$gh_gitconfig" ] || volumes+=("$gh_gitconfig:/home/hermes/.gitconfig:ro" "$gh_gitconfig:/root/.gitconfig:ro")
+  [ -z "$skills_ro_dir" ] || volumes+=("$skills_ro_dir:/home/hermes/.hermes/skills:ro")
+  [ -z "$aws_auth_dir" ] || volumes+=("$aws_auth_dir:/home/hermes/.aws:ro" "$aws_auth_dir:/root/.aws:ro")
+  [ -z "$op_auth_dir" ] || volumes+=("$op_auth_dir:/home/hermes/.config/op:ro" "$op_auth_dir:/root/.config/op:ro")
   [ ! -d "$HOME/.pi/agent/sessions" ] || volumes+=("$HOME/.pi/agent/sessions:/mnt/host-pi-agent-sessions:ro")
   [ ! -d "$HOME/.pi/sessions" ] || volumes+=("$HOME/.pi/sessions:/mnt/host-pi-sessions:ro")
   [ ! -d "$HOME/.claude/projects" ] || volumes+=("$HOME/.claude/projects:/mnt/host-claude-projects:ro")
@@ -127,19 +400,28 @@ ensure_podman() {
   export TERMINAL_DOCKER_VOLUMES="${TERMINAL_DOCKER_VOLUMES:-$(json_array "${volumes[@]}")}"
   export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-false}"
   if ! "$podman" image inspect "$image" >/dev/null 2>&1; then
+    local variant
+    variant="${COSW_SANDBOX_VARIANT:-${HERMES_SANDBOX_VARIANT:-python-node-fedora}}"
     builder="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh"
     if [ "${COSW_AUTO_BUILD_IMAGE:-1}" = "1" ] && [ -x "$builder" ]; then
-      log "sandbox image missing; building $image"
-      "$builder" python-node-fedora
+      log "sandbox image missing; building $image via $variant"
+      IMAGE_TAG="$image" "$builder" "$variant"
     fi
   fi
   "$podman" image inspect "$image" >/dev/null 2>&1 || \
-    die "sandbox image missing: $image (run: ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh python-node-fedora)"
+    die "sandbox image missing: $image (run: IMAGE_TAG=$image ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh ${COSW_SANDBOX_VARIANT:-${HERMES_SANDBOX_VARIANT:-python-node-fedora}})"
 
   local home name smoke volume_args=() vol
-  home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  home="$profile_home"
   mkdir -p "$home/sandboxes/docker/default/home" "$home/sandboxes/docker/default/workspace" \
     "$home/skills" "$home/image_cache" "$home/audio_cache"
+  # Hermes mounts profile skills read-only into Docker sandboxes at
+  # /root/.hermes/skills. The sandbox process runs as uid 1000; if the host
+  # skill tree is 0700/0600, skill references are mounted but unreadable.
+  # Keep the profile home private, but make the intentionally mounted skill
+  # tree world-readable/executable inside the read-only sandbox mount.
+  chmod 0755 "$home/skills" 2>/dev/null || true
+  chmod -R a+rX "$home/skills" 2>/dev/null || true
   for vol in "${volumes[@]}"; do
     volume_args+=("-v" "$vol")
   done
@@ -150,7 +432,6 @@ ensure_podman() {
     --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add CHOWN --cap-add FOWNER \
     --security-opt no-new-privileges --pids-limit 256 \
     --tmpfs /tmp:rw,nosuid,size=512m --tmpfs /var/tmp:rw,noexec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=64m \
-    --user "$(id -u):$(id -g)" \
     -v "$home/sandboxes/docker/default/home:/root" \
     -v "$home/sandboxes/docker/default/workspace:/workspace" \
     "${volume_args[@]}" \
@@ -158,12 +439,13 @@ ensure_podman() {
     -v "$home/skills:/root/.hermes/skills:ro" \
     -v "$home/image_cache:/root/.hermes/cache/images:ro" \
     -v "$home/audio_cache:/root/.hermes/cache/audio:ro" \
-    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md' >"$smoke" 2>&1; then
+    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md && python --version >/dev/null && terraform version >/dev/null && aws --version >/dev/null && op --version >/dev/null && HOME=/home/hermes gh auth status -h github.com >/dev/null && HOME=/home/hermes git config --global credential.https://github.com.helper >/dev/null && test -f /home/hermes/.hermes/skills/workflows/handoff-bootstrap/SKILL.md' >"$smoke" 2>&1; then
     cat "$smoke" >&2 || true
     "$podman" rm -f "$name" >/dev/null 2>&1 || true
     die "podman sandbox smoke test failed"
   fi
   rm -f "$smoke"
+  start_sandbox_auth_sync "$profile_home" "$podman"
 
   local cid details running
   while read -r cid; do
@@ -184,14 +466,27 @@ ensure_podman() {
   done < <("$podman" ps -a --filter label=hermes-profile=chief-of-staff-work --format '{{.ID}}' 2>/dev/null || true)
 }
 
-if [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
+if [ "${1:-}" = "--sandbox-auth-sync-daemon" ]; then
+  shift
+  run_sandbox_auth_sync_daemon "${1:?profile_home required}" "${2:-}"
+fi
+
+COSW_REFRESH_GH_AUTH_ONLY=0
+for arg in "$@"; do
+  { [ "$arg" = "--refresh-gh-auth" ] || [ "$arg" = "--refresh-sandbox-auth" ]; } && COSW_REFRESH_GH_AUTH_ONLY=1
+done
+
+if [ "$COSW_REFRESH_GH_AUTH_ONLY" = "1" ] || [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
   ensure_toolchain
-  if ! forced_host_tools "$@"; then
+  if [ "$COSW_REFRESH_GH_AUTH_ONLY" = "1" ] || ! forced_host_tools "$@"; then
     ensure_podman
   fi
 fi
 
-if forced_host_tools "$@"; then
-  exec "$SCRIPT_DIR/agents" up chief-of-staff-work "$@"
+if [ "$COSW_REFRESH_GH_AUTH_ONLY" = "1" ]; then
+  log "sandbox auth staged and refreshed for running CoS-W sandboxes"
+  exit 0
 fi
-exec "$SCRIPT_DIR/agents" up chief-of-staff-work --terminal-backend docker "$@"
+
+strip_cosw_args "$@"
+exec "$SCRIPT_DIR/agents" up chief-of-staff-work "${COSW_ARGS[@]}"
