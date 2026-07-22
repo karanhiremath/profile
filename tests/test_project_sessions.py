@@ -95,6 +95,22 @@ raise SystemExit(0)
         self.assertTrue(doctor["ok"])
         self.assertEqual(doctor["project_count"], 2)
 
+    def test_co_located_agent_profile_is_not_treated_as_project(self):
+        (self.registry / "alpha-pm.yaml").write_text(
+            yaml.safe_dump({
+                "name": "alpha-pm",
+                "llm": {"provider": "test", "model": "test"},
+                "surface": "tui",
+                "toolsets": ["terminal"],
+                "persona": "Coordinate alpha.",
+            }, sort_keys=False)
+        )
+        value = json.loads(self.run_script("list").stdout)
+        self.assertEqual([row["name"] for row in value], ["alpha", "beta"])
+        doctor = json.loads(self.run_script("doctor").stdout)
+        self.assertTrue(doctor["ok"])
+        self.assertEqual(doctor["project_count"], 2)
+
     def test_missing_pm_is_started_then_existing_pm_is_reused(self):
         first = json.loads(self.run_script("ensure-pm", "alpha").stdout)
         second = json.loads(self.run_script("ensure-pm", "alpha").stdout)

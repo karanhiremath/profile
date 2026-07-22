@@ -86,6 +86,13 @@ def load_registry(path: Path) -> dict[str, Any]:
     return data
 
 
+def is_agent_profile(data: dict[str, Any]) -> bool:
+    """Identify co-located agent profiles without hiding malformed projects."""
+    profile_keys = {"llm", "persona", "toolsets", "surface", "platform"}
+    project_keys = {"pm", "tmux", "sessions", "event_bus", "workdir", "goal"}
+    return bool(profile_keys.intersection(data)) and not bool(project_keys.intersection(data))
+
+
 def find_project(name: str) -> dict[str, Any]:
     candidates = [name, slugify(name)]
     for directory in registry_dirs():
@@ -96,6 +103,8 @@ def find_project(name: str) -> dict[str, Any]:
                     return load_registry(path)
         for path in sorted(directory.glob("*.y*ml")):
             data = load_registry(path)
+            if is_agent_profile(data):
+                continue
             aliases = data.get("aliases") or []
             if data.get("name") == name or name in aliases:
                 return data
@@ -115,6 +124,8 @@ def project_list() -> list[dict[str, str]]:
     for directory in registry_dirs():
         for path in sorted(directory.glob("*.y*ml")):
             data = load_registry(path)
+            if is_agent_profile(data):
+                continue
             name = str(data.get("name") or path.stem)
             if name in seen:
                 continue

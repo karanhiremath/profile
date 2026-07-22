@@ -24,13 +24,19 @@ PROJECT_SESSIONS = SCRIPT_DIR / "project_sessions.py"
 DEFAULT_STATE = Path(
     os.environ.get(
         "COSW_HOST_CONTROL_DIR",
-        str(Path.home() / ".local/share/hermes-agents/chief-of-staff-work/host-control"),
+        str(
+            Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+            / "hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/host-control"
+        ),
     )
 )
 DEFAULT_SOCKET_DIR = Path(
     os.environ.get(
         "COSW_HOST_CONTROL_SOCKET_DIR",
-        str(Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/hermes-{os.getuid()}")) / "hermes-sandbox-manager"),
+        str(
+            Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/hermes-{os.getuid()}"))
+            / "hermes-sandbox-manager/chief-of-staff-work"
+        ),
     )
 )
 SCHEMA = "cosw.dispatch.v1"

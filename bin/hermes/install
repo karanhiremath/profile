@@ -60,9 +60,8 @@ export PATH="$VENV/bin:$PNPM_HOME/bin:$PATH"
 pnpm add -g --allow-build=hermes-agent --allow-build=herm-tui hermes-agent herm-tui
 
 # Resolve the pnpm global locations robustly rather than hardcoding pnpm's
-# internal layout. pnpm v11 may keep package dirs below hashed project dirs
-# under global/<v>, while `pnpm root -g` returns only the aggregate root.
-PNPM_GLOBAL_ROOT="$(pnpm root -g)"
+# internal layout. pnpm 11 may install each global dependency under a hashed
+# project directory, so `pnpm root -g` is not necessarily the package parent.
 PNPM_BIN="$(pnpm bin -g)"
 PNPM_LIST_JSON="$(pnpm list -g --depth 0 --json)"
 
@@ -79,6 +78,13 @@ process.stdout.write(pkg.path);
 ' "$pkg_name"
 }
 
+# Resolve a package's REAL bin entrypoint (absolute path) from its package.json
+# "bin" field. The hermes/hermes-agent/herm shims must exec this file directly,
+# NOT the pnpm global bin symlink ($PNPM_BIN/<name>): on the real host
+# `pnpm bin -g` == $SHIM_DIR (~/.local/bin), so a shim targeting $PNPM_BIN/<name>
+# would BE its own path and exec itself -> infinite recursion (E2BIG). Neither
+# PNPM_HOME, npm prefix, nor pnpm config reliably relocate that bin dir, so the
+# fix is structural: always target the package's .js/.tsx entrypoint.
 resolve_pkg_bin() {
   local pkg_dir="$1" bin_name="$2"
   command node -e '
