@@ -197,7 +197,7 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         terminal = dict(terminal) if isinstance(terminal, dict) else {}
         terminal["backend"] = override
         if override in {"docker", "singularity", "modal", "daytona"} and not terminal.get("cwd"):
-            terminal["cwd"] = "/root"
+            terminal["cwd"] = os.environ.get("TERMINAL_CWD") or ("/workspace" if override == "docker" else "/root")
         if override == "docker":
             terminal.setdefault("docker_image", os.environ.get("TERMINAL_DOCKER_IMAGE", "localhost/hermes-agent/python-node:dev"))
             volumes_env = os.environ.get("TERMINAL_DOCKER_VOLUMES", "").strip()
@@ -214,6 +214,12 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
             terminal.setdefault("docker_persist_across_processes", False)
     if isinstance(terminal, dict) and terminal:
         cfg["terminal"] = terminal
+    moa = profile.get("moa")
+    if isinstance(moa, dict) and moa:
+        # Pass through declarative MoA presets so profiles can avoid the
+        # built-in OpenRouter-backed default when that provider is not
+        # configured in the runtime home.
+        cfg["moa"] = moa
     if tts_on:
         cfg["tts"] = {"provider": "cartesia", "model": tts.get("model", "sonic-3.5"), "voice": voice}
     if stt_on:
@@ -296,6 +302,13 @@ def materialize(name: str) -> Path:
             env_updates["TERMINAL_DOCKER_VOLUMES"] = json.dumps(terminal_cfg["docker_volumes"])
         if "docker_persist_across_processes" in terminal_cfg:
             env_updates["TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES"] = "true" if terminal_cfg["docker_persist_across_processes"] else "false"
+        # Terraform AWS provider / AWS CLI v2 SSO profiles need shared config
+        # loading when host ~/.aws is staged into the sandbox.
+        env_updates["AWS_SDK_LOAD_CONFIG"] = "1"
+        for key in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION"):
+            value = os.environ.get(key, "").strip()
+            if value:
+                env_updates[key] = value
         docker_bin = os.environ.get("HERMES_DOCKER_BINARY", "").strip()
         if docker_bin:
             env_updates["HERMES_DOCKER_BINARY"] = docker_bin

@@ -12,7 +12,7 @@ install:
 
 # Stand up the full coding-dev environment in one command (idempotent):
 # mise (-> node, pnpm, uv, neovim) then the coding CLIs (claude, pi,
-# copilot-cli, hermes). mise runs FIRST so the CLI installers find node/pnpm/uv.
+# codex, copilot-cli, hermes). mise runs FIRST so the CLI installers find node/pnpm/uv.
 # Resilient: a failing installer is reported and the rest still run; a summary
 # prints at the end and `just dev` exits non-zero if any step failed.
 # Usage: just dev [--help]
@@ -33,8 +33,9 @@ dev *FLAGS:
       1. bin/mise/install         mise + node, pnpm, uv, neovim
       2. bin/claude/install       Claude Code CLI       (pnpm global)
       3. bin/pi/install           pi coding agent       (pnpm global)
-      4. bin/copilot-cli/install  GitHub Copilot CLI
-      5. bin/hermes/install       Hermes isolated toolchain (uses mise's uv)
+      4. bin/codex/install        Codex CLI             (pnpm global)
+      5. bin/copilot-cli/install  GitHub Copilot CLI
+      6. bin/hermes/install       Hermes isolated toolchain (uses mise's uv)
 
     mise runs first so the CLI installers find node/pnpm/uv on PATH.
     Resilient: a failing step is reported and the rest continue; a summary
@@ -68,6 +69,7 @@ dev *FLAGS:
     run_step "mise"        ./bin/mise/install
     run_step "claude"      ./bin/claude/install
     run_step "pi"          ./bin/pi/install
+    run_step "codex"       ./bin/codex/install
     run_step "copilot-cli" ./bin/copilot-cli/install
     run_step "hermes"      ./bin/hermes/install
 
@@ -373,7 +375,7 @@ pi-skills:
         ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
     done
 
-# Link Codex.app CLI for shell/tmux use
+# Install/upgrade Codex CLI via pnpm (node + pnpm from mise)
 codex:
     #!/usr/bin/env bash
     set -euo pipefail
