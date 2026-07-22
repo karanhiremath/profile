@@ -9,6 +9,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,56 @@ DEFAULT_STATE = Path(
     )
 )
 MAX_REQUEST_BYTES = 64 * 1024
-ALLOWED_ACTIONS = {"ensure-pm", "ensure-pl", "notify-pm", "status"}
+ALLOWED_ACTIONS = {
+    "ensure-pm",
+    "ensure-pl",
+    "notify-pm",
+    "status",
+    "cloudbuild-trigger-create-readback",
+    "kh133-gke-addon-iam-prepare",
+}
+KH133_TRIGGER_PROJECT = "base-391403"
+KH133_TRIGGER_REGION = "us-central1"
+KH133_TRIGGER_REPOSITORY = (
+    "projects/base-391403/locations/us-central1/connections/"
+    "cartesia-github-connection/repositories/bifrost"
+)
+KH133_BIFROST_COMMIT = "652ab5048f3dabe20cf0120291e192e8bbe2449b"
+KH133_DERIVED_REF = f"refs/tags/cbuild-no-default-kh133-{KH133_BIFROST_COMMIT}"
+KH133_BUILD_CONFIG = "cloudbuild-onprem.yaml"
+KH133_CBUILD_SUBSTITUTIONS = {
+    "_CBUILD_PLAN_DIGEST",
+    "_CBUILD_STAGE_ID",
+    "_CBUILD_RUN_KEY",
+    "_CBUILD_PLAN_REF",
+    "_CBUILD_STAGE_REF",
+    "_CBUILD_AUTHORIZATION_REF",
+    "_CBUILD_EVIDENCE_SINK_REF",
+    "_CBUILD_EVIDENCE_RESULT",
+}
+KH133_TRIGGER_NAME = "kh133-fips-v1alpha2-temp-20260713-222730"
+DENIED_CREDENTIAL_ENV = {
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "CLOUDSDK_AUTH_ACCESS_TOKEN",
+    "CLOUDSDK_CORE_ACCESS_TOKEN",
+    "ACCESS_TOKEN",
+}
+KH133_GKE_PROJECT = "cai-dev-serving"
+KH133_GKE_REGION = "us-central1"
+KH133_GKE_CLUSTER = "fips-runtime-validation"
+KH133_EVIDENCE_BUCKET = "cartesia-onprem-scan-results"
+KH133_GSA = "fips-validation-runner@cai-dev-serving.iam.gserviceaccount.com"
+KH133_GSA_MEMBER = f"serviceAccount:{KH133_GSA}"
+KH133_OBJECT_CREATOR_ROLE = "roles/storage.objectCreator"
+KH133_OBJECT_VIEWER_ROLE = "roles/storage.objectViewer"
+KH133_CREATOR_CONDITION = {
+    "title": "kh133-v1alpha2-cbuild-dev-object-creator",
+    "description": "Create-only KH-133 cbuild-dev evidence objects under the approved prefix.",
+    "expression": (
+        'resource.name.startsWith("projects/_/buckets/cartesia-onprem-scan-results/'
+        'objects/ubi9-fips/kh133-v1alpha2/cbuild-dev/")'
+    ),
+}
 
 
 def state_paths(root: Path) -> tuple[Path, Path, Path]:
@@ -105,6 +155,370 @@ def status(project: str) -> dict[str, Any]:
     return result
 
 
+
+
+def _require_string(value: Any, expected: str, label: str) -> None:
+    if value != expected:
+        raise ValueError(f"{label} must be exactly {expected}")
+
+
+def _kh133_trigger_config() -> dict[str, Any]:
+    substitutions = {key: "__DECLARED_BY_CBUILD_DRIVER__" for key in sorted(KH133_CBUILD_SUBSTITUTIONS)}
+    return {
+        "name": KH133_TRIGGER_NAME,
+        "description": "KH133 temporary immutable trigger; do not invoke directly",
+        "sourceToBuild": {
+            "repository": KH133_TRIGGER_REPOSITORY,
+            "ref": KH133_DERIVED_REF,
+        },
+        "gitFileSource": {
+            "repository": KH133_TRIGGER_REPOSITORY,
+            "revision": KH133_BIFROST_COMMIT,
+            "path": KH133_BUILD_CONFIG,
+        },
+        "substitutions": substitutions,
+        "approvalConfig": {"approvalRequired": False},
+    }
+
+
+def _validate_kh133_trigger_config(config: dict[str, Any]) -> None:
+    unknown = set(config) - {
+        "id",
+        "name",
+        "resourceName",
+        "description",
+        "sourceToBuild",
+        "gitFileSource",
+        "substitutions",
+        "approvalConfig",
+        "createTime",
+    }
+    if unknown:
+        raise ValueError(f"unsupported trigger fields: {sorted(unknown)}")
+    _require_string(config.get("name"), KH133_TRIGGER_NAME, "trigger name")
+    _require_string((config.get("sourceToBuild") or {}).get("repository"), KH133_TRIGGER_REPOSITORY, "sourceToBuild.repository")
+    _require_string((config.get("sourceToBuild") or {}).get("ref"), KH133_DERIVED_REF, "sourceToBuild.ref")
+    _require_string((config.get("gitFileSource") or {}).get("repository"), KH133_TRIGGER_REPOSITORY, "gitFileSource.repository")
+    _require_string((config.get("gitFileSource") or {}).get("revision"), KH133_BIFROST_COMMIT, "gitFileSource.revision")
+    _require_string((config.get("gitFileSource") or {}).get("path"), KH133_BUILD_CONFIG, "gitFileSource.path")
+    substitutions = config.get("substitutions")
+    if not isinstance(substitutions, dict):
+        raise ValueError("substitutions must be an object")
+    if set(substitutions) != KH133_CBUILD_SUBSTITUTIONS:
+        raise ValueError("trigger substitutions must be exactly the approved _CBUILD_* keys")
+    for key in KH133_CBUILD_SUBSTITUTIONS:
+        if substitutions.get(key) != "__DECLARED_BY_CBUILD_DRIVER__":
+            raise ValueError(f"{key} must use the inert declaration placeholder")
+    trigger_id = str(config.get("id") or "")
+    if "id" in config and not trigger_id:
+        raise ValueError("trigger id must be non-empty")
+    resource_name = config.get("resourceName")
+    if resource_name is not None:
+        _require_string(
+            resource_name,
+            f"projects/{KH133_TRIGGER_PROJECT}/locations/{KH133_TRIGGER_REGION}/triggers/{trigger_id}",
+            "resourceName",
+        )
+
+
+def _refuse_injected_credentials() -> None:
+    present = sorted(name for name in DENIED_CREDENTIAL_ENV if os.environ.get(name))
+    if present:
+        raise ValueError(f"injected credential environment is forbidden: {present}")
+
+
+def _describe_trigger(identifier: str) -> dict[str, Any] | None:
+    proc = subprocess.run(
+        [
+            "gcloud",
+            "builds",
+            "triggers",
+            "describe",
+            identifier,
+            f"--region={KH133_TRIGGER_REGION}",
+            f"--project={KH133_TRIGGER_PROJECT}",
+            "--quiet",
+            "--format=json",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        stderr = proc.stderr or ""
+        stdout = proc.stdout or ""
+        combined = f"{stderr}\n{stdout}"
+        if "NOT_FOUND" in combined or "not found" in combined.lower():
+            return None
+        raise ValueError(f"trigger describe failed: {combined.strip()}")
+    value = json.loads(proc.stdout)
+    if not isinstance(value, dict):
+        raise ValueError("trigger describe response was not an object")
+    return value
+
+
+def _run_json(
+    argv: list[str], *, timeout: int = 120, object_required: bool = True
+) -> Any:
+    proc = subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
+    if proc.returncode != 0:
+        combined = f"{proc.stderr or ''}\n{proc.stdout or ''}".strip()
+        raise ValueError(f"allowlisted command failed: {combined}")
+    try:
+        value = json.loads(proc.stdout)
+    except Exception as exc:
+        raise ValueError("allowlisted command returned invalid JSON") from exc
+    if object_required and not isinstance(value, dict):
+        raise ValueError("allowlisted command response was not an object")
+    return value
+
+
+def _cluster_readback() -> dict[str, Any]:
+    value = _run_json(
+        [
+            "gcloud",
+            "container",
+            "clusters",
+            "describe",
+            KH133_GKE_CLUSTER,
+            f"--project={KH133_GKE_PROJECT}",
+            f"--region={KH133_GKE_REGION}",
+            "--format=json",
+        ]
+    )
+    _require_string(value.get("name"), KH133_GKE_CLUSTER, "cluster name")
+    _require_string(value.get("location"), KH133_GKE_REGION, "cluster location")
+    if value.get("status") != "RUNNING":
+        raise ValueError("approved GKE cluster is not RUNNING")
+    return value
+
+
+def _bucket_policy() -> dict[str, Any]:
+    return _run_json(
+        [
+            "gcloud",
+            "storage",
+            "buckets",
+            "get-iam-policy",
+            f"gs://{KH133_EVIDENCE_BUCKET}",
+            "--format=json",
+        ]
+    )
+
+
+def _normalized_bindings(policy: dict[str, Any]) -> list[dict[str, Any]]:
+    bindings = policy.get("bindings")
+    if not isinstance(bindings, list):
+        raise ValueError("bucket IAM policy bindings are missing")
+    normalized = []
+    for binding in bindings:
+        if not isinstance(binding, dict) or not isinstance(binding.get("members"), list):
+            raise ValueError("bucket IAM policy contains an invalid binding")
+        item: dict[str, Any] = {
+            "role": binding.get("role"),
+            "members": sorted(str(member) for member in binding["members"]),
+        }
+        if "condition" in binding:
+            item["condition"] = binding["condition"]
+        normalized.append(item)
+    return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True))
+
+
+def _binding_matches(binding: dict[str, Any], role: str, condition: dict[str, str] | None) -> bool:
+    actual_condition = binding.get("condition")
+    return (
+        binding.get("role") == role
+        and KH133_GSA_MEMBER in binding.get("members", [])
+        and actual_condition == condition
+    )
+
+
+def _expected_policy_after_creator(policy: dict[str, Any]) -> list[dict[str, Any]]:
+    expected = _normalized_bindings(policy)
+    for binding in expected:
+        if binding.get("role") == KH133_OBJECT_CREATOR_ROLE and binding.get("condition") == KH133_CREATOR_CONDITION:
+            members = set(binding["members"])
+            members.add(KH133_GSA_MEMBER)
+            binding["members"] = sorted(members)
+            return sorted(expected, key=lambda item: json.dumps(item, sort_keys=True))
+    expected.append(
+        {
+            "role": KH133_OBJECT_CREATOR_ROLE,
+            "members": [KH133_GSA_MEMBER],
+            "condition": dict(KH133_CREATOR_CONDITION),
+        }
+    )
+    return sorted(expected, key=lambda item: json.dumps(item, sort_keys=True))
+
+
+def kh133_gke_addon_iam_prepare(request: dict[str, Any]) -> dict[str, Any]:
+    if set(request) != {"id", "action", "project"}:
+        raise ValueError("KH133 GKE request must contain exactly id/action/project")
+    _refuse_injected_credentials()
+    _require_string(request.get("project"), "kh133-v1alpha2", "project")
+
+    cluster_before = _cluster_readback()
+    policy_before = _bucket_policy()
+    bindings_before = _normalized_bindings(policy_before)
+    viewer = [
+        binding
+        for binding in bindings_before
+        if _binding_matches(binding, KH133_OBJECT_VIEWER_ROLE, None)
+    ]
+    if len(viewer) != 1:
+        raise ValueError("exact preexisting unconditional objectViewer binding is not present once")
+    creator_for_member = [
+        binding
+        for binding in bindings_before
+        if binding.get("role") == KH133_OBJECT_CREATOR_ROLE
+        and KH133_GSA_MEMBER in binding.get("members", [])
+    ]
+    if creator_for_member and not all(
+        binding.get("condition") == KH133_CREATOR_CONDITION for binding in creator_for_member
+    ):
+        raise ValueError("approved GSA has a conflicting objectCreator binding")
+
+    addon_before = (cluster_before.get("addonsConfig") or {}).get("gcsFuseCsiDriverConfig") or {}
+    addon_changed = not bool(addon_before.get("enabled"))
+    if addon_changed:
+        _run_json(
+            [
+                "gcloud",
+                "container",
+                "clusters",
+                "update",
+                KH133_GKE_CLUSTER,
+                f"--project={KH133_GKE_PROJECT}",
+                f"--region={KH133_GKE_REGION}",
+                "--update-addons=GcsFuseCsiDriver=ENABLED",
+                "--quiet",
+                "--format=json",
+            ],
+            timeout=1200,
+            # GKE update operations may serialize as a JSON list. The effect's
+            # authoritative result is the exact cluster readback below.
+            object_required=False,
+        )
+    cluster_after = _cluster_readback()
+    addon_after = (cluster_after.get("addonsConfig") or {}).get("gcsFuseCsiDriverConfig") or {}
+    if not addon_after.get("enabled"):
+        raise ValueError("GCS Fuse CSI addon readback is not enabled")
+
+    creator_changed = not creator_for_member
+    expected_after = _expected_policy_after_creator(policy_before)
+    if creator_changed:
+        condition_arg = (
+            f"expression={KH133_CREATOR_CONDITION['expression']},"
+            f"title={KH133_CREATOR_CONDITION['title']},"
+            f"description={KH133_CREATOR_CONDITION['description']}"
+        )
+        _run_json(
+            [
+                "gcloud",
+                "storage",
+                "buckets",
+                "add-iam-policy-binding",
+                f"gs://{KH133_EVIDENCE_BUCKET}",
+                f"--member={KH133_GSA_MEMBER}",
+                f"--role={KH133_OBJECT_CREATOR_ROLE}",
+                f"--condition={condition_arg}",
+                "--format=json",
+            ]
+        )
+    policy_after = _bucket_policy()
+    bindings_after = _normalized_bindings(policy_after)
+    if bindings_after != expected_after:
+        raise ValueError("bucket IAM readback contains a delta outside exact conditioned objectCreator")
+    if len(
+        [binding for binding in bindings_after if _binding_matches(binding, KH133_OBJECT_VIEWER_ROLE, None)]
+    ) != 1:
+        raise ValueError("preexisting objectViewer binding was not preserved")
+    if len(
+        [
+            binding
+            for binding in bindings_after
+            if _binding_matches(binding, KH133_OBJECT_CREATOR_ROLE, KH133_CREATOR_CONDITION)
+        ]
+    ) != 1:
+        raise ValueError("exact conditioned objectCreator binding is not present once")
+    return {
+        "cluster": f"{KH133_GKE_PROJECT}/{KH133_GKE_REGION}/{KH133_GKE_CLUSTER}",
+        "gcsFuseCsiEnabled": True,
+        "gcsFuseCsiChanged": addon_changed,
+        "bucket": f"gs://{KH133_EVIDENCE_BUCKET}",
+        "objectViewerPreserved": True,
+        "conditionedObjectCreatorPresent": True,
+        "conditionedObjectCreatorChanged": creator_changed,
+    }
+
+
+def cloudbuild_trigger_create_readback(request: dict[str, Any]) -> dict[str, Any]:
+    allowed_request_fields = {"id", "action", "project", "cloudProject", "region", "triggerName"}
+    unknown = set(request) - allowed_request_fields
+    if unknown:
+        raise ValueError(f"unsupported request fields: {sorted(unknown)}")
+    _refuse_injected_credentials()
+    _require_string(request.get("project"), "kh133-v1alpha2", "project")
+    _require_string(request.get("cloudProject"), KH133_TRIGGER_PROJECT, "cloudProject")
+    _require_string(request.get("region"), KH133_TRIGGER_REGION, "region")
+    _require_string(request.get("triggerName"), KH133_TRIGGER_NAME, "triggerName")
+    trigger_config = _kh133_trigger_config()
+    _validate_kh133_trigger_config(trigger_config)
+    preflight = _describe_trigger(KH133_TRIGGER_NAME)
+    if preflight is not None:
+        raise ValueError("approved temporary trigger already exists; refusing update")
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as stream:
+        json.dump(trigger_config, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        source = Path(stream.name)
+    try:
+        create_env = os.environ.copy()
+        create_env["CLOUDSDK_BUILDS_REGION"] = KH133_TRIGGER_REGION
+        create = subprocess.run(
+            [
+                "gcloud",
+                "builds",
+                "triggers",
+                "create",
+                "manual",
+                f"--trigger-config={source}",
+                f"--project={KH133_TRIGGER_PROJECT}",
+                "--quiet",
+                "--format=json",
+            ],
+            env=create_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        if create.returncode != 0:
+            combined = f"{create.stderr or ''}\n{create.stdout or ''}"
+            raise ValueError(f"trigger create failed: {combined.strip()}")
+    finally:
+        source.unlink(missing_ok=True)
+    created = json.loads(create.stdout or "{}")
+    if not isinstance(created, dict):
+        raise ValueError("trigger create response was not an object")
+    trigger_id = str(created.get("id") or "")
+    if not trigger_id:
+        raise ValueError("trigger create response did not include id")
+    first = _describe_trigger(trigger_id)
+    second = _describe_trigger(trigger_id)
+    if not isinstance(first, dict) or not isinstance(second, dict):
+        raise ValueError("created trigger was not readable by id")
+    if first != second:
+        raise ValueError("trigger readback drifted between describes")
+    _validate_kh133_trigger_config(first)
+    return {
+        "triggerName": KH133_TRIGGER_NAME,
+        "triggerId": first.get("id"),
+        "resourceName": first.get("resourceName"),
+        "created": True,
+        "readback": first,
+        "invoked": False,
+    }
+
+
 def handle(request: dict[str, Any]) -> dict[str, Any]:
     request_id = str(request.get("id") or "")
     action = str(request.get("action") or "")
@@ -121,6 +535,10 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         result = ensure("pl", project)
     elif action == "notify-pm":
         result = notify_pm(project, str(request.get("message") or ""))
+    elif action == "cloudbuild-trigger-create-readback":
+        result = cloudbuild_trigger_create_readback(request)
+    elif action == "kh133-gke-addon-iam-prepare":
+        result = kh133_gke_addon_iam_prepare(request)
     else:
         result = status(project)
     return {"id": request_id, "ok": True, "action": action, "project": project, "result": result}

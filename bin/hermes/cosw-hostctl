@@ -15,9 +15,22 @@ DEFAULT_STATE = Path(os.environ.get("COSW_HOST_CONTROL_MOUNT", "/mnt/cosw-host-c
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("ensure-pm", "ensure-pl", "notify-pm", "status"))
+    parser.add_argument(
+        "action",
+        choices=(
+            "ensure-pm",
+            "ensure-pl",
+            "notify-pm",
+            "status",
+            "cloudbuild-trigger-create-readback",
+            "kh133-gke-addon-iam-prepare",
+        ),
+    )
     parser.add_argument("project")
     parser.add_argument("--message")
+    parser.add_argument("--trigger-name", default="kh133-fips-v1alpha2-temp-20260713-222730")
+    parser.add_argument("--cloud-project", default="base-391403")
+    parser.add_argument("--region", default="us-central1")
     parser.add_argument("--timeout", type=float, default=45.0)
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
     args = parser.parse_args()
@@ -30,6 +43,10 @@ def main() -> int:
     request = {"id": request_id, "action": args.action, "project": args.project}
     if args.message:
         request["message"] = args.message
+    if args.action == "cloudbuild-trigger-create-readback":
+        request["cloudProject"] = args.cloud_project
+        request["region"] = args.region
+        request["triggerName"] = args.trigger_name
     tmp = requests / f".{request_id}.tmp"
     final = requests / f"{request_id}.json"
     tmp.write_text(json.dumps(request, separators=(",", ":")) + "\n", encoding="utf-8")
