@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -265,6 +266,30 @@ def _merge_json_file(path: Path, updates: Dict[str, Any]) -> None:
     path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
 
+def _sandbox_ssh_volumes(home: Path) -> List[str]:
+    """Stage sandbox SSH access and return its read-only volume specs.
+
+    A docker-backed sandbox otherwise has no SSH context at all: no agent
+    socket, no config, no known_hosts. Staging is best-effort -- an agent must
+    still launch when tailscale, an ssh config, or an agent socket is missing.
+    """
+    script = SCRIPT_DIR / "sandbox-ssh-setup"
+    if not script.is_file():
+        return []
+    try:
+        result = subprocess.run(
+            [str(script), str(home)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def materialize(name: str) -> Path:
     profile = load_profile(name)
     uses_voice = voice_on(profile)
@@ -298,8 +323,12 @@ def materialize(name: str) -> Path:
         env_updates["TERMINAL_CWD"] = str(terminal_cfg.get("cwd") or "/root")
         if terminal_cfg.get("docker_image"):
             env_updates["TERMINAL_DOCKER_IMAGE"] = str(terminal_cfg["docker_image"])
-        if terminal_cfg.get("docker_volumes"):
-            env_updates["TERMINAL_DOCKER_VOLUMES"] = json.dumps(terminal_cfg["docker_volumes"])
+        docker_volumes = list(terminal_cfg.get("docker_volumes") or [])
+        for spec in _sandbox_ssh_volumes(home):
+            if spec not in docker_volumes:
+                docker_volumes.append(spec)
+        if docker_volumes:
+            env_updates["TERMINAL_DOCKER_VOLUMES"] = json.dumps(docker_volumes)
         if "docker_persist_across_processes" in terminal_cfg:
             env_updates["TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES"] = "true" if terminal_cfg["docker_persist_across_processes"] else "false"
         # Terraform AWS provider / AWS CLI v2 SSO profiles need shared config

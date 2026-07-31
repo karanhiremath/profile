@@ -10,6 +10,12 @@ while [ -L "$SOURCE" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
+# Sandbox SSH access: tailnet-first config plus a filtering agent relay, so the
+# sandbox can reach remote hosts without any key material being staged into it.
+SANDBOX_SSH_RELAY="$SCRIPT_DIR/sandbox-ssh-agent-relay.py"
+# shellcheck source=./sandbox-ssh.sh
+[ -f "$SCRIPT_DIR/sandbox-ssh.sh" ] && . "$SCRIPT_DIR/sandbox-ssh.sh"
+
 log() { printf 'cosw: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
@@ -297,15 +303,25 @@ refresh_running_gh_auth() {
 }
 
 sync_sandbox_auth_once() {
-  local profile_home="$1" podman="${2:-}" gh_auth_dir gh_gitconfig skills_ro_dir aws_auth_dir op_auth_dir
+  local profile_home="$1" podman="${2:-}" gh_auth_dir gh_gitconfig skills_ro_dir aws_auth_dir op_auth_dir ssh_dir
   mkdir -p "$profile_home"
   gh_auth_dir="$(stage_gh_auth_for_sandbox "$profile_home" || true)"
   gh_gitconfig="$(stage_gh_gitconfig_for_sandbox "$profile_home" || true)"
   skills_ro_dir="$(stage_readable_skills_for_sandbox "$profile_home" || true)"
   aws_auth_dir="$(stage_aws_auth_for_sandbox "$profile_home" || true)"
   op_auth_dir="$(stage_op_auth_for_sandbox "$profile_home" || true)"
+  ssh_dir=""
+  if command -v stage_ssh_auth_for_sandbox >/dev/null 2>&1; then
+    ssh_dir="$(stage_ssh_auth_for_sandbox "$profile_home" "$SANDBOX_SSH_RELAY" || true)"
+    start_host_ssh_agent_relay "$profile_home" "$SANDBOX_SSH_RELAY" || true
+  fi
   if [ -n "$podman" ] && [ -x "$podman" ] && [ -n "$gh_auth_dir" ]; then
     refresh_running_gh_auth "$podman" "$gh_auth_dir" "$gh_gitconfig" "$skills_ro_dir" "$aws_auth_dir" "$op_auth_dir" || true
+  fi
+  # Re-push on every sync cycle so a restarted container regains SSH and its
+  # relay side without waiting for a fresh cosw launch.
+  if [ -n "$podman" ] && [ -x "$podman" ] && [ -n "$ssh_dir" ]; then
+    refresh_running_ssh_auth "$podman" "$ssh_dir" hermes-profile=chief-of-staff-work || true
   fi
 }
 
@@ -427,7 +443,7 @@ ensure_podman() {
   image="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
   export TERMINAL_DOCKER_IMAGE="${TERMINAL_DOCKER_IMAGE:-$image}"
 
-  local observer_dir profile_home gh_auth_dir gh_gitconfig skills_ro_dir aws_auth_dir op_auth_dir volumes
+  local observer_dir profile_home gh_auth_dir gh_gitconfig skills_ro_dir aws_auth_dir op_auth_dir ssh_dir ssh_volume volumes
   observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
   profile_home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
   mkdir -p "$observer_dir" "$profile_home"
@@ -437,6 +453,11 @@ ensure_podman() {
   skills_ro_dir="$(stage_readable_skills_for_sandbox "$profile_home" || true)"
   aws_auth_dir="$(stage_aws_auth_for_sandbox "$profile_home" || true)"
   op_auth_dir="$(stage_op_auth_for_sandbox "$profile_home" || true)"
+  ssh_dir=""
+  if command -v stage_ssh_auth_for_sandbox >/dev/null 2>&1; then
+    ssh_dir="$(stage_ssh_auth_for_sandbox "$profile_home" "$SANDBOX_SSH_RELAY" || true)"
+    start_host_ssh_agent_relay "$profile_home" "$SANDBOX_SSH_RELAY" || true
+  fi
   if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
     "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$observer_dir" >/dev/null || \
       log "host observer failed to start; continuing without live host snapshot"
@@ -456,6 +477,12 @@ ensure_podman() {
   [ -z "$skills_ro_dir" ] || volumes+=("$skills_ro_dir:/home/hermes/.hermes/skills:ro")
   [ -z "$aws_auth_dir" ] || volumes+=("$aws_auth_dir:/home/hermes/.aws:ro" "$aws_auth_dir:/root/.aws:ro")
   [ -z "$op_auth_dir" ] || volumes+=("$op_auth_dir:/home/hermes/.config/op:ro" "$op_auth_dir:/root/.config/op:ro")
+  if [ -n "$ssh_dir" ]; then
+    while IFS= read -r ssh_volume; do
+      [ -z "$ssh_volume" ] || volumes+=("$ssh_volume")
+    done < <(hermes_sandbox_ssh_volumes "$ssh_dir")
+    refresh_running_ssh_auth "$podman" "$ssh_dir" hermes-profile=chief-of-staff-work || true
+  fi
   [ ! -d "$HOME/.pi/agent/sessions" ] || volumes+=("$HOME/.pi/agent/sessions:/mnt/host-pi-agent-sessions:ro")
   [ ! -d "$HOME/.pi/sessions" ] || volumes+=("$HOME/.pi/sessions:/mnt/host-pi-sessions:ro")
   [ ! -d "$HOME/.claude/projects" ] || volumes+=("$HOME/.claude/projects:/mnt/host-claude-projects:ro")

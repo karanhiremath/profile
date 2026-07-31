@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Stage SSH access for a Hermes sandbox and print its read-only volume specs.
+#
+# Thin front end to sandbox-ssh.sh so non-bash callers (hermes_agents.py, any
+# POSIX sh entrypoint) get the same behaviour: a tailnet-first ssh config, a
+# known_hosts copy, and a filtering agent relay. No key material is staged.
+#
+# Usage: sandbox-ssh-setup <profile_home> [--label <podman-label>] [--podman <path>]
+#        sandbox-ssh-setup --help
+#
+# Prints one "src:dst:ro" volume spec per line. Exits 0 with no output when SSH
+# staging is unavailable (no tailscale, no ssh config, no agent) so callers can
+# always launch regardless.
+set -euo pipefail
+
+usage() {
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+profile_home=""
+label=""
+podman=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --label) label="${2:-}"; shift 2 ;;
+    --label=*) label="${1#*=}"; shift ;;
+    --podman) podman="${2:-}"; shift 2 ;;
+    --podman=*) podman="${1#*=}"; shift ;;
+    -*) printf 'sandbox-ssh-setup: unknown option %s\n' "$1" >&2; exit 2 ;;
+    *) [ -n "$profile_home" ] || profile_home="$1"; shift ;;
+  esac
+done
+
+if [ -z "$profile_home" ]; then
+  printf 'sandbox-ssh-setup: profile_home is required\n' >&2
+  usage >&2
+  exit 2
+fi
+
+[ -f "$SCRIPT_DIR/sandbox-ssh.sh" ] || exit 0
+# shellcheck source=./sandbox-ssh.sh
+. "$SCRIPT_DIR/sandbox-ssh.sh"
+
+relay="$SCRIPT_DIR/sandbox-ssh-agent-relay.py"
+ssh_dir="$(stage_ssh_auth_for_sandbox "$profile_home" "$relay" || true)"
+[ -n "$ssh_dir" ] || exit 0
+
+start_host_ssh_agent_relay "$profile_home" "$relay" || true
+
+[ -n "$podman" ] || podman="$(command -v podman || true)"
+if [ -n "$label" ] && [ -n "$podman" ]; then
+  refresh_running_ssh_auth "$podman" "$ssh_dir" "$label" || true
+fi
+
+hermes_sandbox_ssh_volumes "$ssh_dir"
