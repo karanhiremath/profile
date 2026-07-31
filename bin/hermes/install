@@ -60,14 +60,33 @@ export PATH="$VENV/bin:$PNPM_HOME/bin:$PATH"
 pnpm add -g --allow-build=hermes-agent --allow-build=herm-tui hermes-agent herm-tui
 
 # Resolve the pnpm global locations robustly rather than hardcoding pnpm's
-# internal layout ($PNPM_HOME/bin and $PNPM_HOME/global/<v>).
+# internal layout. pnpm v11 may keep package dirs below hashed project dirs
+# under global/<v>, while `pnpm root -g` returns only the aggregate root.
 PNPM_GLOBAL_ROOT="$(pnpm root -g)"
 PNPM_BIN="$(pnpm bin -g)"
+PNPM_LIST_JSON="$(pnpm list -g --depth 0 --json)"
+
+resolve_global_pkg_dir() {
+  local pkg_name="$1" fallback="$2" found
+  found="$(printf '%s' "$PNPM_LIST_JSON" | command node -e '
+const fs = require("fs");
+const pkgName = process.argv[1];
+const data = JSON.parse(fs.readFileSync(0, "utf8"));
+const deps = data && data[0] && data[0].dependencies || {};
+const pkg = deps[pkgName];
+if (!pkg || !pkg.path) process.exit(3);
+process.stdout.write(pkg.path);
+' "$pkg_name" 2>/dev/null || true)"
+  printf '%s\n' "${found:-$fallback}"
+}
+
+HERMES_AGENT_DIR="$(resolve_global_pkg_dir hermes-agent "$PNPM_GLOBAL_ROOT/hermes-agent")"
+HERM_TUI_DIR="$(resolve_global_pkg_dir herm-tui "$PNPM_GLOBAL_ROOT/herm-tui")"
 
 chmod +x \
-  "$PNPM_GLOBAL_ROOT/hermes-agent/bin/hermes.js" \
-  "$PNPM_GLOBAL_ROOT/hermes-agent/bin/hermes-agent.js" \
-  "$PNPM_GLOBAL_ROOT/herm-tui/src/index.tsx" \
+  "$HERMES_AGENT_DIR/bin/hermes.js" \
+  "$HERMES_AGENT_DIR/bin/hermes-agent.js" \
+  "$HERM_TUI_DIR/src/index.tsx" \
   2>/dev/null || true
 
 # write_shim <name> <exec-token>...
@@ -96,15 +115,11 @@ write_shim() {
   chmod 0755 "$shim"
 }
 
-# hermes / hermes-agent / herm are intentionally NOT shimmed: `pnpm add -g`
-# above installs pnpm's own launchers into the pnpm global bin dir (which is on
-# PATH). On hosts with `~/.npmrc prefix=~/.local` that dir IS $SHIM_DIR
-# (~/.local/bin) and cannot be relocated by any per-invocation override, so a
-# custom shim would collide with pnpm's launcher — and only pnpm's launcher
-# resolves the .pnpm virtual store correctly. Their toolchain env
-# (HERMES_TOOLCHAIN_HOME + venv/bun on PATH) is injected by the shell profile
-# (see the Hermes toolchain block in myprofile.sh). Only the profile-script
-# commands below get env-setting shims (no pnpm collision — they aren't packages).
+# Prefer stable env-setting shims in ~/.local/bin so stale package-manager
+# launchers can never point at an old npm/pnpm prefix. The Python CLI entrypoints
+# live in the isolated venv after hermes-agent's postinstall completes.
+write_shim hermes "$VENV/bin/hermes"
+write_shim hermes-agent "$VENV/bin/hermes-agent"
 write_shim hs "$SCRIPT_DIR/hs"
 write_shim dream "$SCRIPT_DIR/dream"
 write_shim agents "$SCRIPT_DIR/agents"
@@ -113,6 +128,10 @@ write_shim cosw "$SCRIPT_DIR/cosw"
 write_shim pm "$SCRIPT_DIR/pm"
 write_shim pl "$SCRIPT_DIR/pl"
 
+if [ "${HERMES_SKIP_TUI_INSTALL:-0}" != "1" ]; then
+  "$SCRIPT_DIR/install-tui"
+fi
+
 if [ "$SKIP_PRIVATE_SYNC" -eq 0 ]; then
   "$SCRIPT_DIR/private-sync"
 fi
@@ -120,7 +139,10 @@ fi
 cat <<EOF
 Hermes toolchain installed.
 
-User-local shims (profile scripts, env-setting):
+User-local shims (env-setting):
+  $SHIM_DIR/hermes
+  $SHIM_DIR/hermes-agent
+  $SHIM_DIR/herm
   $SHIM_DIR/hs
   $SHIM_DIR/dream
   $SHIM_DIR/agents
@@ -128,8 +150,4 @@ User-local shims (profile scripts, env-setting):
   $SHIM_DIR/cosw
   $SHIM_DIR/pm
   $SHIM_DIR/pl
-
-hermes / hermes-agent / herm: provided by pnpm's own global launchers on PATH
-($PNPM_BIN). Their toolchain env (HERMES_TOOLCHAIN_HOME + venv/bun on PATH) is
-injected by the shell profile (Hermes toolchain block in myprofile.sh).
 EOF

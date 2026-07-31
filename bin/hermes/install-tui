@@ -24,7 +24,7 @@ VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
 SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 REPO="oven-sh/bun"
 
-for bin in curl unzip shasum pnpm; do
+for bin in curl unzip shasum; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "ERROR: required binary not found: $bin" >&2
     exit 127
@@ -81,18 +81,55 @@ if [ -z "$found_bun" ]; then
   exit 1
 fi
 install -m 0755 "$found_bun" "$BUN_HOME/bin/bun"
+ln -fns "$BUN_HOME/bin/bun" "$BUN_HOME/bin/bunx"
 
-# pnpm's global bin dir ($PNPM_HOME/bin) MUST be on PATH before `pnpm add -g`.
+# Prefer Karan's local herm-tui fork when present; it contains PM/fleet UI
+# changes before they land in the public package. Fall back to pnpm-global
+# herm-tui for machines without the fork checkout.
 export PATH="$BUN_HOME/bin:$PNPM_HOME/bin:$VENV/bin:$PATH"
-pnpm add -g --allow-build=herm-tui herm-tui
+HERM_TUI_SOURCE_DIR="${HERM_TUI_SOURCE_DIR:-$HOME/src/herm}"
+PNPM_GLOBAL_ROOT=""
+PNPM_BIN="$PNPM_HOME/bin"
+if [ -d "$HERM_TUI_SOURCE_DIR/.git" ] && [ -f "$HERM_TUI_SOURCE_DIR/package.json" ]; then
+  HERM_TUI_DIR="$HERM_TUI_SOURCE_DIR"
+  (cd "$HERM_TUI_DIR" && "$BUN_HOME/bin/bun" install --frozen-lockfile)
+else
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "ERROR: pnpm required when local herm-tui fork is absent: $HERM_TUI_SOURCE_DIR" >&2
+    exit 127
+  fi
+  # pnpm's global bin dir ($PNPM_HOME/bin) MUST be on PATH before `pnpm add -g`.
+  pnpm add -g --allow-build=herm-tui herm-tui
 
-# Resolve pnpm global locations robustly instead of hardcoding the layout.
-PNPM_GLOBAL_ROOT="$(pnpm root -g)"
-PNPM_BIN="$(pnpm bin -g)"
-chmod +x "$PNPM_GLOBAL_ROOT/herm-tui/src/index.tsx" 2>/dev/null || true
+  # Resolve pnpm global locations robustly instead of hardcoding the layout.
+  # pnpm v11 may keep package dirs below hashed project dirs under global/<v>,
+  # while `pnpm root -g` returns only the aggregate root.
+  PNPM_GLOBAL_ROOT="$(pnpm root -g)"
+  PNPM_BIN="$(pnpm bin -g)"
+  PNPM_LIST_JSON="$(pnpm list -g --depth 0 --json)"
+  HERM_TUI_DIR="$(printf '%s' "$PNPM_LIST_JSON" | command node -e '
+const fs = require("fs");
+const data = JSON.parse(fs.readFileSync(0, "utf8"));
+const deps = data && data[0] && data[0].dependencies || {};
+const pkg = deps["herm-tui"];
+if (!pkg || !pkg.path) process.exit(3);
+process.stdout.write(pkg.path);
+')"
+fi
+HERM_ENTRY="$(command node -e '
+const fs = require("fs"), path = require("path");
+const pkgDir = process.argv[1];
+const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8"));
+const bin = pkg.bin;
+let rel = typeof bin === "string" ? bin : (bin && (bin.herm || Object.values(bin)[0]));
+if (!rel) process.exit(3);
+process.stdout.write(path.resolve(pkgDir, rel));
+' "$HERM_TUI_DIR")"
+chmod +x "$HERM_ENTRY" 2>/dev/null || true
 
-# Let the theme installer find the pnpm-global herm-tui install directly.
-export HERMES_PNPM_GLOBAL_ROOT="$PNPM_GLOBAL_ROOT"
+# Let the theme installer find the active herm-tui install/source directly.
+[ -z "$PNPM_GLOBAL_ROOT" ] || export HERMES_PNPM_GLOBAL_ROOT="$PNPM_GLOBAL_ROOT"
+export HERMES_HERM_TUI_DIR="$HERM_TUI_DIR"
 "$SCRIPT_DIR/apply-nighttide-theme"
 
 cat > "$SHIM_DIR/herm" <<EOF
@@ -101,7 +138,7 @@ set -euo pipefail
 export HERMES_TOOLCHAIN_HOME="$HERMES_TOOLCHAIN_HOME"
 export PNPM_HOME="$PNPM_HOME"
 export PATH="$BUN_HOME/bin:$PNPM_BIN:$VENV/bin:\$PATH"
-exec "$PNPM_BIN/herm" "\$@"
+exec "$HERM_ENTRY" "\$@"
 EOF
 chmod 0755 "$SHIM_DIR/herm"
 
@@ -109,7 +146,7 @@ cat <<EOF
 Hermes TUI runtime installed.
 
 bun=$BUN_HOME/bin/bun
-herm=$PNPM_BIN/herm
+herm=$HERM_ENTRY
 shim=$SHIM_DIR/herm
 version=$($BUN_HOME/bin/bun --version)
 EOF

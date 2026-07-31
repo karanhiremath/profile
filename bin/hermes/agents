@@ -18,6 +18,9 @@
 #   pl <project>               attach registered project-lead tmux session
 #       --surface cli|tui|gateway   Override the profile's default surface
 #       --platform <name>           Messaging platform for surface=gateway
+#       --host-tools                Force local host terminal/file tools for this launch
+#       --sandbox                   Force docker sandbox terminal/file tools for this launch
+#       --terminal-backend <name>   Force local|docker|singularity|modal|daytona|ssh
 #       --check                     Run an endpoint health check before launching
 #       -- <args>                   Pass remaining args through to hermes/herm
 #
@@ -103,11 +106,14 @@ case "$cmd" in
   up)
     [ "$#" -ge 1 ] || die "up needs a profile name"
     profile="$1"; shift
-    surface=""; platform=""; do_check=0; passthrough=()
+    surface=""; platform=""; terminal_backend=""; do_check=0; passthrough=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --surface) surface="${2:?}"; shift 2 ;;
         --platform) platform="${2:?}"; shift 2 ;;
+        --host-tools) terminal_backend="local"; shift ;;
+        --sandbox) terminal_backend="docker"; shift ;;
+        --terminal-backend) terminal_backend="${2:?}"; shift 2 ;;
         --check) do_check=1; shift ;;
         --) shift; passthrough=("$@"); break ;;
         *) die "unknown option: $1" ;;
@@ -118,6 +124,7 @@ case "$cmd" in
     [ -n "$surface" ] || surface="$("$PY" "$PY_BACKEND" resolve "$profile" | sed -n 's/.*"surface": *"\([^"]*\)".*/\1/p')"
     [ -n "$surface" ] || surface="cli"
 
+    [ -z "$terminal_backend" ] || export HERMES_AGENT_TERMINAL_BACKEND="$terminal_backend"
     home="$(materialize "$profile")"
     runtime_profile="$(sed -n '1p' "$home/active_profile" 2>/dev/null || true)"
     runtime_home="$home"

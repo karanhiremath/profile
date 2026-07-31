@@ -54,32 +54,57 @@ install_or_update_pi() {
 }
 
 configure_pi_agent() {
-    local pi_agent_dir theme_dir extensions_dir settings_file theme_src theme_dst agents_src settings_src extensions_src trust_file
+    local pi_agent_dir theme_dir extensions_dir bin_dir settings_file theme_src theme_dst agents_src settings_src extensions_src trust_file profile_selector default_profile_file
     pi_agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
     theme_dir="${pi_agent_dir}/themes"
     extensions_dir="${pi_agent_dir}/extensions"
+    bin_dir="${pi_agent_dir}/bin"
     settings_file="${pi_agent_dir}/settings.json"
     trust_file="${pi_agent_dir}/trust.json"
     theme_src="${SCRIPT_DIR}/themes/${theme_name}.json"
     theme_dst="${theme_dir}/${theme_name}.json"
-    agents_src="${PROFILE_DIR}/config/pi/AGENTS.personal.md"
-    settings_src="${PROFILE_DIR}/config/pi/settings.personal.json"
-    extensions_src="${PROFILE_DIR}/config/pi/extensions"
+    default_profile_file="${HOME}/.pi/default-profile"
+    profile_selector="${PI_AGENT_PROFILE:-}"
+    if [ -z "$profile_selector" ] && [ -f "$default_profile_file" ]; then
+        profile_selector="$(tr -d '[:space:]' < "$default_profile_file")"
+    fi
+    profile_selector="${profile_selector:-personal}"
+
+    case "$profile_selector" in
+        personal)
+            agents_src="${PROFILE_DIR}/config/pi/AGENTS.personal.md"
+            settings_src="${PROFILE_DIR}/config/pi/settings.personal.json"
+            extensions_src="${PROFILE_DIR}/config/pi/extensions"
+            ;;
+        work)
+            agents_src="${HOME}/.pi/work-agent/AGENTS.md"
+            settings_src="${HOME}/.pi/work-agent/settings.json"
+            extensions_src="${HOME}/.pi/work-agent/extensions"
+            if [ -f "${HOME}/.pi/work-agent/themes/${theme_name}.json" ]; then
+                theme_src="${HOME}/.pi/work-agent/themes/${theme_name}.json"
+            fi
+            ;;
+        *)
+            echo "ERROR: unsupported PI_AGENT_PROFILE/default profile: ${profile_selector}" >&2
+            echo "Supported profiles: personal, work" >&2
+            exit 1
+            ;;
+    esac
 
     if [ ! -f "$theme_src" ]; then
         echo "ERROR: missing pi theme source: ${theme_src}" >&2
         exit 1
     fi
     if [ ! -f "$agents_src" ]; then
-        echo "ERROR: missing pi personal AGENTS source: ${agents_src}" >&2
+        echo "ERROR: missing pi ${profile_selector} AGENTS source: ${agents_src}" >&2
         exit 1
     fi
     if [ ! -f "$settings_src" ]; then
-        echo "ERROR: missing pi personal settings source: ${settings_src}" >&2
+        echo "ERROR: missing pi ${profile_selector} settings source: ${settings_src}" >&2
         exit 1
     fi
 
-    mkdir -p "$theme_dir" "$extensions_dir"
+    mkdir -p "$theme_dir" "$extensions_dir" "$bin_dir"
     cp "$theme_src" "$theme_dst"
     cp "$agents_src" "${pi_agent_dir}/AGENTS.md"
     cp "$settings_src" "$settings_file"
@@ -87,7 +112,8 @@ configure_pi_agent() {
         cp "${extensions_src}"/*.ts "$extensions_dir"/
     fi
 
-    TRUST_FILE="$trust_file" HOME_DIR="$HOME" node <<'NODE'
+    if [ "$profile_selector" = "personal" ]; then
+        TRUST_FILE="$trust_file" HOME_DIR="$HOME" node <<'NODE'
 const fs = require('fs');
 const path = process.env.TRUST_FILE;
 const home = process.env.HOME_DIR;
@@ -100,8 +126,17 @@ for (const rel of ['src/profile', 'src/hermes', 'src/notes']) {
 }
 fs.writeFileSync(path, JSON.stringify(trust, null, 2) + '\n');
 NODE
+    fi
 
-    echo "Configured pi personal agent policy, trust, extensions, and theme: ${theme_name}"
+    cat > "${bin_dir}/pi" <<EOF
+#!/bin/sh
+# Host-local Pi launcher. Prefer the configured agent dir unless the caller overrides it.
+export PI_CODING_AGENT_DIR="\${PI_CODING_AGENT_DIR:-${pi_agent_dir}}"
+exec "${HOME}/.local/bin/pi" "\$@"
+EOF
+    chmod +x "${bin_dir}/pi"
+
+    echo "Configured pi ${profile_selector} agent policy, extensions, launcher, and theme: ${theme_name}"
 }
 
 install_messages "start" "$app_name"
