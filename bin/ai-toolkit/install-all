@@ -80,6 +80,16 @@ else
 fi
 echo ""
 
+# Codex CLI
+echo "==> Installing/upgrading Codex CLI..."
+if "${APP_BIN}/codex/install"; then
+    echo "✓ Codex CLI completed successfully"
+else
+    echo "✗ Codex CLI failed"
+    failed_installs+=("codex")
+fi
+echo ""
+
 # cmux
 echo "==> Installing/upgrading cmux..."
 if "${APP_BIN}/cmux/install"; then

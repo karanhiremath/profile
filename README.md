@@ -75,7 +75,7 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 | `just claude` | Claude Code |
 | `just pi` | pi coding agent + profile-managed theme |
 | `just pi-skills` | Link profile-managed Pi skills |
-| `just codex` | Codex CLI from Codex.app |
+| `just codex` | Codex CLI via pnpm (`@openai/codex`; node/pnpm from mise) |
 | `just cmux` | cmux (Claude multiplexer) |
 | `just copilot` | GitHub Copilot CLI |
 | `just cursor-cli` | Cursor Agent CLI |
