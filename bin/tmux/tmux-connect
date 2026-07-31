@@ -5,6 +5,10 @@
 #   tmux-connect                        # fzf picker from host registry
 #   tmux-connect <host>                 # connect with default session
 #   tmux-connect <host> <session>       # connect with specific session
+#   tmux-connect <host> exec <cmd...>   # run through the shared SSH master
+#   tmux-connect <host> control         # show master/socket status
+#   tmux-connect --detached <host> <session> [cmd]
+#                                        # ensure/start remote tmux without attaching
 #   tmux-connect --list                 # list registered hosts
 #   tmux-connect --status               # check which hosts have active sessions
 #   tmux-connect --help                 # show help
@@ -15,9 +19,86 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="${SCRIPT_DIR}/hosts/registry.conf"
 # Work-specific host registries (loaded in order, later entries win)
 EXTRA_REGISTRIES="${TMUX_CONNECT_EXTRA_REGISTRIES:-}"
+CONTROL_DIR="${TMUX_CONNECT_CONTROL_DIR:-/tmp/tmux-connect-${UID:-$(id -u)}}"
+CONTROL_PERSIST="${TMUX_CONNECT_CONTROL_PERSIST:-8h}"
 
 usage() {
-    sed -n '2,9p' "$0" | sed 's/^# //'
+    sed -n '2,14p' "$0" | sed 's/^# //'
+}
+
+prepare_control_dir() {
+    if [[ -e "$CONTROL_DIR" && ! -d "$CONTROL_DIR" ]]; then
+        echo "tmux-connect: control path is not a directory: $CONTROL_DIR" >&2
+        return 1
+    fi
+
+    mkdir -p "$CONTROL_DIR"
+    if [[ ! -O "$CONTROL_DIR" ]]; then
+        echo "tmux-connect: control directory is not owned by the current user: $CONTROL_DIR" >&2
+        return 1
+    fi
+    chmod 700 "$CONTROL_DIR"
+}
+
+ssh_mux() {
+    prepare_control_dir
+    command ssh \
+        -o ControlMaster=auto \
+        -o "ControlPersist=${CONTROL_PERSIST}" \
+        -o "ControlPath=${CONTROL_DIR}/%C" \
+        "$@"
+}
+
+ensure_master() {
+    local target="$1"
+    if ssh_mux -O check "$target" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    prepare_control_dir
+    command ssh \
+        -o ControlMaster=yes \
+        -o "ControlPersist=${CONTROL_PERSIST}" \
+        -o "ControlPath=${CONTROL_DIR}/%C" \
+        -MNf "$target"
+}
+
+ssh_interactive() {
+    # Open the human-facing PTY outside the multiplex master. OpenSSH mux
+    # channels can default to 80x24 and fail to propagate later SIGWINCH events.
+    command ssh \
+        -o ControlMaster=no \
+        -o ControlPath=none \
+        "$@"
+}
+
+ssh_reuse() {
+    prepare_control_dir
+    command ssh \
+        -o ControlMaster=no \
+        -o "ControlPath=${CONTROL_DIR}/%C" \
+        "$@"
+}
+
+control_path_for_target() {
+    local target="$1"
+    prepare_control_dir
+    command ssh -G \
+        -o ControlMaster=auto \
+        -o "ControlPersist=${CONTROL_PERSIST}" \
+        -o "ControlPath=${CONTROL_DIR}/%C" \
+        "$target" 2>/dev/null | awk '$1 == "controlpath" { print $2; exit }'
+}
+
+shell_quote_command() {
+    local arg quoted
+    local -a parts=()
+    for arg in "$@"; do
+        printf -v quoted '%q' "$arg"
+        parts+=("$quoted")
+    done
+    local IFS=' '
+    printf '%s\n' "${parts[*]}"
 }
 
 # All registry files (base + extras)
@@ -60,6 +141,85 @@ get_host_field() {
     return 1
 }
 
+ssh_targets() {
+    local ssh_spec="$1"
+    local IFS=','
+    local -a targets
+    read -r -a targets <<< "$ssh_spec"
+    printf '%s\n' "${targets[@]}"
+}
+
+remote_tmux_sessions() {
+    local ssh_spec="$1" target
+    while IFS= read -r target; do
+        [[ -n "$target" ]] || continue
+        # Reuse a live master when present, but do not leave an 8-hour master
+        # behind for every host touched by the fleet-wide status probe.
+        ssh_reuse -o ConnectTimeout=2 -o BatchMode=yes "$target" "tmux list-sessions -F '#S' 2>/dev/null" && return 0
+    done < <(ssh_targets "$ssh_spec")
+    return 1
+}
+
+connect_host_exec() {
+    local name="$1"
+    shift || true
+
+    if [[ -z "$name" || $# -eq 0 ]]; then
+        echo "Usage: tmux-connect <host> exec <command> [args...]" >&2
+        return 2
+    fi
+
+    local ssh_target
+    ssh_target=$(get_host_field "$name" "ssh") || {
+        echo "Unknown host: $name" >&2
+        echo "Run 'tmux-connect --list' to see available hosts" >&2
+        return 1
+    }
+
+    if [[ "$ssh_target" == "local" ]]; then
+        "$@"
+        return
+    fi
+
+    local remote_cmd target status=1
+    remote_cmd=$(shell_quote_command "$@")
+    while IFS= read -r target; do
+        [[ -n "$target" ]] || continue
+        if ssh_mux -T "$target" "$remote_cmd"; then
+            return 0
+        else
+            status=$?
+        fi
+    done < <(ssh_targets "$ssh_target")
+    return "$status"
+}
+
+show_control_status() {
+    local name="$1"
+    local ssh_target
+    ssh_target=$(get_host_field "$name" "ssh") || {
+        echo "Unknown host: $name" >&2
+        echo "Run 'tmux-connect --list' to see available hosts" >&2
+        return 1
+    }
+
+    if [[ "$ssh_target" == "local" ]]; then
+        printf 'local\t%s\n' "$name"
+        return
+    fi
+
+    local target path state
+    while IFS= read -r target; do
+        [[ -n "$target" ]] || continue
+        path=$(control_path_for_target "$target")
+        state=inactive
+        if ssh_mux -O check "$target" >/dev/null 2>&1; then
+            state=active
+        fi
+        printf '%s\t%s\t%s\n' "$target" "$state" "$path"
+    done < <(ssh_targets "$ssh_target")
+}
+
 cmd_list() {
     printf "  %-16s %-20s %-10s %s\n" "NAME" "SSH TARGET" "SESSION" "DESCRIPTION"
     printf "  %-16s %-20s %-10s %s\n" "────" "──────────" "───────" "───────────"
@@ -87,8 +247,7 @@ cmd_status() {
                 sessions=$(tmux list-sessions -F '#S' 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
                 printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
             else
-                if ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" 2>/dev/null; then
-                    sessions=$(ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" | tr '\n' ', ' | sed 's/,$//')
+                if sessions=$(remote_tmux_sessions "$ssh" 2>/dev/null | tr '\n' ', ' | sed 's/,$//'); then
                     printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
                 else
                     printf "  %-16s %-8s %s\n" "$name" "⬚" "-"
@@ -96,6 +255,66 @@ cmd_status() {
             fi
         done < "$reg"
     done
+}
+
+connect_host_detached() {
+    local name="$1"
+    local session="${2:-}"
+    shift 2 || true
+    local command="${*:-}"
+
+    if [[ -z "$name" || -z "$session" ]]; then
+        echo "Usage: tmux-connect --detached <host> <session> [command]" >&2
+        exit 2
+    fi
+
+    local ssh_target
+    ssh_target=$(get_host_field "$name" "ssh") || {
+        echo "Unknown host: $name" >&2
+        echo "Run 'tmux-connect --list' to see available hosts" >&2
+        exit 1
+    }
+
+    echo "Ensuring detached tmux session on $name ($ssh_target): $session" >&2
+
+    local tmux_target
+    printf -v tmux_target '%q' "$session"
+
+    if [[ "$ssh_target" == "local" ]]; then
+        tmux has-session -t "$session" 2>/dev/null || tmux new-session -d -s "$session"
+        if [[ -n "$command" ]]; then
+            tmux new-window -d -t "$session" -- "$command"
+        fi
+        return
+    fi
+
+    local remote_cmd
+    remote_cmd="tmux has-session -t ${tmux_target} 2>/dev/null || tmux new-session -d -s ${tmux_target}"
+    if [[ -n "$command" ]]; then
+        local remote_command
+        printf -v remote_command '%q' "$command"
+        remote_cmd="${remote_cmd}; tmux new-window -d -t ${tmux_target} -- ${remote_command}"
+    fi
+
+    # Deliberately no -t/-tt: detached launch must not stream remote tmux output
+    # through the SSH tunnel. Pollers should write logs on the remote host and be
+    # inspected with bounded one-shot tails.
+    if [[ "$ssh_target" == *,* ]]; then
+        local target status=1
+        while IFS= read -r target; do
+            [[ -n "$target" ]] || continue
+            echo "Trying SSH target: $target" >&2
+            if ssh_mux -T "$target" "$remote_cmd"; then
+                return 0
+            else
+                status=$?
+            fi
+            echo "SSH target failed ($status): $target" >&2
+        done < <(ssh_targets "$ssh_target")
+        return "$status"
+    else
+        ssh_mux -T "$ssh_target" "$remote_cmd"
+    fi
 }
 
 connect_host() {
@@ -133,8 +352,37 @@ connect_host() {
             fi
         fi
     else
-        # Remote: SSH with tmux attach-or-create
-        exec ssh -t "$ssh_target" "tmux new-session -A -s ${session}"
+        # Remote: SSH with tmux attach-or-create.
+        # ssh_target may be a comma-separated fallback list, e.g.
+        # host.tailnet.ts.net,host-from-ssh-config
+        local remote_session remote_cmd
+        printf -v remote_session '%q' "$session"
+        remote_cmd="tmux new-session -A -s ${remote_session}"
+
+        if [[ "$ssh_target" == *,* ]]; then
+            local target status=1
+            while IFS= read -r target; do
+                [[ -n "$target" ]] || continue
+                echo "Trying SSH target: $target" >&2
+                if ensure_master "$target"; then
+                    :
+                else
+                    status=$?
+                    echo "SSH master failed ($status): $target" >&2
+                    continue
+                fi
+                if ssh_interactive -tt "$target" "$remote_cmd" < /dev/tty; then
+                    exit 0
+                else
+                    status=$?
+                fi
+                echo "SSH target failed ($status): $target" >&2
+            done < <(ssh_targets "$ssh_target")
+            exit "$status"
+        else
+            ensure_master "$ssh_target"
+            ssh_interactive -t "$ssh_target" "$remote_cmd"
+        fi
     fi
 }
 
@@ -167,6 +415,24 @@ case "${1:-}" in
     -h|--help|help)   usage ;;
     -l|--list|list)   cmd_list ;;
     -s|--status|status) cmd_status ;;
+    --detach|--detached|detach)
+                         shift
+                         connect_host_detached "${1:-}" "${2:-}" "${@:3}" ;;
     "")               cmd_picker ;;
-    *)                connect_host "$1" "${2:-}" ;;
+    *)
+        host="$1"
+        shift
+        case "${1:-}" in
+            exec|--exec|run|--run)
+                shift
+                connect_host_exec "$host" "$@"
+                ;;
+            control|--control|socket|--socket)
+                show_control_status "$host"
+                ;;
+            *)
+                connect_host "$host" "${1:-}"
+                ;;
+        esac
+        ;;
 esac
