@@ -209,17 +209,19 @@ if [ "${check_only}" -eq 1 ]; then
     echo "relay:    ${BUZZ_RELAY_URL}"
     liveness="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "${BUZZ_RELAY_URL%/}/_liveness" || echo 000)"
     echo "liveness: ${liveness}"
-    BUZZ_PRIVATE_KEY="$(resolve_key)" \
-        BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" \
-        buzz users get >/dev/null 2>&1 \
-        && echo "identity: authenticated" \
-        || echo "identity: FAILED (buzz users get)"
+    if key="$(resolve_key)" && [ ${#key} -ge 32 ] &&
+        BUZZ_PRIVATE_KEY="${key}" BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" buzz users get >/dev/null 2>&1; then
+        echo "identity: authenticated"
+    else
+        echo "identity: FAILED"
+    fi
     exit 0
 fi
 
 if [ "${1:-}" = "--shell" ]; then
     echo "buzz context ${CONTEXT} -> ${BUZZ_RELAY_URL} (exit to drop it)" >&2
-    BUZZ_PRIVATE_KEY="$(resolve_key)" \
+    if ! key="$(resolve_key)"; then exit 3; fi
+    BUZZ_PRIVATE_KEY="${key}" \
         BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" \
         BUZZ_CONTEXT="${CONTEXT}" \
         exec "${SHELL:-/bin/bash}"
@@ -227,12 +229,17 @@ fi
 
 [ $# -ge 1 ] || die "nothing to run; try 'bz ${CONTEXT} channels list'" "usage"
 
+# Resolve into a variable first and fail closed. `die` inside a command
+# substitution only kills the subshell, so an inline
+# `BUZZ_PRIVATE_KEY="$(resolve_key)" buzz ...` would happily run buzz with an
+# empty key and surface a confusing key_error instead of the auth failure.
+if ! key="$(resolve_key)"; then
+    exit 3
+fi
+[ ${#key} -ge 32 ] || die "resolved an empty key for context ${CONTEXT}" "auth" 3
+
 if [ -n "${stdin_file}" ]; then
-    BUZZ_PRIVATE_KEY="$(resolve_key)" \
-        BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" \
-        buzz "$@" < "${stdin_file}"
+    BUZZ_PRIVATE_KEY="${key}" BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" buzz "$@" < "${stdin_file}"
 else
-    BUZZ_PRIVATE_KEY="$(resolve_key)" \
-        BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" \
-        buzz "$@"
+    BUZZ_PRIVATE_KEY="${key}" BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" buzz "$@"
 fi
