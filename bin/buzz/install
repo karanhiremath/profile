@@ -1,0 +1,117 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Install/upgrade buzz-cli (agent-facing Buzz relay client, JSON in / JSON out).
+#
+# buzz-cli is not published to crates.io and is not shipped in the relay
+# container image, so it is built from a pinned revision of block/buzz.
+# Bump BUZZ_REV when moving to a newer relay build; keep client and relay
+# revisions in the same neighbourhood.
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+BUZZ_REPO="${BUZZ_REPO:-https://github.com/block/buzz}"
+BUZZ_REV="${BUZZ_REV:-4c665aeac366fca5097eaa1088fb87f3d248eac7}"
+BUZZ_CRATES="${BUZZ_CRATES:-buzz-cli}"
+
+usage() {
+    cat <<'MSG'
+Usage: bin/buzz/install [--help] [--force] [--with-acp]
+
+Installs buzz-cli from a pinned revision of block/buzz via cargo.
+
+Options:
+  --force      Reinstall even if the pinned revision is already present.
+  --with-acp   Also install buzz-acp (the ACP harness that lets an agent
+               listen for @mentions). Slower build; only needed on hosts
+               that run a long-lived agent harness.
+
+Environment:
+  BUZZ_REV     Git revision to build (default: pinned in this script).
+  BUZZ_REPO    Source repository (default: https://github.com/block/buzz).
+
+Requires cargo (rustup or mise). Nothing here writes relay URLs or keys —
+per-context configuration lives in ~/.config/buzz/contexts/<name>.env and is
+never committed. See bin/buzz/bz and docs/buzz.md.
+MSG
+}
+
+force=0
+for arg in "$@"; do
+    case "${arg}" in
+        --help | -h)
+            usage
+            exit 0
+            ;;
+        --force)
+            force=1
+            ;;
+        --with-acp)
+            BUZZ_CRATES="buzz-cli buzz-acp"
+            ;;
+        *)
+            echo "Unknown option: ${arg}" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "ERROR: cargo not found. Install a Rust toolchain first (rustup, or 'just mise')." >&2
+    exit 1
+fi
+
+# `cargo install --list` records the source revision, so an unchanged pin is a no-op.
+if [ "${force}" -eq 0 ] && command -v buzz >/dev/null 2>&1; then
+    if cargo install --list 2>/dev/null | grep -qF "${BUZZ_REV:0:12}"; then
+        echo "buzz-cli already at pinned revision ${BUZZ_REV:0:12}. Use --force to rebuild."
+        buzz --version 2>/dev/null || true
+        exit 0
+    fi
+fi
+
+echo "Building ${BUZZ_CRATES} from ${BUZZ_REPO} @ ${BUZZ_REV:0:12} ..."
+
+# git-fetch-with-cli reuses the operator's existing git credentials and proxy config.
+CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    cargo install --git "${BUZZ_REPO}" --rev "${BUZZ_REV}" --locked ${BUZZ_CRATES}
+
+echo
+
+# The context wrapper is symlinked rather than aliased: agents and other
+# non-interactive shells never source the interactive profile.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p "${HOME}/.local/bin"
+ln -sf "${SCRIPT_DIR}/bz" "${HOME}/.local/bin/bz"
+
+for bin in buzz buzz-acp bz; do
+    if command -v "${bin}" >/dev/null 2>&1; then
+        printf '%-10s %s\n' "${bin}" "$(command -v "${bin}")"
+    fi
+done
+
+cat <<'MSG'
+
+Next: create a context so the client knows which relay to talk to.
+
+  mkdir -p ~/.config/buzz/contexts && chmod 700 ~/.config/buzz ~/.config/buzz/contexts
+  cat > ~/.config/buzz/contexts/work.env <<'CTX'
+  BUZZ_RELAY_URL=http://<relay-host>:3000
+  BUZZ_KEY_OP_REF=op://<vault>/<item>/password
+  BUZZ_OP_ACCOUNT=<1password-account>
+  CTX
+  chmod 600 ~/.config/buzz/contexts/work.env
+
+Then use the context wrapper rather than exporting keys into your shell:
+
+  bz work channels list
+MSG

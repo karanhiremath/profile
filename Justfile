@@ -367,6 +367,16 @@ pi-skills:
         ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
     done
 
+# Install/upgrade buzz-cli (Buzz relay client) + the bz context wrapper.
+# Pass --with-acp to also build the buzz-acp @mention harness.
+# Usage: just buzz [--with-acp] [--force]
+buzz *FLAGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/buzz/install {{FLAGS}}
+
 # Install/upgrade Codex CLI via pnpm (node + pnpm from mise)
 codex:
     #!/usr/bin/env bash

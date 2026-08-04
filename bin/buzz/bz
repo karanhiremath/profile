@@ -1,0 +1,238 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# bz — run buzz-cli against a named Buzz relay context, with a data-boundary
+# preflight on anything that writes content to a relay.
+#
+# Why this exists:
+#   * A relay process is the security boundary in Buzz today, so work and
+#     personal traffic live on separate relays. Contexts make the target
+#     explicit at every call site instead of relying on an exported env var
+#     that silently follows you into the wrong repo.
+#   * Agent identities are per-relay. Keys are fetched into the child process
+#     only, never written to disk and never exported into an interactive shell.
+#   * Outbound content is scanned for operator-local paths and machine names
+#     before it reaches a relay, because relay content is not retractable in
+#     any useful sense once other members have synced it.
+#
+# Contexts live in ~/.config/buzz/contexts/<name>.env (mode 0600, uncommitted):
+#
+#   BUZZ_RELAY_URL=http://relay-host:3000
+#   BUZZ_KEY_OP_REF=op://<vault>/<item>/password    # 1Password secret reference
+#   BUZZ_OP_ACCOUNT=<account>                       # optional, for multi-account op
+#   BUZZ_KEY_CMD=<command>                          # alternative to BUZZ_KEY_OP_REF
+#
+# Usage:
+#   bz <context> <buzz args...>
+#   bz <context> --shell            # interactive subshell with the context loaded
+#   bz --list                       # list configured contexts
+#   bz --check <context>            # resolve the context and hit the relay, no writes
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}/buzz"
+CONTEXT_DIR="${CONFIG_HOME}/contexts"
+DENYLIST_FILE="${CONFIG_HOME}/denylist"
+
+die() {
+    printf '{"error":"%s","message":"%s"}\n' "${2:-bz}" "$1" >&2
+    exit "${3:-1}"
+}
+
+usage() {
+    sed -n '3,32p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+list_contexts() {
+    if [ ! -d "${CONTEXT_DIR}" ]; then
+        echo "No contexts. Create ${CONTEXT_DIR}/<name>.env (mode 0600)." >&2
+        return 1
+    fi
+    local found=0
+    for f in "${CONTEXT_DIR}"/*.env; do
+        [ -e "${f}" ] || continue
+        found=1
+        local name url
+        name="$(basename "${f}" .env)"
+        url="$(grep -E '^BUZZ_RELAY_URL=' "${f}" | head -1 | cut -d= -f2-)"
+        printf '%-12s %s\n' "${name}" "${url:-<no BUZZ_RELAY_URL>}"
+    done
+    [ "${found}" -eq 1 ] || { echo "No contexts in ${CONTEXT_DIR}." >&2; return 1; }
+}
+
+# --- data boundary -----------------------------------------------------------
+#
+# Built-in patterns are generic operator-environment leaks only. Anything
+# tenant-specific (customer names, internal hostnames) belongs in the
+# machine-local denylist file, never in a synced dotfiles repo.
+
+builtin_patterns() {
+    cat <<'PATTERNS'
+/Users/[A-Za-z0-9._-]+
+/home/[A-Za-z0-9._-]+
+~/src/
+Google Drive
+[Mm]ac ?[Mm]ini
+MacBook
+/private/tmp/claude-
+/scratch/people/
+PATTERNS
+}
+
+scan_text() {
+    # $1 = text, $2 = label for the error message. Returns 1 on first hit.
+    local text="$1" label="$2" pat
+    while IFS= read -r pat; do
+        [ -n "${pat}" ] || continue
+        case "${pat}" in \#*) continue ;; esac
+        if printf '%s' "${text}" | grep -qE "${pat}"; then
+            die "preflight: ${label} matches denied pattern /${pat}/ — operator-local paths, machine names, and tenant identifiers must not be published to a relay. Rewrite with a placeholder, or use --no-preflight if this is a false positive you have reviewed." "preflight" 65
+        fi
+    done < <(builtin_patterns; [ -f "${DENYLIST_FILE}" ] && cat "${DENYLIST_FILE}")
+    return 0
+}
+
+writes_content() {
+    # Subcommands whose payload lands in the relay log.
+    case "$1 ${2:-}" in
+        "messages send" | "messages send-diff" | "messages edit" | \
+        "canvas set" | "mem set" | "mem patch" | "social publish" | \
+        "channels create" | "channels topic" | "channels purpose" | \
+        "users set-status" | "users set-profile")
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# --- argument handling -------------------------------------------------------
+
+[ $# -ge 1 ] || { usage >&2; exit 1; }
+
+case "$1" in
+    --help | -h)
+        usage
+        exit 0
+        ;;
+    --list | -l)
+        list_contexts
+        exit $?
+        ;;
+esac
+
+check_only=0
+if [ "$1" = "--check" ]; then
+    check_only=1
+    shift
+    [ $# -ge 1 ] || die "--check needs a context name" "usage"
+fi
+
+CONTEXT="$1"
+shift
+
+CONTEXT_FILE="${CONTEXT_DIR}/${CONTEXT}.env"
+[ -f "${CONTEXT_FILE}" ] || die "no such context: ${CONTEXT} (looked for ${CONTEXT_FILE}; 'bz --list' shows configured contexts)" "usage"
+
+perms="$(stat -f '%Lp' "${CONTEXT_FILE}" 2>/dev/null || stat -c '%a' "${CONTEXT_FILE}")"
+[ "${perms}" = "600" ] || echo "warning: ${CONTEXT_FILE} is mode ${perms}; expected 600" >&2
+
+set -a
+# shellcheck disable=SC1090
+. "${CONTEXT_FILE}"
+set +a
+
+[ -n "${BUZZ_RELAY_URL:-}" ] || die "context ${CONTEXT} does not set BUZZ_RELAY_URL" "config"
+
+no_preflight=0
+args=()
+for a in "$@"; do
+    if [ "${a}" = "--no-preflight" ]; then
+        no_preflight=1
+    else
+        args+=("${a}")
+    fi
+done
+set -- ${args[@]+"${args[@]}"}
+
+# Content arriving on stdin (`--content -`) is captured so it can be scanned
+# before it is forwarded, then replayed to the child on stdin.
+stdin_file=""
+# Must return 0: a failing last command in an EXIT trap replaces the script's
+# exit status, which would mask buzz-cli's own exit codes (1 user, 2 network,
+# 3 auth, 5 write conflict) that callers depend on.
+cleanup() {
+    [ -n "${stdin_file}" ] && rm -f "${stdin_file}"
+    return 0
+}
+trap cleanup EXIT
+
+if [ "${no_preflight}" -eq 0 ] && [ $# -ge 1 ] && writes_content "${1:-}" "${2:-}"; then
+    for a in "$@"; do
+        [ "${a}" = "-" ] && continue
+        scan_text "${a}" "argument"
+    done
+    for a in "$@"; do
+        if [ "${a}" = "-" ] && [ ! -t 0 ]; then
+            umask 077
+            stdin_file="$(mktemp "${TMPDIR:-/tmp}/bz.stdin.XXXXXX")"
+            cat > "${stdin_file}"
+            scan_text "$(cat "${stdin_file}")" "stdin payload"
+            break
+        fi
+    done
+fi
+
+# --- identity ---------------------------------------------------------------
+
+resolve_key() {
+    if [ -n "${BUZZ_PRIVATE_KEY:-}" ]; then
+        printf '%s' "${BUZZ_PRIVATE_KEY}"
+        return 0
+    fi
+    if [ -n "${BUZZ_KEY_OP_REF:-}" ]; then
+        command -v op >/dev/null 2>&1 || die "context ${CONTEXT} uses BUZZ_KEY_OP_REF but the 1Password CLI (op) is not installed" "config"
+        local op_args=(read --no-newline "${BUZZ_KEY_OP_REF}")
+        [ -n "${BUZZ_OP_ACCOUNT:-}" ] && op_args+=(--account "${BUZZ_OP_ACCOUNT}")
+        op "${op_args[@]}" 2>/dev/null || die "could not read ${BUZZ_KEY_OP_REF} (is op signed in?)" "auth" 3
+        return 0
+    fi
+    if [ -n "${BUZZ_KEY_CMD:-}" ]; then
+        eval "${BUZZ_KEY_CMD}" || die "BUZZ_KEY_CMD failed for context ${CONTEXT}" "auth" 3
+        return 0
+    fi
+    die "context ${CONTEXT} sets no key source (BUZZ_KEY_OP_REF or BUZZ_KEY_CMD)" "config"
+}
+
+command -v buzz >/dev/null 2>&1 || die "buzz not on PATH — run 'just buzz' (bin/buzz/install)" "config"
+
+if [ "${check_only}" -eq 1 ]; then
+    echo "context:  ${CONTEXT}"
+    echo "relay:    ${BUZZ_RELAY_URL}"
+    liveness="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "${BUZZ_RELAY_URL%/}/_liveness" || echo 000)"
+    echo "liveness: ${liveness}"
+    BUZZ_PRIVATE_KEY="$(resolve_key)" \
+        BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" \
+        buzz users get >/dev/null 2>&1 \
+        && echo "identity: authenticated" \
+        || echo "identity: FAILED (buzz users get)"
+    exit 0
+fi
+
+if [ "${1:-}" = "--shell" ]; then
+    echo "buzz context ${CONTEXT} -> ${BUZZ_RELAY_URL} (exit to drop it)" >&2
+    BUZZ_PRIVATE_KEY="$(resolve_key)" \
+        BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" \
+        BUZZ_CONTEXT="${CONTEXT}" \
+        exec "${SHELL:-/bin/bash}"
+fi
+
+[ $# -ge 1 ] || die "nothing to run; try 'bz ${CONTEXT} channels list'" "usage"
+
+if [ -n "${stdin_file}" ]; then
+    BUZZ_PRIVATE_KEY="$(resolve_key)" \
+        BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" \
+        buzz "$@" < "${stdin_file}"
+else
+    BUZZ_PRIVATE_KEY="$(resolve_key)" \
+        BUZZ_RELAY_URL="${BUZZ_RELAY_URL}" \
+        buzz "$@"
+fi
