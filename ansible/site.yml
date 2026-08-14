@@ -32,6 +32,8 @@
       tags: [dotfiles]
     - role: ssh_authorized_keys
       tags: [ssh_authorized_keys, ssh]
+    - role: hermes_voice
+      tags: [hermes_voice, voice, onepassword, op]
     - role: cli_tools
       tags: [cli_tools]
     - role: mac_apps

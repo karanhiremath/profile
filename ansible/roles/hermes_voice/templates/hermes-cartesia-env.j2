@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Managed by ~/src/profile Ansible role hermes_voice.
+# Resolve the shared Cartesia API key from 1Password without writing it to disk.
+set -euo pipefail
+
+ACCOUNT="${OP_ACCOUNT:-{{ profile_hermes_voice_op_account }}}"
+REF="${CARTESIA_1PASSWORD_REF:-{{ profile_hermes_voice_cartesia_op_ref }}}"
+KEYCHAIN_SERVICE="${OP_SERVICE_ACCOUNT_TOKEN_KEYCHAIN_SERVICE:-{{ profile_hermes_voice_op_token_keychain_service }}}"
+KEYCHAIN_ACCOUNT="${OP_SERVICE_ACCOUNT_TOKEN_KEYCHAIN_ACCOUNT:-{{ profile_hermes_voice_keychain_account }}}"
+MODE="${1:-export}"
+
+if ! command -v {{ profile_op_cli }} >/dev/null 2>&1; then
+  echo "1Password CLI '{{ profile_op_cli }}' is not installed or not on PATH" >&2
+  exit 127
+fi
+
+# Prefer an explicitly provided OP_SERVICE_ACCOUNT_TOKEN. Otherwise, on macOS,
+# read the local machine bootstrap token from Keychain. This token grants read
+# access to the shared 1Password item; it is not the Cartesia API key itself.
+if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]] && command -v security >/dev/null 2>&1; then
+  token="$(security find-generic-password -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
+  if [[ -n "$token" ]]; then
+    export OP_SERVICE_ACCOUNT_TOKEN="$token"
+  fi
+fi
+
+value="$({{ profile_op_cli }} read --account "$ACCOUNT" --no-newline "$REF" 2>/dev/null || true)"
+if [[ -z "$value" || "$value" == "REPLACE_WITH_CARTESIA_API_KEY" ]]; then
+  cat >&2 <<EOF
+Cartesia key not available from 1Password.
+Expected shared secret reference:
+  $REF
+Account:
+  $ACCOUNT
+
+For unattended hosts, provision OP_SERVICE_ACCOUNT_TOKEN or a macOS Keychain item:
+  service: $KEYCHAIN_SERVICE
+  account: $KEYCHAIN_ACCOUNT
+EOF
+  exit 1
+fi
+
+if [[ "$MODE" == "--check" ]]; then
+  echo "ok: Cartesia 1Password reference resolved (secret redacted)"
+  exit 0
+fi
+
+printf 'export CARTESIA_API_KEY=%q\n' "$value"
