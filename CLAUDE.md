@@ -14,6 +14,23 @@ Personal development environment setup for Karan Hiremath. Shared across work an
 | `install.sh` | Full bootstrap script |
 | `.claude/commands/` | Claude Code custom commands |
 
+## Inference & Sandboxes
+
+| Path | Purpose |
+|------|---------|
+| `config/inference/backends.toml` | every inference backend, local + hosted |
+| `bin/inference/inf` | resolve, probe, bench, and bind backends into harnesses |
+| `config/sandbox/sandboxes.toml` | project sandbox specs |
+| `bin/sandbox/sbx` | lease-gated sandbox lifecycle + audit |
+| `bin/agent-loop/loop` | 30m backlog dispatch to coding agents |
+| `docs/local-model-testing.md` | operator SOP |
+| `config/inference/SCHEMA.md` | registry field reference and validator rationale |
+
+A harness must never hardcode a provider/model pair — declare the backend once
+and bind it (`inf bind <harness> <id>`). Never commit a secret value to a
+registry: they hold env var *names*. Work-only entries go in the work overlay
+(`~/src/karan.hiremath/agentic/`), and `validate` enforces that boundary.
+
 ## Conventions
 
 ### Adding Tools

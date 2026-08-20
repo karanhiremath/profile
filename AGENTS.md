@@ -34,6 +34,39 @@ Override per session: `cursor-agent --model <slug>`.
 - Secrets: never commit; fleet secrets at `~/.local/share/fleet/` only
 - No Cartesia proprietary paths in committed profile artifacts
 
+### Inference backends, sandboxes, and the agent loop
+
+| Tool | Declares | Install |
+|------|----------|---------|
+| `inf` | inference backends, local + hosted | `just inference` |
+| `sbx` | project sandboxes and JIT leases | `just sandbox` |
+| `loop` | backlog dispatch to coding agents | run in place |
+
+Backends are declared once in `config/inference/backends.toml` and RENDERED into
+each harness — never hardcode a provider/model pair in a harness config again.
+
+```bash
+inf list                                  # * marks the registry default
+inf doctor                                # what this machine can run
+inf probe <id>                            # must pass before binding
+inf bind pi <id> --only --probe
+agents up cosw --backend <id>             # per-launch override
+```
+
+`inf probe` is the gate: health, /v1/models, blocking chat, SSE that terminates
+with a finish_reason, and the streaming-plus-tools shape a coding agent actually
+sends. It fails closed. Do not bind a backend that has not passed it.
+
+Sandbox access is lease-gated (`sbx grant --reason ... --ttl ...`); secrets need
+to be in both the sandbox's `allow_env` and the active lease. Governance runs
+through the `sandbox-warden` profile, which cannot widen a ceiling on its own.
+
+Full SOP: `docs/local-model-testing.md`. Schema: `config/inference/SCHEMA.md`.
+
+Work-only backends and sandboxes belong in the work overlay under
+`~/src/karan.hiremath/agentic/`, which is first on both search paths. `validate`
+rejects internal hostnames and work-boundary sandboxes in this public repo.
+
 ### Hermes CoS/PM command layer
 
 Profile owns only generic command wrappers; project/work details live in `~/src/karan.hiremath` or `~/src/hermes` registry/profile files.
