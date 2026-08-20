@@ -10,6 +10,7 @@
 #   check <profile>            Materialize + run an end-to-end endpoint health check
 #   up <profile> [opts] [-- ...args]
 #                              Materialize the isolated home and launch the agent
+#   backend [<id>]             Show, or set, the inference backend all agents use
 #
 # Convenience wrappers:
 #   cos                        agents up chief-of-staff
@@ -18,6 +19,9 @@
 #   pl <project>               attach registered project-lead tmux session
 #       --surface cli|tui|gateway   Override the profile's default surface
 #       --platform <name>           Messaging platform for surface=gateway
+#       --backend <id>              Inference backend for this launch only
+#                                   (see: inf list). Overrides the profile's
+#                                   llm.backend and the global binding.
 #       --check                     Run an endpoint health check before launching
 #       -- <args>                   Pass remaining args through to hermes/herm
 #
@@ -51,11 +55,36 @@ PY="$VENV/bin/python"
 SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 export PATH="$SHIM_DIR:$VENV/bin:$PATH"
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+# Print the leading comment block as help, so adding a documented flag never
+# requires updating a hardcoded line range.
+usage() { awk 'NR>1 { if (/^#/) { sub(/^# ?/, ""); print; next } exit }' "$0"; }
+
+INF_CLI="$SCRIPT_DIR/../inference/inf"
+INF_STATE_DIR="${INF_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/inference}"
+
+# Apply the global inference binding (written by `inf bind hermes`) unless the
+# caller already pinned a backend for this launch. Every agent surface — cli,
+# tui/herm, gateway — inherits it, so `cos`, `cosw`, `pm` and `pl` all follow.
+apply_backend_binding() {
+  local env_file="$INF_STATE_DIR/hermes-backend.env"
+  [ -n "${INF_BACKEND:-}" ] && return 0
+  [ -f "$env_file" ] || return 0
+  local line key val
+  while IFS= read -r line; do
+    case "$line" in ''|\#*) continue ;; esac
+    key="${line%%=*}"; val="${line#*=}"
+    case "$key" in
+      HERMES_AGENT_MODEL_PROVIDER|HERMES_AGENT_MODEL_DEFAULT|\
+      HERMES_AGENT_MODEL_BASE_URL|HERMES_AGENT_MODEL_API_KEY_ENV)
+        # A pre-set value in the environment always wins over the stored binding.
+        [ -n "${!key:-}" ] || export "$key=$val"
+        ;;
+    esac
+  done < "$env_file"
+}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-[ -x "$PY" ] || die "Hermes venv python missing ($PY); run bin/hermes/install first"
 
 materialize() {
   "$PY" "$PY_BACKEND" materialize "$1"
@@ -64,6 +93,12 @@ materialize() {
 cmd="${1:-}"; shift || true
 case "$cmd" in
   -h|--help|help|"") usage; exit 0 ;;
+esac
+
+# Everything past help needs the Hermes venv.
+[ -x "$PY" ] || die "Hermes venv python missing ($PY); run bin/hermes/install first"
+
+case "$cmd" in
 
   list)
     "$PY" "$PY_BACKEND" list
@@ -108,6 +143,7 @@ case "$cmd" in
       case "$1" in
         --surface) surface="${2:?}"; shift 2 ;;
         --platform) platform="${2:?}"; shift 2 ;;
+        --backend) export INF_BACKEND="${2:?}"; shift 2 ;;
         --check) do_check=1; shift ;;
         --) shift; passthrough=("$@"); break ;;
         *) die "unknown option: $1" ;;
@@ -118,13 +154,17 @@ case "$cmd" in
     [ -n "$surface" ] || surface="$("$PY" "$PY_BACKEND" resolve "$profile" | sed -n 's/.*"surface": *"\([^"]*\)".*/\1/p')"
     [ -n "$surface" ] || surface="cli"
 
+    apply_backend_binding
     home="$(materialize "$profile")"
     runtime_profile="$(sed -n '1p' "$home/active_profile" 2>/dev/null || true)"
     runtime_home="$home"
     if [ -n "$runtime_profile" ] && [ "$runtime_profile" != "default" ] && [ -d "$home/profiles/$runtime_profile" ]; then
       runtime_home="$home/profiles/$runtime_profile"
     fi
+    model_line="$("$PY" "$PY_BACKEND" resolve "$profile" \
+      | sed -n 's/.*"model": *"\([^"]*\)".*/\1/p' | head -n 1)"
     echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home"
+    echo "model=${model_line:-unknown}${INF_BACKEND:+ backend=$INF_BACKEND}"
 
     if [ "$do_check" -eq 1 ]; then
       HERMES_HOME="$runtime_home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt || die "endpoint health check failed; not launching"
@@ -149,6 +189,17 @@ case "$cmd" in
         ;;
       *) die "unknown surface: $surface (use cli|tui|gateway)" ;;
     esac
+    ;;
+
+  backend)
+    [ -x "$INF_CLI" ] || die "inference CLI missing at $INF_CLI (run: just inference)"
+    if [ "$#" -eq 0 ]; then
+      "$INF_CLI" active
+      echo ""
+      "$INF_CLI" list
+    else
+      "$INF_CLI" bind hermes "$1" "${@:2}"
+    fi
     ;;
 
   *) die "unknown command: $cmd (try: agents help)" ;;

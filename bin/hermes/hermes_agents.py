@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -44,6 +45,96 @@ _DEFAULT_PROFILE_DIRS = [
     Path.home() / "src" / "hermes" / "profiles",                                 # personal / public
     SCRIPT_DIR / "profiles",                                                     # tooling (TEMPLATE)
 ]
+
+
+# The inference registry CLI. A profile may name a backend id
+# (`llm.backend: dflash2-qwen-llamacpp`) instead of hardcoding provider/model,
+# so local and hosted models are swapped in one place for every harness.
+INF_CLI = SCRIPT_DIR.parent / "inference" / "inf"
+
+
+def _inf_backend(backend_id: str) -> Optional[Dict[str, Any]]:
+    """Resolve a backend id through `inf show`. Returns None (and warns) if the
+    registry or CLI is unavailable, so a missing registry degrades to the
+    profile's literal llm.provider/model rather than failing the launch."""
+    if not INF_CLI.is_file():
+        print(f"warning: inference CLI not found at {INF_CLI}; "
+              f"ignoring llm.backend={backend_id}", file=sys.stderr)
+        return None
+    try:
+        proc = subprocess.run([sys.executable, str(INF_CLI), "show", backend_id],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"warning: could not resolve backend {backend_id}: {exc}", file=sys.stderr)
+        return None
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        print(f"warning: unknown inference backend {backend_id}: "
+              f"{detail[-1] if detail else 'inf show failed'}", file=sys.stderr)
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        print(f"warning: inf show {backend_id} returned non-JSON", file=sys.stderr)
+        return None
+
+
+def _resolve_model(profile: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Decide which model drives this agent, and what endpoint env it needs.
+
+    Precedence, highest first:
+      1. HERMES_AGENT_MODEL_PROVIDER/_DEFAULT  (written by `inf bind hermes`)
+      2. INF_BACKEND                            (per-launch override)
+      3. profile llm.backend                    (registry backend id)
+      4. profile llm.provider + llm.model       (literal, pre-registry behavior)
+      5. openai-codex / gpt-5.5                 (unchanged default)
+
+    Returns (model_cfg, env_updates). env_updates carries OPENAI_BASE_URL /
+    OPENAI_API_KEY for OpenAI-compatible endpoints; the key is read from the
+    operator's environment at materialize time and written only into the
+    agent's own chmod-600 .env, never into a committed file.
+    """
+    llm = profile.get("llm") or {}
+    env: Dict[str, str] = {}
+
+    env_provider = os.environ.get("HERMES_AGENT_MODEL_PROVIDER", "").strip()
+    env_default = os.environ.get("HERMES_AGENT_MODEL_DEFAULT", "").strip()
+    if env_provider and env_default:
+        model = {"provider": env_provider, "default": env_default}
+        base_url = os.environ.get("HERMES_AGENT_MODEL_BASE_URL", "").strip()
+        if base_url:
+            env["OPENAI_BASE_URL"] = base_url
+        key_env = os.environ.get("HERMES_AGENT_MODEL_API_KEY_ENV", "").strip()
+        if key_env and os.environ.get(key_env):
+            env["OPENAI_API_KEY"] = os.environ[key_env]
+        return model, env
+
+    backend_id = os.environ.get("INF_BACKEND", "").strip() or str(llm.get("backend") or "").strip()
+    if backend_id:
+        backend = _inf_backend(backend_id)
+        if backend:
+            binding = ((backend.get("bindings") or {}).get("hermes") or {})
+            if binding.get("unsupported"):
+                print(f"warning: backend {backend_id} declares itself unusable by hermes "
+                      f"({binding.get('reason', 'no reason given')}); falling back",
+                      file=sys.stderr)
+            else:
+                provider = binding.get("provider") or (
+                    "openai-compat" if backend.get("api") == "openai-chat" else backend.get("api"))
+                default = binding.get("model") or (backend.get("model") or {}).get("served_name")
+                if backend.get("base_url"):
+                    env["OPENAI_BASE_URL"] = backend["base_url"]
+                    key_env = (backend.get("auth") or {}).get("api_key_env")
+                    key_val = (os.environ.get(key_env) if key_env else None) or \
+                        (backend.get("auth") or {}).get("api_key_default")
+                    if key_val:
+                        env["OPENAI_API_KEY"] = str(key_val)
+                if provider and default:
+                    return {"provider": provider, "default": default,
+                            "backend": backend_id}, env
+
+    return {"provider": llm.get("provider", "openai-codex"),
+            "default": llm.get("model", "gpt-5.5")}, env
 
 
 def profile_path() -> list[Path]:
@@ -180,11 +271,9 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
     if not tts_on and "tts" in toolsets:
         toolsets.remove("tts")
 
+    model_cfg, backend_env = _resolve_model(profile)
     cfg: Dict[str, Any] = {
-        "model": {
-            "provider": llm.get("provider", "openai-codex"),
-            "default": llm.get("model", "gpt-5.5"),
-        },
+        "model": model_cfg,
         "toolsets": toolsets,
         "plugins": {"enabled": ["cartesia"] if (tts_on or stt_on) else []},
     }
@@ -224,6 +313,10 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         }
     else:
         cfg["stt"] = {"enabled": False}
+    # Endpoint env for the resolved backend. Kept out of config.yaml (which is
+    # committed-adjacent and printed by `resolve`) and applied to .env instead.
+    if backend_env:
+        cfg["_backend_env"] = backend_env
     return cfg
 
 
@@ -268,6 +361,8 @@ def materialize(name: str) -> Path:
     home.chmod(0o700)
 
     cfg = _render_config(profile)
+    # Endpoint env belongs in the agent's chmod-600 .env, never in config.yaml.
+    backend_env: Dict[str, str] = cfg.pop("_backend_env", {})
     herm_prefs = (profile.get("herm") or {}).get("preferences") or {}
     if not isinstance(herm_prefs, dict):
         herm_prefs = {}
@@ -285,7 +380,7 @@ def materialize(name: str) -> Path:
     # API key always re-syncs from ~/.hermes/.env so adding it later propagates;
     # non-managed keys (e.g. gateway platform tokens) are preserved. Voice keys
     # are written only for voice-enabled agents.
-    env_updates: Dict[str, str] = {}
+    env_updates: Dict[str, str] = dict(backend_env)
     terminal_cfg = cfg.get("terminal") if isinstance(cfg.get("terminal"), dict) else {}
     if terminal_cfg.get("backend") == "docker":
         env_updates["TERMINAL_ENV"] = "docker"
@@ -414,7 +509,15 @@ def cmd_resolve(name: str) -> int:
         "platform": profile.get("platform", "telegram"),
         "toolsets": cfg["toolsets"],
         "home": str(_data_home() / name),
+        # Which model actually drives this agent, after registry resolution.
+        "model": cfg["model"].get("default"),
+        "model_provider": cfg["model"].get("provider"),
     }
+    if cfg["model"].get("backend"):
+        out["backend"] = cfg["model"]["backend"]
+    backend_url = (cfg.get("_backend_env") or {}).get("OPENAI_BASE_URL")
+    if backend_url:
+        out["model_endpoint"] = _redact_host(backend_url)
     if uses_voice:
         base_url = resolve_base_url(profile, required=False)
         out["endpoint"] = _redact_host(base_url) if base_url else "(unset)"

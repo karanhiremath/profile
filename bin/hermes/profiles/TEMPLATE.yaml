@@ -24,6 +24,16 @@ stt:
   language: en
 
 llm:                               # the model driving the agent itself
+  # Preferred: name a backend from the inference registry and let it supply the
+  # provider, model, endpoint and auth. Local and hosted models then swap in one
+  # place for every harness (pi, herm/hermes, cursor, claude, codex).
+  #   inf list                      what backends exist
+  #   inf probe <id>                is it actually usable
+  #   agents up <profile> --backend <id>     one-off override
+  # backend: dflash2-qwen-llamacpp
+  #
+  # Fallback: pin provider/model literally. Used when `backend` is absent or the
+  # registry cannot be read, so a missing registry never blocks a launch.
   provider: openai-codex
   model: gpt-5.5
 
