@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -206,17 +207,24 @@ def redact(b: dict[str, Any]) -> dict[str, Any]:
 
 # ───────────────────────────── container engine ───────────────────────────────
 
-def engine_for(b: dict[str, Any]) -> str:
+def engine_for(b: dict[str, Any], *, require_running: bool = False) -> str:
     """Resolve the sandbox engine. podman is preferred (rootless, matches cosw);
     docker is accepted so CI runners and this dev container work unchanged."""
     want = (b.get("sandbox") or {}).get("engine", "auto")
     override = os.environ.get("INF_CONTAINER_ENGINE")
     order = [override] if override else ([want] if want != "auto" else ["podman", "docker"])
-    for cand in order:
-        if cand and shutil.which(cand):
+    present = [cand for cand in order if cand and shutil.which(cand)]
+    if not present:
+        die(f"no container engine available (tried {', '.join(x for x in order if x)}). "
+            "Install podman, or set INF_CONTAINER_ENGINE=docker.")
+    if not require_running:
+        return present[0]
+    for cand in present:
+        if subprocess.run([cand, "info"], capture_output=True).returncode == 0:
             return cand
-    die(f"no container engine available (tried {', '.join(x for x in order if x)}). "
-        "Install podman, or set INF_CONTAINER_ENGINE=docker.")
+    die(f"{', '.join(present)} on PATH but no engine is reachable "
+        f"(podman: `podman machine start`; docker: start the daemon). "
+        f"`inf up --dry-run` works without one.")
 
 
 def container_name(bid: str) -> str:
@@ -495,28 +503,36 @@ def cmd_up(args) -> int:
         return wait_healthy(b, args.wait)
 
     sb = b.get("sandbox") or {}
-    engine = engine_for(b)
+    engine = engine_for(b, require_running=not args.dry_run)
     name = container_name(b["id"])
     state = container_state(engine, name)
     if state == "running":
         info(f"{name} already running")
         return wait_healthy(b, args.wait)
-    if state != "absent":
+    if state != "absent" and not args.dry_run:
         run([engine, "rm", "-f", name], check=False, capture=True)
 
     image = sb.get("image", "")
-    have_image = subprocess.run([engine, "image", "inspect", image],
-                                capture_output=True).returncode == 0
-    if not have_image or args.build:
-        ctx = sb.get("build_context")
+    ctx = sb.get("build_context")
+    if args.dry_run:
+        # --dry-run exists to review the command before anything runs, including
+        # on a machine with no engine, so it must not build or pull.
         if ctx and Path(ctx).is_dir():
-            info(f"building {image} from {ctx}")
-            run([engine, "build", "-t", image, str(ctx)])
-        elif not have_image and "/" in image and not image.startswith("localhost/"):
-            info(f"pulling {image}")
-            run([engine, "pull", image])
-        elif not have_image:
-            die(f"image {image} absent and no build_context to build it from")
+            info(f"[dry-run] would build {image} from {ctx}")
+        elif "/" in image and not image.startswith("localhost/"):
+            info(f"[dry-run] would pull {image} if absent")
+    else:
+        have_image = subprocess.run([engine, "image", "inspect", image],
+                                    capture_output=True).returncode == 0
+        if not have_image or args.build:
+            if ctx and Path(ctx).is_dir():
+                info(f"building {image} from {ctx}")
+                run([engine, "build", "-t", image, str(ctx)])
+            elif not have_image and "/" in image and not image.startswith("localhost/"):
+                info(f"pulling {image}")
+                run([engine, "pull", image])
+            elif not have_image:
+                die(f"image {image} absent and no build_context to build it from")
 
     cmd = [engine, "run", "-d", "--name", name,
            "--label", f"{CONTAINER_LABEL}={b['id']}",
@@ -556,7 +572,10 @@ def cmd_up(args) -> int:
 
     info(f"starting {name} via {engine}")
     if args.dry_run:
-        print(" ".join(cmd))
+        # shlex.join, not " ".join: the vLLM speculative config is a single JSON
+        # argument containing spaces and quotes, so an unquoted line cannot be
+        # copy-pasted into a shell and would silently split into several args.
+        print(shlex.join(cmd))
         return 0
     run(cmd)
     return wait_healthy(b, args.wait)
