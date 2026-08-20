@@ -1,0 +1,64 @@
+# Agent-loop backlog — EXAMPLE. Copy, do not edit in place.
+#
+# The loop dispatches from here on every tick. Work lives in the repo that owns
+# it: generic tooling backlogs here, work backlogs in the work overlay at
+# ~/src/karan.hiremath/agentic/agent-loop/backlog.toml (first on the search path).
+#
+# Cost model: the DISPATCHER (cheap, high call volume — triage, brief writing,
+# result grading) runs on grok-4.6-fast via cursor-agent. The WORKER (low call
+# volume, long context — actual implementation) is a pi agent on whatever
+# backend the task names, defaulting to a free local model when one is healthy.
+# That keeps the expensive per-token work off metered models and the frequent
+# work on the cheapest one.
+
+schema_version = 1
+
+[defaults]
+dispatcher_backend = "cursor-grok-46-fast"
+worker = "pi"
+# Tried in order; first one that passes `inf probe` wins. Local and free first.
+worker_backend_preference = ["dflash2-qwen-llamacpp", "ollama-local", "codex-gpt55"]
+sandbox = "agent-worktree"
+max_concurrent_workers = 1
+max_attempts = 2
+# Hard stops so an unattended loop cannot run away with usage.
+max_ticks_per_day = 48
+max_dispatches_per_day = 12
+worker_timeout_seconds = 2400        # 40m — must exceed the 30m tick spacing
+require_clean_worktree = true
+
+[[tasks]]
+id = "inf-docs-schema"
+title = "Write config/inference/SCHEMA.md from the validator rules"
+repo = "profile"
+priority = 1
+status = "ready"
+brief = """
+bin/inference/inf `validate` enforces rules that are currently only expressed in
+code. Write config/inference/SCHEMA.md documenting every field a backend table
+may declare, which are required, and the reason behind each validator rule
+(especially: why speculative=true demands model.draft, and why a
+literal-looking api_key_default is rejected).
+"""
+acceptance = [
+  "SCHEMA.md documents every key in inf's TOP_KEYS",
+  "each validator rule is stated with its rationale, not just its condition",
+  "`inf validate` still passes",
+]
+
+[[tasks]]
+id = "inf-probe-timeout"
+title = "Make probe timeouts per-check rather than global"
+repo = "profile"
+priority = 2
+status = "ready"
+brief = """
+`inf probe` applies one --timeout to every check. A cold local model can take
+minutes on its first chat call while /health answers instantly, so a timeout
+generous enough for chat makes a hung health check slow to fail. Give each check
+its own budget, with the streaming check allowed the longest.
+"""
+acceptance = [
+  "health fails fast; chat and stream get longer budgets",
+  "run-contract-test.sh still passes 19/19",
+]

@@ -11,3 +11,10 @@ ansible/.facts/
 
 # Local container/runtime scratch
 .agent-home/
+
+# Live agent-loop backlog and local inference/sandbox overrides. The committed
+# artifacts are the *.example.toml templates; the live files are machine-local
+# (and a work backlog must never land in this public repo).
+config/agent-loop/backlog.toml
+config/inference/backends.local.toml
+config/sandbox/sandboxes.local.toml

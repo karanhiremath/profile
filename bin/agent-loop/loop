@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+"""loop — feed backlog work to coding agents on a fixed tick, cheaply.
+
+One tick picks the highest-priority ready task, resolves a worker backend that
+is actually healthy, isolates the repo in a git worktree, and runs a coding
+agent against it. Designed to be called every 30 minutes by cron, a systemd
+timer, or a GitHub Actions schedule — the tick is the unit of work, so the
+scheduler is interchangeable.
+
+Cost model. Two roles, deliberately on different models:
+
+  DISPATCHER — high call volume, short context: triage the backlog, write the
+    task brief, grade the result. Runs on grok-4.6-fast via cursor-agent.
+  WORKER — low call volume, long context: the actual implementation. A pi agent
+    on the first backend from worker_backend_preference that passes `inf probe`,
+    so a healthy free local model is used before anything metered.
+
+Note that pi cannot run ON cursor-agent: cursor-agent is a CLI and exposes no
+OpenAI-compatible endpoint, so it cannot be a pi provider (the registry records
+this explicitly). grok-4.6-fast therefore does the frequent cheap work and pi
+does the long work — which is the cost-efficient split anyway.
+
+    loop backlog                  tasks and their state
+    loop status                   budget, running workers, recent ticks
+    loop tick [--dry-run]         one iteration; what a scheduler calls
+    loop resolve-backend          which worker backend is healthy right now
+    loop reset <task-id>          clear attempts/state for one task
+    loop budget                   today's tick and dispatch counts vs the caps
+
+Every tick is journaled. Budget caps (max_ticks_per_day, max_dispatches_per_day,
+max_concurrent_workers) are enforced before any model is called, so an
+unattended loop cannot run away with usage.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROFILE_DIR = Path(os.environ.get("PROFILE_DIR") or SCRIPT_DIR.parent.parent).resolve()
+STATE_DIR = Path(os.environ.get("LOOP_STATE_DIR") or (Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "agent-loop"))
+SRC_ROOT = Path(os.environ.get("SBX_SRC_ROOT") or (Path.home() / "src"))
+INF = PROFILE_DIR / "bin" / "inference" / "inf"
+STATE_FILE = STATE_DIR / "state.json"
+JOURNAL = STATE_DIR / "journal.jsonl"
+BRIEF_DIR = STATE_DIR / "briefs"
+
+TERMINAL_STATUSES = {"done", "abandoned"}
+
+
+def _tty() -> bool:
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def c(t: str, code: str) -> str:
+    return f"\033[{code}m{t}\033[0m" if _tty() else t
+
+
+OK, BAD, WARN = c("✓", "32"), c("✗", "31"), c("⚠", "33")
+
+
+def info(msg: str) -> None:
+    print(f"loop: {msg}", file=sys.stderr)
+
+
+def die(msg: str, code: int = 1):
+    print(f"loop: {c('ERROR', '1;31')}: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def today() -> str:
+    return now().strftime("%Y-%m-%d")
+
+
+# ─────────────────────────────── backlog ──────────────────────────────────────
+
+def backlog_files() -> list[Path]:
+    raw = os.environ.get("LOOP_BACKLOG_PATH")
+    if raw:
+        cands = [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
+    else:
+        cands = [
+            SRC_ROOT / "karan.hiremath" / "agentic" / "agent-loop" / "backlog.toml",
+            PROFILE_DIR / "config" / "agent-loop" / "backlog.toml",
+        ]
+    return [p for p in cands if p.is_file()]
+
+
+def load_backlog() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    files = backlog_files()
+    if not files:
+        die("no backlog found. Copy config/agent-loop/backlog.example.toml to "
+            "config/agent-loop/backlog.toml (or the work overlay), or set "
+            "$LOOP_BACKLOG_PATH")
+    tasks: list[dict[str, Any]] = []
+    defaults: dict[str, Any] = {}
+    seen: set[str] = set()
+    for path in files:
+        try:
+            with path.open("rb") as fh:
+                doc = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            die(f"cannot read backlog {path}: {exc}")
+        for k, v in (doc.get("defaults") or {}).items():
+            defaults.setdefault(k, v)
+        for task in doc.get("tasks") or []:
+            tid = task.get("id")
+            if not tid:
+                die(f"{path.name}: a task has no id")
+            if tid in seen:
+                continue           # first file on the path wins, like $PATH
+            seen.add(tid)
+            task["_source"] = str(path)
+            tasks.append(task)
+    return tasks, defaults
+
+
+# ──────────────────────────────── state ───────────────────────────────────────
+
+def load_state() -> dict[str, Any]:
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            info(f"{WARN} state file unreadable; starting fresh")
+    return {"tasks": {}, "budget": {}, "workers": {}}
+
+
+def save_state(state: dict[str, Any]) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    tmp.replace(STATE_FILE)
+
+
+def journal(event: str, **fields: Any) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with JOURNAL.open("a") as fh:
+        fh.write(json.dumps({"ts": now().isoformat(), "event": event, **fields},
+                            sort_keys=True) + "\n")
+
+
+def task_state(state: dict[str, Any], tid: str) -> dict[str, Any]:
+    return state.setdefault("tasks", {}).setdefault(
+        tid, {"attempts": 0, "status": None, "last_error": None})
+
+
+def budget_today(state: dict[str, Any]) -> dict[str, int]:
+    return state.setdefault("budget", {}).setdefault(
+        today(), {"ticks": 0, "dispatches": 0})
+
+
+# ───────────────────────────── worker liveness ────────────────────────────────
+
+def prune_workers(state: dict[str, Any], defaults: dict[str, Any]) -> list[str]:
+    """Drop worker records whose process is gone or which blew the timeout.
+    Returns the ids of workers still considered running."""
+    timeout = int(defaults.get("worker_timeout_seconds", 2400))
+    alive: list[str] = []
+    for tid, rec in list(state.get("workers", {}).items()):
+        pid = rec.get("pid")
+        started = rec.get("started_at", 0)
+        running = False
+        if pid:
+            try:
+                os.kill(int(pid), 0)
+                running = True
+            except (ProcessLookupError, ValueError):
+                running = False
+            except PermissionError:
+                running = True      # exists but not ours
+        if running and (time.time() - started) > timeout:
+            info(f"{WARN} worker for {tid} exceeded {timeout}s; terminating")
+            try:
+                os.kill(int(pid), 15)
+            except OSError:
+                pass
+            journal("worker_timeout", task=tid, pid=pid,
+                    ran_seconds=int(time.time() - started))
+            running = False
+        if running:
+            alive.append(tid)
+        else:
+            state["workers"].pop(tid, None)
+    return alive
+
+
+# ────────────────────────────── inference ─────────────────────────────────────
+
+def probe(backend: str, timeout: int = 15) -> bool:
+    if not INF.is_file():
+        return False
+    proc = subprocess.run([sys.executable, str(INF), "probe", backend,
+                           "--timeout", str(timeout)],
+                          capture_output=True, text=True)
+    return proc.returncode == 0
+
+
+def resolve_worker_backend(defaults: dict[str, Any], task: dict[str, Any]) -> str | None:
+    """First preference that is actually usable. A named task backend is tried
+    first but is not allowed to bypass the health check — dispatching work to a
+    dead endpoint burns a tick and produces a confusing failure."""
+    prefs: list[str] = []
+    if task.get("backend"):
+        prefs.append(task["backend"])
+    prefs += [b for b in defaults.get("worker_backend_preference", []) if b not in prefs]
+    for backend in prefs:
+        if probe(backend):
+            return backend
+        info(f"  {backend}: not healthy, trying next")
+    return None
+
+
+# ─────────────────────────────── dispatch ─────────────────────────────────────
+
+def write_brief(task: dict[str, Any], backend: str, worktree: Path) -> Path:
+    BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+    path = BRIEF_DIR / f"{task['id']}-{now().strftime('%Y%m%dT%H%M%SZ')}.md"
+    acceptance = "\n".join(f"- {a}" for a in task.get("acceptance", [])) or "- (none stated)"
+    path.write_text(f"""# Task: {task.get('title', task['id'])}
+
+Repo worktree: `{worktree}`
+Worker backend: `{backend}`
+Task id: `{task['id']}`
+
+## Brief
+
+{task.get('brief', '(no brief)').strip()}
+
+## Acceptance criteria
+
+{acceptance}
+
+## Rules
+
+- Work only inside the worktree above. Do not touch other repos or the parent
+  checkout.
+- Make the smallest change that satisfies the acceptance criteria.
+- Run the repo's own checks before you finish. If a check fails, fix it or say
+  plainly which one fails and why.
+- Do not commit. The loop inspects the diff and decides.
+- If the brief is wrong or the task is already done, say so and stop rather than
+  inventing work.
+""")
+    return path
+
+
+def cursor_dispatch(task: dict[str, Any], brief: Path, model: str,
+                    worktree: Path, dry_run: bool) -> tuple[bool, str]:
+    """Cheap triage pass: let grok-4.6-fast confirm the task is still valid and
+    sharpen the brief before a long-context worker spends tokens on it."""
+    exe = shutil.which("cursor-agent")
+    if not exe:
+        return False, "cursor-agent not on PATH"
+    prompt = (
+        f"Read {brief} and the repo at {worktree}. In under 200 words: is this "
+        f"task still valid and not already done? If valid, list the specific "
+        f"files to change. If already done or wrong, say STOP and why. "
+        f"Do not modify any files."
+    )
+    cmd = [exe, "--model", model, "-p", prompt]
+    if dry_run:
+        return True, f"[dry-run] {shlex.join(cmd)}"
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          cwd=str(worktree), timeout=600)
+    out = (proc.stdout or proc.stderr).strip()
+    if proc.returncode != 0:
+        return False, f"cursor-agent exited {proc.returncode}: {out[:300]}"
+    return True, out[:2000]
+
+
+def pi_dispatch(task: dict[str, Any], brief: Path, worktree: Path,
+                dry_run: bool) -> tuple[bool, int | None, str]:
+    """Long-context implementation pass. Detached so the tick returns promptly;
+    liveness is tracked by pid and reaped on the next tick."""
+    exe = shutil.which("pi")
+    if not exe:
+        return False, None, "pi not on PATH (run: just pi)"
+    log = STATE_DIR / "logs" / f"{task['id']}-{now().strftime('%Y%m%dT%H%M%SZ')}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    prompt = f"Read {brief} and complete the task it describes. Follow its rules exactly."
+    cmd = [exe, "-p", prompt]
+    if dry_run:
+        return True, None, f"[dry-run] {shlex.join(cmd)} (cwd={worktree}, log={log})"
+    with log.open("ab") as fh:
+        proc = subprocess.Popen(cmd, cwd=str(worktree), stdout=fh,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+    return True, proc.pid, str(log)
+
+
+# ─────────────────────────────── worktrees ────────────────────────────────────
+
+def ensure_worktree(repo: str, task_id: str, require_clean: bool,
+                    dry_run: bool) -> Path:
+    repo_dir = (SRC_ROOT / repo) if not repo.startswith("/") else Path(repo)
+    if not (repo_dir / ".git").exists():
+        die(f"{repo_dir} is not a git checkout (set SBX_SRC_ROOT if needed)")
+    branch = f"loop/{task_id}"
+    tree = STATE_DIR / "worktrees" / task_id
+    if tree.exists():
+        return tree
+    if require_clean:
+        dirty = subprocess.run(["git", "-C", str(repo_dir), "status", "--porcelain"],
+                               capture_output=True, text=True).stdout.strip()
+        if dirty:
+            msg = (f"{repo} has uncommitted changes; refusing to branch from a "
+                   f"dirty tree (set require_clean_worktree = false to override)")
+            if dry_run:
+                # A dry run exists to show the whole path, including what blocks it.
+                info(f"{WARN} would refuse: {msg}")
+            else:
+                die(msg)
+    if dry_run:
+        info(f"[dry-run] would create worktree {tree} on {branch}")
+        return tree
+    tree.parent.mkdir(parents=True, exist_ok=True)
+    base = subprocess.run(["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+                          capture_output=True, text=True).stdout.strip() or "HEAD"
+    proc = subprocess.run(["git", "-C", str(repo_dir), "worktree", "add",
+                           "-b", branch, str(tree), base],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        die(f"could not create worktree: {(proc.stderr or proc.stdout).strip()[:300]}")
+    return tree
+
+
+# ─────────────────────────────── commands ─────────────────────────────────────
+
+def cmd_backlog(args) -> int:
+    tasks, defaults = load_backlog()
+    state = load_state()
+    print(f"{'ID':<24} {'PRI':<4} {'STATUS':<12} {'ATT':<4} {'REPO':<16} TITLE")
+    for task in sorted(tasks, key=lambda t: (t.get("priority", 99), t["id"])):
+        ts = task_state(state, task["id"])
+        status = ts.get("status") or task.get("status", "ready")
+        colour = {"done": "32", "blocked": "31", "in_progress": "33"}.get(status, "0")
+        print(f"{task['id']:<24} {task.get('priority', 99):<4} "
+              f"{c(status, colour):<12} {ts.get('attempts', 0):<4} "
+              f"{task.get('repo', '?'):<16} {task.get('title', '')[:48]}")
+    print(f"\nsources: {', '.join(str(p) for p in backlog_files())}")
+    return 0
+
+
+def cmd_budget(args) -> int:
+    _, defaults = load_backlog()
+    state = load_state()
+    b = budget_today(state)
+    max_ticks = int(defaults.get("max_ticks_per_day", 48))
+    max_disp = int(defaults.get("max_dispatches_per_day", 12))
+    print(f"date              {today()}")
+    print(f"ticks             {b['ticks']}/{max_ticks}")
+    print(f"dispatches        {b['dispatches']}/{max_disp}")
+    print(f"max concurrent    {defaults.get('max_concurrent_workers', 1)}")
+    print(f"dispatcher model  {defaults.get('dispatcher_backend')}")
+    print(f"worker preference {' > '.join(defaults.get('worker_backend_preference', []))}")
+    if b["dispatches"] >= max_disp:
+        print(f"\n{WARN} daily dispatch cap reached; ticks will no-op until tomorrow")
+    return 0
+
+
+def cmd_status(args) -> int:
+    _, defaults = load_backlog()
+    state = load_state()
+    alive = prune_workers(state, defaults)
+    save_state(state)
+    cmd_budget(args)
+    print(f"\nrunning workers   {len(alive)}")
+    for tid in alive:
+        rec = state["workers"][tid]
+        print(f"  {tid:<24} pid {rec.get('pid')} "
+              f"{int(time.time() - rec.get('started_at', 0))}s "
+              f"backend={rec.get('backend')}")
+    if JOURNAL.exists():
+        lines = [ln for ln in JOURNAL.read_text().splitlines() if ln.strip()][-6:]
+        print("\nrecent:")
+        for line in lines:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            extra = " ".join(f"{k}={v}" for k, v in sorted(rec.items())
+                             if k not in ("ts", "event") and not isinstance(v, (dict, list)))
+            print(f"  {rec['ts'][:19]}  {rec['event']:<18} {extra[:96]}")
+    return 0
+
+
+def cmd_resolve_backend(args) -> int:
+    _, defaults = load_backlog()
+    print("probing worker backends in preference order:")
+    chosen = resolve_worker_backend(defaults, {})
+    if chosen:
+        print(f"\n{OK} would use {c(chosen, '1;32')}")
+        return 0
+    print(f"\n{BAD} no healthy worker backend "
+          f"({', '.join(defaults.get('worker_backend_preference', []))})")
+    return 1
+
+
+def cmd_reset(args) -> int:
+    state = load_state()
+    if args.task_id not in state.get("tasks", {}):
+        info(f"no state for {args.task_id}")
+        return 0
+    state["tasks"].pop(args.task_id)
+    state.get("workers", {}).pop(args.task_id, None)
+    save_state(state)
+    journal("reset", task=args.task_id)
+    print(f"{OK} cleared state for {args.task_id}")
+    return 0
+
+
+def cmd_tick(args) -> int:
+    tasks, defaults = load_backlog()
+    state = load_state()
+    b = budget_today(state)
+
+    # Budget and concurrency are checked BEFORE any model call, so a capped loop
+    # costs nothing to tick.
+    b["ticks"] += 1
+    max_ticks = int(defaults.get("max_ticks_per_day", 48))
+    max_disp = int(defaults.get("max_dispatches_per_day", 12))
+    if b["ticks"] > max_ticks:
+        save_state(state)
+        journal("tick_skipped", reason="tick cap", ticks=b["ticks"])
+        print(f"{WARN} tick cap reached ({b['ticks']}/{max_ticks}); no-op")
+        return 0
+
+    alive = prune_workers(state, defaults)
+    max_workers = int(defaults.get("max_concurrent_workers", 1))
+    if len(alive) >= max_workers:
+        save_state(state)
+        journal("tick_skipped", reason="workers busy", running=alive)
+        print(f"{WARN} {len(alive)}/{max_workers} worker(s) still running "
+              f"({', '.join(alive)}); no-op")
+        return 0
+    if b["dispatches"] >= max_disp:
+        save_state(state)
+        journal("tick_skipped", reason="dispatch cap", dispatches=b["dispatches"])
+        print(f"{WARN} daily dispatch cap reached ({b['dispatches']}/{max_disp}); no-op")
+        return 0
+
+    ready = []
+    for task in tasks:
+        ts = task_state(state, task["id"])
+        status = ts.get("status") or task.get("status", "ready")
+        if status in TERMINAL_STATUSES or status == "blocked":
+            continue
+        if task["id"] in alive:
+            continue
+        if ts.get("attempts", 0) >= int(task.get("max_attempts", defaults.get("max_attempts", 2))):
+            if ts.get("status") != "blocked":
+                ts["status"] = "blocked"
+                ts["last_error"] = "max attempts exhausted"
+                journal("task_blocked", task=task["id"], attempts=ts["attempts"])
+            continue
+        ready.append(task)
+
+    if not ready:
+        save_state(state)
+        journal("tick_idle", reason="no ready tasks")
+        print("no ready tasks; nothing to dispatch")
+        return 0
+
+    task = sorted(ready, key=lambda t: (t.get("priority", 99), t["id"]))[0]
+    ts = task_state(state, task["id"])
+    print(f"tick: selected {c(task['id'], '1')} — {task.get('title', '')}")
+
+    backend = resolve_worker_backend(defaults, task)
+    if not backend:
+        ts["last_error"] = "no healthy worker backend"
+        save_state(state)
+        journal("tick_failed", task=task["id"], reason="no healthy backend")
+        print(f"{BAD} no healthy worker backend; leaving {task['id']} ready "
+              f"(attempt not consumed)")
+        return 1
+
+    worktree = ensure_worktree(task.get("repo", "profile"), task["id"],
+                               bool(defaults.get("require_clean_worktree", True)),
+                               args.dry_run)
+    brief = write_brief(task, backend, worktree)
+    print(f"  brief   {brief}")
+    print(f"  backend {backend}")
+
+    dispatcher = defaults.get("dispatcher_backend", "cursor-grok-46-fast")
+    model = "grok-4.6-fast"
+    if INF.is_file():
+        proc = subprocess.run([sys.executable, str(INF), "show", dispatcher],
+                              capture_output=True, text=True)
+        if proc.returncode == 0:
+            try:
+                model = (json.loads(proc.stdout).get("model") or {}).get("served_name", model)
+            except json.JSONDecodeError:
+                pass
+
+    triage_ok, triage_out = cursor_dispatch(task, brief, model, worktree, args.dry_run)
+    if not triage_ok:
+        ts["last_error"] = triage_out
+        save_state(state)
+        journal("triage_failed", task=task["id"], error=triage_out[:300])
+        print(f"{WARN} triage unavailable ({triage_out[:120]})")
+        if not args.force:
+            print("  skipping dispatch; re-run with --force to dispatch untriaged")
+            return 1
+    else:
+        print(f"  triage  {triage_out.splitlines()[0][:100] if triage_out else '(empty)'}")
+        if "STOP" in triage_out.upper() and not args.force:
+            ts["status"] = "blocked"
+            ts["last_error"] = "dispatcher said STOP"
+            save_state(state)
+            journal("task_stopped_by_triage", task=task["id"], note=triage_out[:400])
+            print(f"{WARN} dispatcher says the task is invalid or already done; blocked")
+            return 0
+
+    ok, pid, detail = pi_dispatch(task, brief, worktree, args.dry_run)
+    if not ok:
+        ts["last_error"] = detail
+        save_state(state)
+        journal("dispatch_failed", task=task["id"], error=detail[:300])
+        die(detail)
+
+    ts["attempts"] = ts.get("attempts", 0) + 1
+    ts["status"] = "in_progress"
+    ts["last_backend"] = backend
+    if not args.dry_run:
+        b["dispatches"] += 1
+        state.setdefault("workers", {})[task["id"]] = {
+            "pid": pid, "started_at": time.time(), "backend": backend,
+            "brief": str(brief), "log": detail, "worktree": str(worktree),
+        }
+    save_state(state)
+    journal("dispatched", task=task["id"], backend=backend, dispatcher=model,
+            pid=pid, worktree=str(worktree), dry_run=args.dry_run)
+    print(f"{OK} dispatched {task['id']} (attempt {ts['attempts']}) "
+          f"{'[dry-run]' if args.dry_run else f'pid {pid}'}")
+    print(f"  log     {detail}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="loop", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("backlog").set_defaults(func=cmd_backlog)
+    sub.add_parser("status").set_defaults(func=cmd_status)
+    sub.add_parser("budget").set_defaults(func=cmd_budget)
+    sub.add_parser("resolve-backend").set_defaults(func=cmd_resolve_backend)
+    sp = sub.add_parser("reset"); sp.add_argument("task_id"); sp.set_defaults(func=cmd_reset)
+    sp = sub.add_parser("tick")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--force", action="store_true",
+                    help="dispatch even if triage is unavailable or says STOP")
+    sp.set_defaults(func=cmd_tick)
+    args = p.parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

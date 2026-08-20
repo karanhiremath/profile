@@ -620,7 +620,10 @@ def cmd_probe(args) -> int:
     if b.get("api") == "cursor-cli":
         return probe_cursor(b)
     if not b.get("base_url"):
-        die(f"{b['id']} has no resolvable endpoint (api={b.get('api')}); nothing to probe over HTTP")
+        # Hosted CLI/SDK backends (openai-codex, anthropic) have no endpoint to
+        # probe. Check the prerequisite that actually decides usability instead of
+        # failing — otherwise such a backend can never serve as a fallback.
+        return probe_hosted(b)
     base, key = b["base_url"], b["api_key"]
     model = (b.get("model") or {}).get("served_name", "")
     timeout = float(args.timeout)
@@ -674,6 +677,45 @@ def cmd_probe(args) -> int:
         return 1
     print(f"\n{OK} {b['id']} satisfies the harness contract")
     return 0
+
+
+def probe_hosted(b: dict[str, Any]) -> int:
+    """A hosted backend reached through a vendor CLI or SDK rather than an HTTP
+    endpoint we control. We cannot assert the service is up without spending a
+    request, so assert what is actually actionable: the local prerequisite is
+    present. Reported honestly as 'assumed reachable', never as a live check."""
+    api = b.get("api")
+    print(f"probe {c(b['id'], '1')}  ({api}, no local endpoint)")
+    checks: list[tuple[str, bool, str]] = []
+    if api == "openai-codex":
+        # pi and codex both authenticate through the operator's existing login.
+        auth = Path.home() / ".codex" / "auth.json"
+        alt = Path.home() / ".hermes" / "auth.json"
+        have_auth = auth.exists() or alt.exists() or bool(os.environ.get("OPENAI_API_KEY"))
+        checks.append(("cli", shutil.which("codex") is not None,
+                       shutil.which("codex") or "codex not on PATH (pi can still use this provider)"))
+        checks.append(("auth", have_auth,
+                       "codex/hermes auth.json or OPENAI_API_KEY present" if have_auth
+                       else "no stored auth and no OPENAI_API_KEY"))
+    elif api == "anthropic":
+        have_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        checks.append(("cli", shutil.which("claude") is not None,
+                       shutil.which("claude") or "claude not on PATH"))
+        checks.append(("auth", have_key, "ANTHROPIC_API_KEY set" if have_key
+                       else "ANTHROPIC_API_KEY unset (interactive login may still work)"))
+    else:
+        checks.append(("api", False, f"no probe strategy for api={api}"))
+
+    for name, ok_, detail in checks:
+        print(f"  {OK if ok_ else BAD} {name:<8} {detail}")
+    # Auth is the gating requirement; a missing vendor CLI does not stop pi from
+    # using the provider, so it warns rather than fails.
+    auth_ok = next((ok_ for name, ok_, _ in checks if name == "auth"), False)
+    if auth_ok:
+        print(f"\n{OK} {b['id']} prerequisites present (service reachability assumed, not measured)")
+        return 0
+    print(f"\n{BAD} {b['id']} has no usable credentials")
+    return 1
 
 
 def probe_cursor(b: dict[str, Any]) -> int:
