@@ -1,0 +1,137 @@
+name: harness contract
+
+# Fast gate on every change to the inference / sandbox / loop layer. No model
+# weights, no GPU, no credentials — the whole contract is exercised against
+# local OpenAI-compatible stubs, so this runs in under a minute and is safe to
+# require on a PR.
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'bin/inference/**'
+      - 'bin/sandbox/**'
+      - 'bin/agent-loop/**'
+      - 'bin/hermes/**'
+      - 'bin/mise/**'
+      - 'config/inference/**'
+      - 'config/sandbox/**'
+      - 'config/agent-loop/**'
+      - '.github/workflows/harness-contract.yml'
+  pull_request:
+    paths:
+      - 'bin/inference/**'
+      - 'bin/sandbox/**'
+      - 'bin/agent-loop/**'
+      - 'bin/hermes/**'
+      - 'bin/mise/**'
+      - 'config/inference/**'
+      - 'config/sandbox/**'
+      - 'config/agent-loop/**'
+      - '.github/workflows/harness-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.11 is the floor: inf and sbx parse TOML with stdlib tomllib.
+          python-version: '3.12'
+
+      - name: Shell syntax
+        run: |
+          for f in bin/inference/install bin/sandbox/install bin/mise/install \
+                   bin/pi/install bin/hermes/agents bin/hermes/cosw \
+                   bin/inference/build-llamacpp-metal \
+                   config/inference/testing/run-contract-test.sh; do
+            bash -n "$f" && echo "ok   $f"
+          done
+
+      - name: Python syntax
+        run: |
+          for f in bin/inference/inf bin/sandbox/sbx bin/agent-loop/loop \
+                   bin/hermes/hermes_agents.py bin/mise/config-tools \
+                   config/inference/testing/openai_stub.py; do
+            python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$f" \
+              && echo "ok   $f"
+          done
+
+      - name: Every install script answers --help
+        # A --help that crashes is the first thing a new machine hits.
+        run: |
+          for f in bin/inference/install bin/sandbox/install bin/mise/install \
+                   bin/inference/build-llamacpp-metal; do
+            "$f" --help >/dev/null && echo "ok   $f --help"
+          done
+
+      - name: Inference registry is valid
+        run: ./bin/inference/inf validate
+
+      - name: Sandbox registry is valid
+        run: ./bin/sandbox/sbx validate
+
+      - name: Backlog example parses
+        run: |
+          python3 - <<'PY'
+          import tomllib
+          with open('config/agent-loop/backlog.example.toml','rb') as fh:
+              doc = tomllib.load(fh)
+          assert doc.get('tasks'), 'no tasks in the example backlog'
+          for t in doc['tasks']:
+              for key in ('id','title','repo','brief'):
+                  assert t.get(key), f"task {t.get('id','?')} missing {key}"
+          print(f"ok   {len(doc['tasks'])} example task(s)")
+          PY
+
+      - name: Harness contract end to end
+        # registry validation both ways, probe fail-closed, the unterminated
+        # stream regression, speculative speedup math, all five renderers,
+        # and a secret-leak scan of every rendered artifact.
+        run: ./config/inference/testing/run-contract-test.sh
+
+      - name: Sandbox specs render and compose without an engine
+        # GitHub runners have docker, but --dry-run must work with no engine at
+        # all so a spec can be reviewed anywhere.
+        env:
+          SBX_STATE_DIR: ${{ runner.temp }}/sbx
+          SBX_SRC_ROOT: ${{ github.workspace }}/..
+        run: |
+          ./bin/sandbox/sbx render profile-dev --print
+          ./bin/sandbox/sbx render repro-shell --print
+          ./bin/sandbox/sbx grant profile-dev --reason "CI spec composition check" --ttl 5m
+          ./bin/sandbox/sbx up profile-dev --dry-run --repo profile
+          ./bin/sandbox/sbx audit
+
+      - name: Lease enforcement holds
+        env:
+          SBX_STATE_DIR: ${{ runner.temp }}/sbx-neg
+          SBX_SRC_ROOT: ${{ github.workspace }}/..
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          ./bin/sandbox/sbx up local-model-lab --dry-run --repo profile 2>/dev/null \
+            && fail "started a lease-required sandbox with no lease"
+          ./bin/sandbox/sbx grant local-model-lab --reason "short" 2>/dev/null \
+            && fail "accepted a vague lease reason"
+          ./bin/sandbox/sbx grant local-model-lab --reason "valid CI reason for the check" \
+            --env AWS_SECRET_ACCESS_KEY 2>/dev/null \
+            && fail "forwarded a secret outside the allow_env ceiling"
+          echo "ok   all three refusal paths hold"
+
+      - name: No secrets committed to the registries
+        run: |
+          if grep -rInE '(sk-[A-Za-z0-9]{16,}|xai-[A-Za-z0-9]{16,}|hf_[A-Za-z0-9]{16,}|csk_[A-Za-z0-9]{16,})' \
+               config/ bin/ 2>/dev/null; then
+            echo "::error::a literal-looking API key is committed"
+            exit 1
+          fi
+          echo "ok   no key-shaped literals in config/ or bin/"

@@ -1,0 +1,165 @@
+name: fresh install
+
+# Proves the bootstrap works on a machine that has nothing — which is the only
+# way to catch the class of bug where an installer quietly depends on something
+# already present on the author's laptop.
+#
+# Real findings this exists to catch, all hit on a clean container:
+#   - config/mise/config.toml declared no python, yet inf/sbx need 3.11+
+#   - `mise install` aborted everything when one tool's release was unreachable
+#   - bin/pi/install wrote shellPath /bin/zsh on a box with no zsh
+#
+# Runs weekly (upstream moves independently of this repo) and on changes to any
+# installer.
+on:
+  schedule:
+    # Sunday 07:13 UTC. Off-the-hour on purpose.
+    - cron: '13 7 * * 0'
+  push:
+    branches: [master, main]
+    paths:
+      - 'bin/*/install'
+      - 'install.sh'
+      - 'config/mise/**'
+      - 'config/pi/**'
+      - 'Justfile'
+      - '.github/workflows/fresh-install.yml'
+  pull_request:
+    paths:
+      - 'bin/*/install'
+      - 'install.sh'
+      - 'config/mise/**'
+      - 'config/pi/**'
+      - '.github/workflows/fresh-install.yml'
+  workflow_dispatch:
+    inputs:
+      allow_partial_mise:
+        description: 'Tolerate individual mise tools failing to fetch'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fresh-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu is the CI/devcontainer shape; macos is the actual work machine.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PROFILE_DIR: ${{ github.workspace }}
+      APP_BIN: ${{ github.workspace }}/bin
+      # A single blocked upstream release should report, not red the build.
+      MISE_ALLOW_PARTIAL: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What the runner already has
+        # Recorded so a later failure can be read against the starting state.
+        run: |
+          echo "os        $(uname -srm)"
+          for c in python3 node pnpm npm mise devbox podman docker zsh bash git curl jq; do
+            printf '%-8s %s\n' "$c" "$(command -v $c 2>/dev/null || echo MISSING)"
+          done
+          python3 --version || true
+
+      - name: Provision toolchain (mise)
+        run: ./bin/mise/install --allow-partial
+
+      - name: mise provisioned what we depend on
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          eval "$(mise activate bash)" || true
+          fail=0
+          for t in node pnpm uv python; do
+            if mise exec -- "$t" --version >/dev/null 2>&1; then
+              printf 'ok   %-7s %s\n' "$t" "$(mise exec -- $t --version 2>&1 | head -1)"
+            else
+              echo "::error::mise did not provide $t"
+              fail=1
+            fi
+          done
+          # tomllib is the hard floor for inf/sbx.
+          mise exec -- python3 -c 'import tomllib, sys; assert sys.version_info >= (3,11)' \
+            || { echo "::error::provisioned python is older than 3.11"; fail=1; }
+          exit $fail
+
+      - name: Install pi
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          eval "$(mise activate bash)" || true
+          ./bin/pi/install
+
+      - name: pi is usable and its shell exists
+        # The shellPath bug: pi installed fine but its terminal tool pointed at a
+        # shell that was not on the box.
+        run: |
+          export PATH="$HOME/.local/share/pnpm/bin:$HOME/.local/bin:$PATH"
+          eval "$(mise activate bash)" || true
+          command -v pi || { echo "::error::pi not on PATH after install"; exit 1; }
+          pi --version
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          p = pathlib.Path.home() / ".pi" / "agent" / "settings.json"
+          s = json.loads(p.read_text())
+          shell = s.get("shellPath")
+          print("pi shellPath:", shell)
+          if not shell or not os.path.exists(shell):
+              print(f"::error::pi shellPath {shell!r} does not exist on this machine")
+              sys.exit(1)
+          PY
+
+      - name: Install inf and sbx
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          eval "$(mise activate bash)" || true
+          ./bin/inference/install
+          ./bin/sandbox/install
+
+      - name: What this machine can actually run
+        # Not a gate — a report. `doctor` is expected to be honest about missing
+        # GPUs and unset tokens rather than claiming readiness.
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          inf list
+          inf doctor || true
+          sbx list
+
+      - name: Harness contract on a freshly provisioned machine
+        run: |
+          export PATH="$HOME/.local/share/pnpm/bin:$HOME/.local/bin:$PATH"
+          eval "$(mise activate bash)" || true
+          ./config/inference/testing/run-contract-test.sh
+
+      - name: pi completes a real turn against a local backend
+        # The end-to-end claim: a backend declared in the registry, bound into
+        # pi by `inf bind`, and driven by pi itself. This is what caught the
+        # incomplete stream contract.
+        run: |
+          export PATH="$HOME/.local/share/pnpm/bin:$HOME/.local/bin:$PATH"
+          eval "$(mise activate bash)" || true
+          python3 config/inference/testing/openai_stub.py \
+            --port 8199 --model stub-model --speed 2000 &
+          stub=$!
+          trap 'kill $stub 2>/dev/null || true' EXIT
+          for _ in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8199/health >/dev/null && break
+            sleep 0.25
+          done
+          export INF_REGISTRY_PATH="$PWD/config/inference/testing/backends.stub.toml"
+          inf probe stub-fast
+          inf bind pi stub-fast --only --probe
+          out="$(timeout 120 pi -p 'say WIRED' 2>&1)" || true
+          echo "$out" | head -3
+          if echo "$out" | grep -qiE "stream ended without finish_reason|no models match"; then
+            echo "::error::pi could not complete a turn against the bound backend"
+            exit 1
+          fi
+          echo "ok   pi drove the bound local backend"

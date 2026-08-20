@@ -1,0 +1,181 @@
+name: agent loop
+
+# Feeds backlog work to a coding agent every 30 minutes.
+#
+# Cost split (the reason this is cheap enough to run unattended): the dispatcher
+# role — triage the task, sharpen the brief, decide whether it is already done —
+# runs on grok-4.6-fast via cursor-agent. The worker role, which is where the
+# tokens actually go, is a pi agent on the first backend that passes `inf probe`,
+# preferring free local models.
+#
+# Guardrails are enforced by `loop` itself before any model is called:
+# max_dispatches_per_day, max_concurrent_workers, per-task max_attempts, and a
+# worker timeout. concurrency below prevents overlapping runs; the daily caps
+# survive across runs via the cached state directory.
+#
+# Note: GitHub's scheduler is best-effort and drops or delays runs under load, so
+# treat 30m as "at most every 30m", not a guarantee. The loop is idempotent —
+# a skipped tick costs nothing and the next one picks up the same task.
+on:
+  schedule:
+    # Every 30 minutes, offset off :00/:30 so this is not competing with every
+    # other repo's on-the-hour cron.
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: 'Dispatch a specific task id (default: highest-priority ready)'
+        required: false
+      dry_run:
+        description: 'Plan only — select, resolve a backend, write the brief, do not dispatch'
+        type: boolean
+        default: false
+      open_pr:
+        description: 'Open a PR if the worker produces a diff'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # Never overlap. A tick that arrives while one is running is dropped, which is
+  # the correct behavior: the loop's own concurrency cap would no-op it anyway.
+  group: agent-loop
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      PROFILE_DIR: ${{ github.workspace }}
+      APP_BIN: ${{ github.workspace }}/bin
+      LOOP_STATE_DIR: ${{ github.workspace }}/.loop-state
+      SBX_SRC_ROOT: ${{ github.workspace }}/..
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the loop branches a worktree
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Daily dispatch/tick counters and per-task attempt counts live here.
+      # Without persistence every run would start with a fresh budget, and the
+      # caps would not cap anything.
+      - name: Restore loop state
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.LOOP_STATE_DIR }}
+          key: agent-loop-state-${{ github.run_id }}
+          restore-keys: |
+            agent-loop-state-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install agent tooling
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          npm i -g pnpm@latest >/dev/null 2>&1 || true
+          ./bin/inference/install
+          ./bin/pi/install
+
+      - name: Install cursor-agent
+        # The dispatcher. Absent or unauthenticated, the loop refuses to dispatch
+        # untriaged work rather than silently spending worker tokens.
+        if: env.CURSOR_API_KEY != ''
+        run: ./bin/cursor-cli/install
+
+      - name: Backlog and budget before the tick
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          ./bin/agent-loop/loop backlog
+          ./bin/agent-loop/loop budget
+
+      - name: Which worker backend is healthy
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          ./bin/agent-loop/loop resolve-backend || \
+            echo "::warning::no healthy worker backend; the tick will report and skip"
+
+      - name: Tick
+        id: tick
+        run: |
+          export PATH="$HOME/.local/share/pnpm/bin:$HOME/.local/bin:$PATH"
+          args=(--wait 1800)
+          if [ "${{ inputs.dry_run }}" = "true" ]; then args=(--dry-run); fi
+          ./bin/agent-loop/loop tick "${args[@]}"
+
+      - name: Open a PR for the worker's diff
+        if: >
+          steps.tick.outputs.changed != '' &&
+          steps.tick.outputs.changed != '0' &&
+          inputs.dry_run != true &&
+          inputs.open_pr != false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TASK: ${{ steps.tick.outputs.task }}
+          BRANCH: ${{ steps.tick.outputs.branch }}
+          WORKTREE: ${{ steps.tick.outputs.worktree }}
+        run: |
+          cd "$WORKTREE"
+          git config user.name  "agent-loop"
+          git config user.email "agent-loop@users.noreply.github.com"
+          git add -A
+          git commit -m "$TASK: automated backlog work
+
+          Dispatched by the agent loop. Triage ran on grok-4.6-fast via
+          cursor-agent; implementation ran as a pi agent. Review the diff — the
+          loop does not judge correctness, it only reports that a change was
+          produced."
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "agent-loop: $TASK" \
+            --body "$(cat <<'BODY'
+          Automated backlog work from the agent loop.
+
+          The loop dispatched this task, a worker produced the diff, and CI has
+          not yet judged it. **Review before merging** — the loop reports that a
+          change was produced, not that it is correct.
+
+          The task brief and acceptance criteria are in the run log.
+
+          ---
+          _Generated by [Claude Code](https://claude.ai/code)_
+          BODY
+          )" \
+            --head "$BRANCH" \
+            --draft
+        continue-on-error: true
+
+      - name: Save loop state
+        # always(): the budget must record a tick even when the tick failed,
+        # otherwise a failing loop retries without limit.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.LOOP_STATE_DIR }}
+          key: agent-loop-state-${{ github.run_id }}
+
+      - name: Tick summary
+        if: always()
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          {
+            echo "## agent-loop tick"
+            echo
+            echo '```'
+            ./bin/agent-loop/loop budget 2>&1 || true
+            echo '```'
+            echo
+            echo '```'
+            ./bin/agent-loop/loop backlog 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
