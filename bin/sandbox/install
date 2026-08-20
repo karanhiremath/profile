@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: bin/sandbox/install [--help]
+
+Install `sbx`, the lease-gated project sandbox manager: link it onto PATH,
+create the state/lease/audit directories with restrictive permissions, and
+validate every sandbox registry on the search path.
+
+`sbx` runs project work in a hardened podman (or docker) container with only the
+repos that sandbox declares, the toolchain it declares (mise or devbox), a
+deny-by-default network, and secrets that must appear BOTH in the sandbox's
+allow_env ceiling and in an unexpired lease.
+
+Requires: python3 >= 3.11. A container engine is needed only to start sandboxes;
+validate/render work without one.
+
+Idempotent.
+USAGE
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+else
+    SCRIPT_DIR="${PROFILE_DIR}/bin/sandbox"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="sandbox"
+install_messages "start" "$app_name"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 not found. Run 'just mise' first." >&2
+    exit 1
+fi
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "ERROR: python3 >= 3.11 required (tomllib); found $(python3 --version)." >&2
+    exit 1
+fi
+echo "✓ python3 $(python3 --version 2>&1 | awk '{print $2}')"
+
+bin_dir="${SBX_BIN_DIR:-${HOME}/.local/bin}"
+mkdir -p "$bin_dir"
+ln -fns "${SCRIPT_DIR}/sbx" "${bin_dir}/sbx"
+echo "✓ Linked sbx → ${bin_dir}/sbx"
+
+# Leases and the audit log are access-control state: keep them owner-only.
+state_dir="${SBX_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/sandbox}"
+mkdir -p "${state_dir}/leases" "${state_dir}/work"
+chmod 700 "$state_dir" "${state_dir}/leases"
+[ -f "${state_dir}/audit.jsonl" ] && chmod 600 "${state_dir}/audit.jsonl"
+echo "✓ State ${state_dir} (leases + audit log, mode 700)"
+
+if command -v podman >/dev/null 2>&1; then
+    if podman info >/dev/null 2>&1; then
+        echo "✓ Container engine: podman (reachable)"
+    else
+        echo "⚠ podman installed but not reachable — run: podman machine start"
+    fi
+elif command -v docker >/dev/null 2>&1; then
+    if docker info >/dev/null 2>&1; then
+        echo "⚠ Using docker. Sandboxes will not be rootless; prefer podman: just podman"
+    else
+        echo "⚠ docker installed but no daemon is reachable."
+    fi
+else
+    echo "⚠ No container engine. 'sbx validate' and 'sbx render' still work;"
+    echo "  'sbx up' needs one. Install with: just podman"
+fi
+
+# Toolchain provisioners are optional per sandbox, so report rather than require.
+command -v mise   >/dev/null 2>&1 && echo "✓ mise present (toolchain = mise)"   || echo "⚠ mise absent — mise-toolchain sandboxes cannot provision (just mise)"
+command -v devbox >/dev/null 2>&1 && echo "✓ devbox present (toolchain = devbox)" || echo "  devbox absent — only needed for toolchain = devbox sandboxes"
+
+echo ""
+echo "Validating sandbox registry..."
+"${bin_dir}/sbx" validate
+
+install_messages "end" "$app_name"
+
+cat <<'NEXT'
+
+sbx installed.
+
+  sbx list                                    sandboxes and lease state
+  sbx inflight                                registered projects vs open leases
+  sbx grant local-model-lab --reason "..." --ttl 4h --env HF_TOKEN
+  sbx up local-model-lab                      start it (refuses without a lease)
+  sbx shell local-model-lab
+  sbx revoke local-model-lab --down
+  sbx audit                                   who had access, when, and why
+
+Access governance runs through the sandbox-warden Hermes profile:
+  agents up sandbox-warden
+NEXT

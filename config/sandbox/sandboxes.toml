@@ -1,0 +1,120 @@
+# Project/profile sandbox registry — GENERIC / PUBLIC.
+#
+# One declarative spec per sandbox: which repos it can see, which toolchain it
+# provisions (mise or devbox), what network it gets, which host secrets may ever
+# be injected, and which inference backends it may reach.
+#
+# Access is LEASE-GATED. A sandbox with require_lease = true will not start
+# without an unexpired lease naming a reason, so long-lived ambient access to a
+# work repo is not the default state of the machine. `sbx grant` issues leases;
+# the sandbox-warden Hermes profile issues them against projects that are
+# actually in flight. Every grant/revoke/start is appended to an audit log.
+#
+# allow_env is a CEILING, not a grant: a secret must be listed here AND named in
+# the active lease before it is injected.
+#
+# Data boundary: work-only sandboxes belong in the work overlay at
+# ~/src/karan.hiremath/agentic/sandbox/sandboxes.toml — never here.
+
+schema_version = 1
+
+[defaults]
+engine = "auto"              # podman preferred, docker accepted
+toolchain = "mise"           # mise | devbox | none
+lease_ttl = "4h"
+max_lease_ttl = "12h"
+network = "none"             # none | egress | host  — deny by default
+require_lease = true
+cpus = "4.0"
+memory = "8g"
+image = "docker.io/library/debian:12-slim"
+
+
+# ── the toolkit's own repos: tooling work, no proprietary data ────────────────
+
+[sandboxes.profile-dev]
+description = "Dotfiles/tooling work on the profile repo. No work data, so no lease required."
+repos = ["profile"]
+toolchain = "mise"
+network = "egress"           # installers fetch from mise/brew/npm
+require_lease = false
+data_boundary = "public"
+cpus = "4.0"
+memory = "6g"
+[sandboxes.profile-dev.tools]
+node = "lts"
+pnpm = "latest"
+python = "3.12"
+uv = "latest"
+[sandboxes.profile-dev.backends]
+allowed = ["codex-gpt55", "ollama-local", "lmstudio-local"]
+
+
+# ── local-model testing: the DFlash 2 weekend target ─────────────────────────
+
+[sandboxes.local-model-lab]
+description = "Local inference experiments: build runtimes, serve DFlash 2, run inf bench. Egress for weight downloads; HF_TOKEN injectable under lease."
+repos = ["profile"]
+toolchain = "mise"
+network = "egress"
+require_lease = true
+data_boundary = "public"
+cpus = "8.0"
+memory = "48g"
+# Model weights are large and slow to fetch; persist them across sandbox
+# rebuilds instead of re-downloading ~17GB each time.
+persist = ["{cache_dir}/hf", "{cache_dir}/gguf"]
+allow_env = ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"]
+[sandboxes.local-model-lab.tools]
+python = "3.12"
+uv = "latest"
+node = "lts"
+[sandboxes.local-model-lab.backends]
+allowed = [
+  "dflash2-qwen-llamacpp", "qwen-llamacpp-baseline",
+  "dflash2-qwen-llamacpp-metal", "qwen-llamacpp-metal-baseline",
+  "dflash2-qwen-vllm", "vllm-local",
+  "dflash2-glimmer-sglang",
+  "dflash2-qwen-ollama", "ollama-local",
+  "dflash2-qwen-omlx",
+]
+
+
+# ── agent harness sandbox: where pi/cursor actually run against a repo ────────
+
+[sandboxes.agent-worktree]
+description = "Generic coding-agent sandbox: a single repo worktree, an agent CLI, and one inference backend. What the 30m pi loop dispatches into."
+repos = []                   # bound per-run: sbx up agent-worktree --repo <name>
+toolchain = "mise"
+network = "egress"
+require_lease = true
+data_boundary = "public"
+cpus = "4.0"
+memory = "12g"
+allow_env = ["CURSOR_API_KEY", "GITHUB_TOKEN"]
+[sandboxes.agent-worktree.tools]
+node = "lts"
+pnpm = "latest"
+python = "3.12"
+uv = "latest"
+[sandboxes.agent-worktree.backends]
+allowed = ["cursor-grok-46-fast", "codex-gpt55", "dflash2-qwen-llamacpp", "ollama-local"]
+
+
+# ── devbox variant: nix-pinned shell for reproducibility-sensitive work ───────
+
+[sandboxes.repro-shell]
+description = "Nix-pinned toolchain via devbox, for work where exact tool versions must be reproducible rather than merely current."
+repos = ["profile"]
+toolchain = "devbox"
+network = "egress"
+require_lease = false
+data_boundary = "public"
+[sandboxes.repro-shell.tools]
+# devbox package names (nixpkgs attrs), not mise tool names.
+python = "python312"
+node = "nodejs_22"
+uv = "uv"
+just = "just"
+[sandboxes.repro-shell.backends]
+allowed = ["codex-gpt55", "ollama-local"]

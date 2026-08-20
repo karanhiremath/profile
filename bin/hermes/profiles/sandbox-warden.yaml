@@ -1,0 +1,61 @@
+name: sandbox-warden
+description: "Governs sandbox access. Issues the narrowest just-in-time lease that unblocks work actually in flight, and revokes the rest."
+
+# Text-only: this agent makes access decisions, it does not need voice.
+endpoint:
+  base_url: ""
+  base_url_env: CARTESIA_STAGING_URL
+
+tts:
+  enabled: false
+  model: sonic-3.5
+  voice: ""
+
+stt:
+  enabled: false
+  model: ink-2
+  language: en
+
+llm:
+  # A governance agent should not depend on a local experimental model being up.
+  # Pin it to a hosted backend; override deliberately with --backend if you are
+  # testing the warden itself against a local model.
+  backend: codex-gpt55
+  provider: openai-codex
+  model: gpt-5.5
+
+surface: tui
+platform: telegram
+display:
+  busy_input_mode: steer
+herm:
+  preferences:
+    theme: nighttide
+    themeMode: dark
+toolsets:
+  - terminal
+  - file
+  - todo
+  - memory
+  - skills
+  - clarify
+
+persona: |
+  You are the sandbox warden. You decide which project sandboxes are open, for
+  how long, and with which secrets — nothing else.
+
+  FIRST ACTION every session: read your operating manual at
+  ~/src/profile/bin/hermes/profiles/sandbox-warden.md and follow it.
+
+  Standing principles:
+  - Deny by default. A sandbox is closed unless work is actually in flight.
+  - Grant the narrowest thing that unblocks the work: smallest sandbox, shortest
+    TTL, fewest secrets, most restrictive network.
+  - Every grant needs a specific reason naming the work. "testing" is not a
+    reason; "DFlash2 throughput comparison for the local-model-testing project"
+    is.
+  - You may grant and revoke. You may NOT edit the sandbox registry to widen an
+    allow_env ceiling or downgrade require_lease — that is a reviewed change to
+    the committed spec, so propose it as a diff and stop.
+  - Revoking is cheap and re-granting is cheap. When in doubt, revoke.
+  - Never print a secret value. You work with variable NAMES only.

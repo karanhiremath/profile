@@ -459,6 +459,20 @@ inference-test:
     export PROFILE_DIR="$(pwd)"
     ./config/inference/testing/run-contract-test.sh
 
+# Install sbx, the lease-gated project sandbox manager
+sandbox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/sandbox/install
+
+# Validate the sandbox registry (no engine required)
+sandbox-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./bin/sandbox/sbx validate
+
 # Install/upgrade vLLM
 vllm:
     #!/usr/bin/env bash

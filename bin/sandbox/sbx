@@ -1,0 +1,820 @@
+#!/usr/bin/env python3
+"""sbx — lease-gated project sandboxes for agent work.
+
+A sandbox is declared once in config/sandbox/sandboxes.toml: the repos it may
+see, the toolchain it provisions (mise or devbox), its network policy, the host
+secrets that may EVER be injected, and the inference backends it may reach.
+
+Access is just-in-time. A sandbox with require_lease = true refuses to start
+without an unexpired lease that names a reason, so ambient standing access to a
+work repo is not the machine's default state. Leases carry a TTL bounded by the
+registry's max_lease_ttl, and every grant, revoke, start and stop is appended to
+a tamper-evident audit log.
+
+    sbx list                          sandboxes and their current lease state
+    sbx show <name>                   the fully resolved spec
+    sbx validate                      schema-check the registry (CI)
+    sbx inflight                      registered projects → sandboxes (warden input)
+    sbx grant <name> --reason R       issue a lease  [--ttl 4h] [--env NAME ...]
+    sbx revoke <name>                 end a lease now
+    sbx leases                        active and recently expired leases
+    sbx render <name>                 write mise.toml / devbox.json for the sandbox
+    sbx up <name> [--repo R ...]      start it (enforces the lease)
+    sbx shell <name>                  interactive shell inside it
+    sbx exec <name> -- <cmd...>       run one command inside it
+    sbx down <name>                   stop and remove it
+    sbx audit [--tail N]              the access log
+
+Secrets are never written to disk by this tool. allow_env names which variables
+MAY be forwarded; a lease must also name them; the value is read from the
+operator's environment at start time and passed to the engine directly.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import hashlib
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import tomllib
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROFILE_DIR = Path(os.environ.get("PROFILE_DIR") or SCRIPT_DIR.parent.parent).resolve()
+STATE_DIR = Path(os.environ.get("SBX_STATE_DIR") or (Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "sandbox"))
+CACHE_DIR = Path(os.environ.get("INF_CACHE_DIR") or (Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "inference"))
+SRC_ROOT = Path(os.environ.get("SBX_SRC_ROOT") or (Path.home() / "src"))
+LEASE_DIR = STATE_DIR / "leases"
+AUDIT_LOG = STATE_DIR / "audit.jsonl"
+WORK_ROOT = STATE_DIR / "work"
+LABEL = "sbx-sandbox"
+
+NETWORKS = {"none", "egress", "host"}
+TOOLCHAINS = {"mise", "devbox", "none"}
+BOUNDARIES = {"public", "work"}
+TOP_KEYS = {
+    "description", "repos", "mounts_ro", "toolchain", "tools", "network",
+    "require_lease", "data_boundary", "cpus", "memory", "image", "persist",
+    "allow_env", "backends", "notes",
+}
+
+
+def _tty() -> bool:
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def c(t: str, code: str) -> str:
+    return f"\033[{code}m{t}\033[0m" if _tty() else t
+
+
+OK, BAD, WARN = c("✓", "32"), c("✗", "31"), c("⚠", "33")
+
+
+def info(msg: str) -> None:
+    print(f"sbx: {msg}", file=sys.stderr)
+
+
+def die(msg: str, code: int = 1):
+    print(f"sbx: {c('ERROR', '1;31')}: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_duration(text: str) -> timedelta:
+    """Accept 30m / 4h / 2d / 90s. Rejects anything else rather than guessing."""
+    m = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", str(text))
+    if not m:
+        die(f"bad duration '{text}' — use forms like 90s, 30m, 4h, 2d")
+    n, unit = int(m.group(1)), m.group(2)
+    field = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[unit]
+    return timedelta(**{field: n})
+
+
+def fmt_delta(td: timedelta) -> str:
+    secs = int(td.total_seconds())
+    if secs < 0:
+        return "expired"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h{(secs % 3600) // 60:02d}m"
+    return f"{secs // 86400}d{(secs % 86400) // 3600}h"
+
+
+# ─────────────────────────────── registry ─────────────────────────────────────
+
+def registry_files() -> list[Path]:
+    raw = os.environ.get("SBX_REGISTRY_PATH")
+    if raw:
+        cands = [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
+    else:
+        cands = [
+            Path.home() / "src" / "karan.hiremath" / "agentic" / "sandbox" / "sandboxes.toml",
+            PROFILE_DIR / "config" / "sandbox" / "sandboxes.toml",
+        ]
+    out: list[Path] = []
+    for cand in cands:
+        if cand.is_dir():
+            out.extend(sorted(cand.glob("*.toml")))
+        elif cand.is_file():
+            out.append(cand)
+    return out
+
+
+def load_registry() -> tuple[dict[str, Any], dict[str, Any], dict[str, Path]]:
+    boxes: dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
+    origin: dict[str, Path] = {}
+    files = registry_files()
+    if not files:
+        die("no sandbox registry found (config/sandbox/sandboxes.toml or $SBX_REGISTRY_PATH)")
+    for path in files:
+        try:
+            with path.open("rb") as fh:
+                doc = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            die(f"cannot read {path}: {exc}")
+        for k, v in (doc.get("defaults") or {}).items():
+            defaults.setdefault(k, v)
+        for name, table in (doc.get("sandboxes") or {}).items():
+            if name not in boxes:
+                boxes[name] = table
+                origin[name] = path
+    return boxes, defaults, origin
+
+
+def resolve(name: str) -> dict[str, Any]:
+    boxes, defaults, origin = load_registry()
+    if name not in boxes:
+        die(f"unknown sandbox '{name}'. Available: {', '.join(sorted(boxes))}")
+    spec: dict[str, Any] = {}
+    for key in ("engine", "toolchain", "network", "require_lease", "cpus",
+                "memory", "image", "lease_ttl", "max_lease_ttl"):
+        if key in defaults:
+            spec[key] = defaults[key]
+    spec.update(json.loads(json.dumps(boxes[name])))
+    spec["name"] = name
+    spec["source"] = str(origin[name])
+    spec["persist"] = [
+        str(p).replace("{cache_dir}", str(CACHE_DIR)).replace("{state_dir}", str(STATE_DIR))
+        for p in (spec.get("persist") or [])
+    ]
+    return spec
+
+
+# ──────────────────────────────── leases ──────────────────────────────────────
+
+def lease_path(name: str) -> Path:
+    return LEASE_DIR / f"{name}.json"
+
+
+def read_lease(name: str) -> dict[str, Any] | None:
+    path = lease_path(name)
+    if not path.exists():
+        return None
+    try:
+        lease = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    try:
+        lease["_expires"] = datetime.fromisoformat(lease["expires_at"])
+    except (KeyError, ValueError):
+        return None
+    lease["_valid"] = lease["_expires"] > now() and not lease.get("revoked_at")
+    return lease
+
+
+def audit(event: str, **fields: Any) -> None:
+    """Append-only log. Each record carries the hash of the previous one, so a
+    deleted or edited entry is detectable rather than silent."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    prev_hash = "genesis"
+    if AUDIT_LOG.exists():
+        try:
+            lines = [ln for ln in AUDIT_LOG.read_text().splitlines() if ln.strip()]
+            if lines:
+                prev_hash = hashlib.sha256(lines[-1].encode()).hexdigest()[:16]
+        except OSError:
+            pass
+    record = {
+        "ts": now().isoformat(),
+        "event": event,
+        "actor": os.environ.get("SBX_ACTOR") or getpass.getuser(),
+        "host": socket.gethostname(),
+        "prev": prev_hash,
+        **fields,
+    }
+    with AUDIT_LOG.open("a") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+    AUDIT_LOG.chmod(0o600)
+
+
+def cmd_grant(args) -> int:
+    spec = resolve(args.sandbox)
+    ttl = parse_duration(args.ttl or spec.get("lease_ttl", "4h"))
+    max_ttl = parse_duration(spec.get("max_lease_ttl", "12h"))
+    if ttl > max_ttl:
+        die(f"requested TTL {args.ttl} exceeds max_lease_ttl "
+            f"{spec.get('max_lease_ttl')} for {args.sandbox}")
+    reason = (args.reason or "").strip()
+    if len(reason) < 8:
+        die("--reason is required and must say something specific "
+            "(it is the audit trail for why this access existed)")
+
+    allowed_env = set(spec.get("allow_env") or [])
+    requested = set(args.env or [])
+    refused = requested - allowed_env
+    if refused:
+        die(f"sandbox {args.sandbox} may never receive: {', '.join(sorted(refused))}. "
+            f"allow_env ceiling is: {', '.join(sorted(allowed_env)) or '(none)'}")
+    missing = [e for e in requested if not os.environ.get(e)]
+
+    expires = now() + ttl
+    lease = {
+        "sandbox": args.sandbox,
+        "reason": reason,
+        "project": args.project or "",
+        "env": sorted(requested),
+        "granted_at": now().isoformat(),
+        "expires_at": expires.isoformat(),
+        "granted_by": os.environ.get("SBX_ACTOR") or getpass.getuser(),
+        "ttl": args.ttl or spec.get("lease_ttl", "4h"),
+    }
+    LEASE_DIR.mkdir(parents=True, exist_ok=True)
+    lease_path(args.sandbox).write_text(json.dumps(lease, indent=2) + "\n")
+    lease_path(args.sandbox).chmod(0o600)
+    audit("grant", sandbox=args.sandbox, reason=reason, project=lease["project"],
+          ttl=lease["ttl"], env=lease["env"], expires_at=lease["expires_at"])
+    print(f"{OK} lease for {c(args.sandbox, '1')} valid {fmt_delta(ttl)} "
+          f"(until {expires.astimezone().strftime('%Y-%m-%d %H:%M %Z')})")
+    if lease["env"]:
+        print(f"  env forwarded on start: {', '.join(lease['env'])}")
+    for name in missing:
+        print(f"  {WARN} {name} is in the lease but unset in this environment")
+    return 0
+
+
+def cmd_revoke(args) -> int:
+    lease = read_lease(args.sandbox)
+    if not lease:
+        info(f"no lease on record for {args.sandbox}")
+        return 0
+    lease.pop("_expires", None)
+    lease.pop("_valid", None)
+    lease["revoked_at"] = now().isoformat()
+    lease_path(args.sandbox).write_text(json.dumps(lease, indent=2) + "\n")
+    audit("revoke", sandbox=args.sandbox, reason=lease.get("reason", ""))
+    print(f"{OK} revoked lease for {args.sandbox}")
+    if args.down:
+        return cmd_down(argparse.Namespace(sandbox=args.sandbox))
+    return 0
+
+
+def cmd_leases(args) -> int:
+    LEASE_DIR.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for path in sorted(LEASE_DIR.glob("*.json")):
+        lease = read_lease(path.stem)
+        if not lease:
+            continue
+        state = "active" if lease["_valid"] else ("revoked" if lease.get("revoked_at") else "expired")
+        rows.append((path.stem, state, fmt_delta(lease["_expires"] - now()),
+                     lease.get("project", ""), lease.get("reason", "")[:44]))
+    if not rows:
+        print("no leases on record")
+        return 0
+    print(f"{'SANDBOX':<20} {'STATE':<8} {'REMAINING':<10} {'PROJECT':<18} REASON")
+    for name, state, rem, proj, reason in rows:
+        colour = "32" if state == "active" else "2"
+        print(f"{name:<20} {c(state, colour):<8} {rem:<10} {proj:<18} {reason}")
+    return 0
+
+
+def require_lease(spec: dict[str, Any]) -> dict[str, Any]:
+    if not spec.get("require_lease", True):
+        return {}
+    lease = read_lease(spec["name"])
+    if not lease:
+        die(f"{spec['name']} requires a lease and none exists.\n"
+            f"       sbx grant {spec['name']} --reason \"<why, specifically>\" --ttl "
+            f"{spec.get('lease_ttl', '4h')}")
+    if not lease["_valid"]:
+        why = "revoked" if lease.get("revoked_at") else f"expired {fmt_delta(now() - lease['_expires'])} ago"
+        die(f"lease for {spec['name']} is {why}. Re-grant with a current reason.")
+    return lease
+
+
+# ─────────────────────────── toolchain rendering ──────────────────────────────
+
+def sandbox_workdir(name: str) -> Path:
+    return WORK_ROOT / name
+
+
+def cmd_render(args) -> int:
+    spec = resolve(args.sandbox)
+    work = sandbox_workdir(args.sandbox)
+    work.mkdir(parents=True, exist_ok=True)
+    toolchain = spec.get("toolchain", "mise")
+    tools: dict[str, str] = spec.get("tools") or {}
+
+    written: list[Path] = []
+    if toolchain == "mise":
+        lines = [
+            "# Generated by `sbx render` from config/sandbox/sandboxes.toml.",
+            f"# Sandbox: {spec['name']} — {spec.get('description', '')}",
+            "# Edit the registry, not this file; it is overwritten on every render.",
+            "",
+            "[tools]",
+        ]
+        lines += [f'{k} = "{v}"' for k, v in sorted(tools.items())]
+        lines += [
+            "",
+            "[env]",
+            "# Point every harness inside the sandbox at the same registry, so an",
+            "# agent in here cannot silently reach a backend the sandbox forbids.",
+            f'INF_ALLOWED_BACKENDS = "{",".join((spec.get("backends") or {}).get("allowed", []))}"',
+            "",
+            "[settings]",
+            "experimental = true",
+        ]
+        target = work / "mise.toml"
+        target.write_text("\n".join(lines) + "\n")
+        written.append(target)
+    elif toolchain == "devbox":
+        doc = {
+            "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.13.7/.schema/devbox.schema.json",
+            "packages": sorted(tools.values()),
+            "env": {
+                "INF_ALLOWED_BACKENDS": ",".join((spec.get("backends") or {}).get("allowed", [])),
+            },
+            "shell": {
+                "init_hook": [
+                    f"echo 'sandbox {spec['name']} — devbox toolchain, network={spec.get('network')}'",
+                ],
+            },
+        }
+        target = work / "devbox.json"
+        target.write_text(json.dumps(doc, indent=2) + "\n")
+        written.append(target)
+    else:
+        info(f"toolchain=none for {args.sandbox}; nothing to render")
+        return 0
+
+    for path in written:
+        print(f"{OK} {path}")
+    if args.print:
+        for path in written:
+            print(f"\n--- {path.name} ---")
+            print(path.read_text())
+    return 0
+
+
+# ──────────────────────────── container lifecycle ─────────────────────────────
+
+def engine_reachable(engine: str) -> bool:
+    """A CLI on PATH is not a working engine: docker needs a reachable daemon and
+    podman needs an initialized machine. Check before building a run command."""
+    return subprocess.run([engine, "info"], capture_output=True).returncode == 0
+
+
+def engine_for(spec: dict[str, Any], *, require_running: bool = False) -> str:
+    want = spec.get("engine", "auto")
+    override = os.environ.get("SBX_CONTAINER_ENGINE")
+    order = [override] if override else ([want] if want != "auto" else ["podman", "docker"])
+    present = [cand for cand in order if cand and shutil.which(cand)]
+    if not present:
+        die("no container engine found (tried podman, docker). Install podman: just podman")
+    if not require_running:
+        return present[0]
+    for cand in present:
+        if engine_reachable(cand):
+            return cand
+    names = ", ".join(present)
+    die(f"{names} on PATH but no engine is reachable.\n"
+        f"       podman: podman machine start\n"
+        f"       docker: start the daemon (or Docker Desktop)\n"
+        f"       This environment may not support containers at all; sandbox\n"
+        f"       specs still validate and render with `sbx validate` / `sbx render`.")
+
+
+def container_name(name: str) -> str:
+    return f"sbx-{name}"
+
+
+def container_state(engine: str, cname: str) -> str:
+    proc = subprocess.run([engine, "inspect", cname, "--format", "{{.State.Status}}"],
+                          capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else "absent"
+
+
+def resolve_repos(spec: dict[str, Any], extra: list[str]) -> list[tuple[Path, str]]:
+    names = list(spec.get("repos") or []) + list(extra or [])
+    mounts: list[tuple[Path, str]] = []
+    for repo in names:
+        host = (SRC_ROOT / repo) if not repo.startswith("/") else Path(repo)
+        if not host.is_dir():
+            die(f"repo '{repo}' not found at {host} (set SBX_SRC_ROOT if your checkouts live elsewhere)")
+        mounts.append((host.resolve(), f"/work/{host.name}"))
+    return mounts
+
+
+def cmd_up(args) -> int:
+    spec = resolve(args.sandbox)
+    lease = require_lease(spec)
+    # --dry-run only prints the command, so it must work on a machine with no
+    # engine at all — that is how you review a spec in CI.
+    engine = engine_for(spec, require_running=not args.dry_run)
+    cname = container_name(args.sandbox)
+
+    state = container_state(engine, cname)
+    if state == "running":
+        info(f"{cname} already running (sbx shell {args.sandbox})")
+        return 0
+    if state != "absent":
+        subprocess.run([engine, "rm", "-f", cname], capture_output=True)
+
+    cmd_render(argparse.Namespace(sandbox=args.sandbox, print=False))
+    work = sandbox_workdir(args.sandbox)
+    repos = resolve_repos(spec, args.repo)
+    if not repos:
+        die(f"{args.sandbox} declares no repos; pass at least one: "
+            f"sbx up {args.sandbox} --repo <name>")
+
+    cmd = [engine, "run", "-d", "--name", cname,
+           "--label", f"{LABEL}={args.sandbox}",
+           "--label", f"sbx-boundary={spec.get('data_boundary', 'public')}",
+           "--init", "--restart", "no",
+           "--hostname", f"sbx-{args.sandbox}",
+           "-w", "/work",
+           # Hardening mirrors the cosw podman preflight.
+           "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
+           "--cap-add", "FOWNER",
+           "--security-opt", "no-new-privileges",
+           "--pids-limit", "512",
+           "--tmpfs", "/tmp:rw,nosuid,size=512m",
+           "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
+           "--cpus", str(spec.get("cpus", "4.0")),
+           "--memory", str(spec.get("memory", "8g"))]
+
+    network = spec.get("network", "none")
+    if network not in NETWORKS:
+        die(f"invalid network '{network}' for {args.sandbox}")
+    if network == "none":
+        cmd += ["--network", "none"]
+    elif network == "host":
+        # Deliberately loud: host networking removes the isolation this tool exists for.
+        info(f"{WARN} {args.sandbox} uses host networking — no network isolation")
+        cmd += ["--network", "host"]
+
+    for host, dest in repos:
+        mode = "ro" if args.read_only else "rw"
+        cmd += ["-v", f"{host}:{dest}:{mode}"]
+    cmd += ["-v", f"{work}:/sandbox"]
+    for mount in spec.get("mounts_ro") or []:
+        host = Path(str(mount).replace("~", str(Path.home())))
+        if host.exists():
+            cmd += ["-v", f"{host}:/mnt/{host.name}:ro"]
+    for path in spec.get("persist") or []:
+        Path(path).mkdir(parents=True, exist_ok=True)
+        cmd += ["-v", f"{path}:/persist/{Path(path).name}"]
+
+    # Secrets: must be in allow_env AND in the lease. Values are passed to the
+    # engine at start; nothing is written to disk by this tool.
+    forwarded, skipped = [], []
+    for name in lease.get("env", []):
+        if os.environ.get(name):
+            cmd += ["-e", f"{name}={os.environ[name]}"]
+            forwarded.append(name)
+        else:
+            skipped.append(name)
+
+    allowed = (spec.get("backends") or {}).get("allowed", [])
+    cmd += ["-e", f"INF_ALLOWED_BACKENDS={','.join(allowed)}",
+            "-e", f"SBX_SANDBOX={args.sandbox}",
+            "-e", f"SBX_BOUNDARY={spec.get('data_boundary', 'public')}"]
+
+    cmd += [str(spec.get("image", "docker.io/library/debian:12-slim")),
+            "sleep", "infinity"]
+
+    if args.dry_run:
+        print(" ".join(cmd))
+        return 0
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        audit("up_failed", sandbox=args.sandbox, engine=engine,
+              error=(detail[-1] if detail else "unknown")[:300])
+        die(f"{engine} could not start the sandbox:\n       "
+            + "\n       ".join(detail[-4:] or ["no output"]))
+    audit("up", sandbox=args.sandbox, engine=engine, network=network,
+          repos=[d for _, d in repos], env_forwarded=forwarded,
+          boundary=spec.get("data_boundary", "public"),
+          lease_expires=lease.get("expires_at", "n/a"))
+    print(f"{OK} {c(cname, '1')} up — {len(repos)} repo(s), network={network}, "
+          f"toolchain={spec.get('toolchain')}")
+    if forwarded:
+        print(f"  secrets forwarded: {', '.join(forwarded)}")
+    for name in skipped:
+        print(f"  {WARN} {name} leased but unset — not forwarded")
+    if lease:
+        print(f"  lease expires in {fmt_delta(lease['_expires'] - now())}")
+    print(f"  shell: sbx shell {args.sandbox}")
+    return 0
+
+
+def cmd_shell(args) -> int:
+    spec = resolve(args.sandbox)
+    require_lease(spec)
+    engine = engine_for(spec)
+    cname = container_name(args.sandbox)
+    if container_state(engine, cname) != "running":
+        die(f"{cname} is not running (sbx up {args.sandbox})")
+    audit("shell", sandbox=args.sandbox)
+    os.execvp(engine, [engine, "exec", "-it", "-w", "/work", cname, "/bin/bash"])
+
+
+def cmd_exec(args) -> int:
+    spec = resolve(args.sandbox)
+    require_lease(spec)
+    engine = engine_for(spec)
+    cname = container_name(args.sandbox)
+    if container_state(engine, cname) != "running":
+        die(f"{cname} is not running (sbx up {args.sandbox})")
+    if not args.command:
+        die("exec needs a command after --")
+    audit("exec", sandbox=args.sandbox, command=" ".join(args.command)[:200])
+    proc = subprocess.run([engine, "exec", "-w", "/work", cname] + args.command)
+    return proc.returncode
+
+
+def cmd_down(args) -> int:
+    spec = resolve(args.sandbox)
+    engine = engine_for(spec)
+    cname = container_name(args.sandbox)
+    if container_state(engine, cname) == "absent":
+        info(f"{cname} is not present")
+        return 0
+    subprocess.run([engine, "rm", "-f", cname], capture_output=True, check=False)
+    audit("down", sandbox=args.sandbox)
+    print(f"{OK} removed {cname}")
+    return 0
+
+
+def cmd_list(args) -> int:
+    boxes, defaults, origin = load_registry()
+    engine = next((e for e in ("podman", "docker") if shutil.which(e)), None)
+    print(f"{'SANDBOX':<20} {'BOUNDARY':<9} {'TOOLCHAIN':<10} {'NET':<7} "
+          f"{'LEASE':<18} {'STATE':<9} REPOS")
+    for name in sorted(boxes):
+        spec = resolve(name)
+        lease = read_lease(name)
+        if not spec.get("require_lease", True):
+            lease_txt = c("not required", "2")
+        elif lease and lease["_valid"]:
+            lease_txt = c(f"active {fmt_delta(lease['_expires'] - now())}", "32")
+        elif lease:
+            lease_txt = c("expired", "33")
+        else:
+            lease_txt = c("none", "2")
+        state = container_state(engine, container_name(name)) if engine else "?"
+        repos = ",".join(spec.get("repos") or []) or "(per-run)"
+        print(f"{name:<20} {spec.get('data_boundary', 'public'):<9} "
+              f"{spec.get('toolchain', 'mise'):<10} {spec.get('network', 'none'):<7} "
+              f"{lease_txt:<18} {state:<9} {repos}")
+    print(f"\nsources: {', '.join(str(p) for p in registry_files())}")
+    return 0
+
+
+def cmd_show(args) -> int:
+    spec = resolve(args.sandbox)
+    lease = read_lease(args.sandbox)
+    if lease:
+        spec["_lease"] = {k: v for k, v in lease.items() if not k.startswith("_")}
+        spec["_lease"]["valid"] = lease["_valid"]
+    print(json.dumps(spec, indent=2, default=str))
+    return 0
+
+
+def cmd_validate(args) -> int:
+    boxes, defaults, origin = load_registry()
+    errors, warns = [], []
+    try:
+        from importlib.machinery import SourceFileLoader
+        inf_mod = SourceFileLoader("inf", str(PROFILE_DIR / "bin" / "inference" / "inf")).load_module()
+        known_backends = set(inf_mod.load_registry()[0])
+    except Exception:
+        known_backends = set()
+        warns.append("could not load the inference registry; backend names unchecked")
+
+    for name, table in sorted(boxes.items()):
+        where = f"{origin[name].name}:[sandboxes.{name}]"
+        unknown = set(table) - TOP_KEYS
+        if unknown:
+            errors.append(f"{where} unknown key(s): {', '.join(sorted(unknown))}")
+        if not table.get("description"):
+            errors.append(f"{where} missing description")
+        spec = resolve(name)
+        if spec.get("network") not in NETWORKS:
+            errors.append(f"{where} network '{spec.get('network')}' not in {sorted(NETWORKS)}")
+        if spec.get("toolchain") not in TOOLCHAINS:
+            errors.append(f"{where} toolchain '{spec.get('toolchain')}' not in {sorted(TOOLCHAINS)}")
+        if spec.get("data_boundary") not in BOUNDARIES:
+            errors.append(f"{where} data_boundary must be one of {sorted(BOUNDARIES)}")
+        try:
+            ttl = parse_duration(spec.get("lease_ttl", "4h"))
+            mx = parse_duration(spec.get("max_lease_ttl", "12h"))
+            if ttl > mx:
+                errors.append(f"{where} lease_ttl exceeds max_lease_ttl")
+        except SystemExit:
+            errors.append(f"{where} unparseable lease_ttl/max_lease_ttl")
+        # A work-boundary sandbox with standing access defeats the point.
+        if spec.get("data_boundary") == "work" and not spec.get("require_lease", True):
+            errors.append(f"{where} data_boundary=work must set require_lease = true")
+        if spec.get("network") == "host":
+            warns.append(f"{where} network=host removes network isolation")
+        if spec.get("allow_env") and not spec.get("require_lease", True):
+            errors.append(f"{where} allow_env without require_lease would forward "
+                          f"secrets with no audit trail")
+        for backend in (table.get("backends") or {}).get("allowed", []):
+            if known_backends and backend not in known_backends:
+                errors.append(f"{where} allows unknown inference backend '{backend}'")
+        if origin[name].parts and "karan.hiremath" not in str(origin[name]):
+            if spec.get("data_boundary") == "work":
+                errors.append(f"{where} work-boundary sandbox declared in a public "
+                              f"registry — move it to the work overlay")
+
+    for w in warns:
+        print(f"{WARN} {w}")
+    for e in errors:
+        print(f"{BAD} {e}")
+    if errors:
+        print(f"\n{len(errors)} error(s), {len(warns)} warning(s) across {len(boxes)} sandbox(es)")
+        return 1
+    print(f"{OK} {len(boxes)} sandbox(es) valid ({len(warns)} warning(s))")
+    return 0
+
+
+def cmd_inflight(args) -> int:
+    """What the warden reads: registered Hermes projects, their sandboxes, and
+    whether access is currently open. Deterministic input for a JIT decision."""
+    project_dirs = [
+        Path.home() / "src" / "karan.hiremath" / "agentic" / "hermes" / "projects",
+        Path.home() / "src" / "hermes" / "projects",
+    ]
+    projects: list[dict[str, Any]] = []
+    for d in project_dirs:
+        if not d.is_dir():
+            continue
+        for path in sorted(d.glob("*.yaml")):
+            if path.stem.upper() in ("README", "TEMPLATE"):
+                continue
+            # Read only the shallow scalars we need — no yaml dependency, so this
+            # works before the Hermes toolchain is installed.
+            fields: dict[str, str] = {}
+            for line in path.read_text(errors="replace").splitlines():
+                m = re.match(r"^([a-z_]+):\s*(.*)$", line)
+                if m and m.group(2).strip():
+                    fields.setdefault(m.group(1), m.group(2).strip().strip('"\''))
+            projects.append({"project": path.stem, "status": fields.get("status", "?"),
+                             "sandbox": fields.get("sandbox", ""), "source": str(path)})
+    boxes, _, _ = load_registry()
+    leases = {p.stem: read_lease(p.stem) for p in LEASE_DIR.glob("*.json")} if LEASE_DIR.is_dir() else {}
+
+    if args.json:
+        print(json.dumps({
+            "projects": projects,
+            "sandboxes": sorted(boxes),
+            "open_leases": [n for n, l in leases.items() if l and l["_valid"]],
+        }, indent=2))
+        return 0
+
+    if not projects:
+        print("no registered Hermes projects found "
+              "(agentic/hermes/projects/*.yaml) — nothing is in flight")
+    else:
+        print(f"{'PROJECT':<28} {'STATUS':<12} SANDBOX")
+        for p in projects:
+            print(f"{p['project']:<28} {p['status']:<12} {p['sandbox'] or '(unmapped)'}")
+    open_leases = [(n, l) for n, l in leases.items() if l and l["_valid"]]
+    print(f"\nopen leases: {len(open_leases)}")
+    for name, lease in open_leases:
+        print(f"  {name:<20} {fmt_delta(lease['_expires'] - now()):<8} "
+              f"{lease.get('project') or '(no project)'} — {lease.get('reason', '')[:50]}")
+    stale = [n for n, l in open_leases if not any(p["project"] == l.get("project") for p in projects)]
+    if stale:
+        print(f"\n{WARN} leases with no matching registered project: {', '.join(stale)}")
+        print("  These are candidates for revocation (sbx revoke <name>).")
+    return 0
+
+
+def cmd_audit(args) -> int:
+    if not AUDIT_LOG.exists():
+        print("no audit log yet")
+        return 0
+    lines = [ln for ln in AUDIT_LOG.read_text().splitlines() if ln.strip()]
+    # Verify the hash chain: a removed or edited record breaks the link.
+    broken = []
+    prev = "genesis"
+    for i, line in enumerate(lines):
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            broken.append(i + 1)
+            continue
+        if rec.get("prev") != prev:
+            broken.append(i + 1)
+        prev = hashlib.sha256(line.encode()).hexdigest()[:16]
+
+    for line in lines[-args.tail:]:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            print(f"{BAD} unparseable record: {line[:80]}")
+            continue
+        ts = rec.get("ts", "")[:19]
+        extra = " ".join(f"{k}={v}" for k, v in sorted(rec.items())
+                         if k not in ("ts", "event", "actor", "host", "prev"))
+        print(f"{ts}  {rec.get('event',''):<7} {rec.get('sandbox',''):<18} "
+              f"{rec.get('actor',''):<12} {extra}")
+    if broken:
+        print(f"\n{BAD} audit chain broken at line(s) {broken} — "
+              f"records were edited or removed")
+        return 1
+    print(f"\n{OK} audit chain intact ({len(lines)} record(s))")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="sbx", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("list"); sp.set_defaults(func=cmd_list)
+    sp = sub.add_parser("show"); sp.add_argument("sandbox"); sp.set_defaults(func=cmd_show)
+    sp = sub.add_parser("validate"); sp.set_defaults(func=cmd_validate)
+
+    sp = sub.add_parser("inflight", help="registered projects vs open leases")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_inflight)
+
+    sp = sub.add_parser("grant", help="issue a JIT lease")
+    sp.add_argument("sandbox")
+    sp.add_argument("--reason", required=True)
+    sp.add_argument("--ttl")
+    sp.add_argument("--project", help="Hermes/Linear project this access is for")
+    sp.add_argument("--env", action="append", help="secret to forward (must be in allow_env)")
+    sp.set_defaults(func=cmd_grant)
+
+    sp = sub.add_parser("revoke"); sp.add_argument("sandbox")
+    sp.add_argument("--down", action="store_true", help="also stop the sandbox")
+    sp.set_defaults(func=cmd_revoke)
+
+    sp = sub.add_parser("leases"); sp.set_defaults(func=cmd_leases)
+
+    sp = sub.add_parser("render", help="write mise.toml / devbox.json")
+    sp.add_argument("sandbox"); sp.add_argument("--print", action="store_true")
+    sp.set_defaults(func=cmd_render)
+
+    sp = sub.add_parser("up")
+    sp.add_argument("sandbox")
+    sp.add_argument("--repo", action="append", default=[], help="extra repo to mount")
+    sp.add_argument("--read-only", action="store_true", help="mount repos ro")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_up)
+
+    sp = sub.add_parser("shell"); sp.add_argument("sandbox"); sp.set_defaults(func=cmd_shell)
+
+    sp = sub.add_parser("exec")
+    sp.add_argument("sandbox")
+    sp.add_argument("command", nargs=argparse.REMAINDER)
+    sp.set_defaults(func=cmd_exec)
+
+    sp = sub.add_parser("down"); sp.add_argument("sandbox"); sp.set_defaults(func=cmd_down)
+
+    sp = sub.add_parser("audit"); sp.add_argument("--tail", type=int, default=25)
+    sp.set_defaults(func=cmd_audit)
+
+    args = p.parse_args(argv)
+    if getattr(args, "command", None) and args.command and args.command[0] == "--":
+        args.command = args.command[1:]
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
