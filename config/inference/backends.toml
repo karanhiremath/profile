@@ -218,14 +218,21 @@ model = "vllm-local"
 
 
 # ───────────────────── local: DFlash 2 speculative decoding ───────────────────
-# DFlash 2 (https://inco.ai/blog/dflash2/) is a speculative-decoding method:
-# a small DRAFTER proposes a block of tokens in parallel, the TARGET model
-# verifies them in one forward pass. Every dflash2-* backend therefore names
-# BOTH `model.target` and `model.draft`, and is only meaningful when compared
-# against the same target running autoregressively (see `inf bench --baseline`).
+# DFlash 2 (https://inco.ai/blog/dflash2/) is a speculative-decoding method: a
+# small DRAFTER proposes a block of tokens in parallel and the TARGET verifies
+# them in one forward pass. Every dflash2-* backend names BOTH model.target and
+# model.draft, and is only meaningful next to the same target running
+# autoregressively — see `inf bench`, which refuses to call a speculative
+# number a speedup without its control.
+#
+# Flags below are transcribed from the upstream post per backend; they differ
+# between runtimes (vLLM takes one --speculative-config JSON blob, llama.cpp
+# takes --spec-type/--spec-draft-n-max, SGLang takes --speculative-*). Do not
+# "normalize" them. num_speculative_tokens is 7 upstream for vLLM/llama.cpp and
+# 8 for SGLang; that difference is intentional.
 
 [backends.dflash2-qwen-llamacpp]
-description = "Qwen3.8-27B + DFlash2 drafter on llama.cpp (DFlash branch), GGUF-quantized, in a sandbox container. Primary local weekend target — runs on a laptop."
+description = "Qwen3.8-27B + DFlash2 drafter on llama.cpp (PR #27342), Q4_K_M GGUF, in a sandbox container. Primary local target — runs on a laptop, CUDA or Metal."
 kind = "local"
 runtime = "llamacpp"
 api = "openai-chat"
@@ -243,12 +250,13 @@ health_path = "/health"
 api_key_default = "none"
 [backends.dflash2-qwen-llamacpp.model]
 served_name = "qwen3.8-27b-dflash2"
-target = "Qwen/Qwen3.8-27B"
-draft = "incoai/Qwen3.8-27B-DFlash2"
+# llama.cpp pulls both halves straight from HF with -hf / -hfd.
+target = "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"
+draft = "incoai/Qwen3.8-27B-DFlash2-GGUF:Q4_K_M"
 quantization = "Q4_K_M"
 [backends.dflash2-qwen-llamacpp.speculative_config]
-algorithm = "DFLASH"
-num_speculative_tokens = 8
+algorithm = "draft-dflash"
+num_speculative_tokens = 7
 baseline_backend = "qwen-llamacpp-baseline"
 [backends.dflash2-qwen-llamacpp.capabilities]
 streaming = true
@@ -259,15 +267,19 @@ developer_role = false
 engine = "auto"
 image = "localhost/inference/llamacpp-dflash2:dev"
 build_context = "{profile_dir}/config/inference/runtimes/llamacpp-dflash2"
-gpus = "none"
+# CUDA image — Linux + NVIDIA only. On Apple silicon use
+# dflash2-qwen-llamacpp-metal instead: a container on macOS cannot reach Metal.
+gpus = "all"
 cpus = "8.0"
-memory = "48g"
+memory = "32g"
 ports = ["{endpoint.port}:8081"]
-volumes = ["{cache_dir}/gguf:/models"]
+volumes = ["{cache_dir}/hf:/root/.cache/llama.cpp"]
+env = { HF_TOKEN = "@HF_TOKEN", LLAMA_CACHE = "/root/.cache/llama.cpp" }
 args = [
-  "--model", "/models/{model.served_name}.gguf",
-  "--model-draft", "/models/{model.served_name}-draft.gguf",
-  "--draft-max", "8",
+  "-hf", "{model.target}",
+  "-hfd", "{model.draft}",
+  "--spec-type", "draft-dflash",
+  "--spec-draft-n-max", "7",
   "--host", "0.0.0.0",
   "--port", "8081",
   "--ctx-size", "16384",
@@ -282,7 +294,7 @@ model = "qwen3.8-27b-dflash2"
 
 
 [backends.qwen-llamacpp-baseline]
-description = "Same Qwen3.8-27B GGUF on llama.cpp with NO drafter. The autoregressive control for DFlash2 speedup claims."
+description = "The same Qwen3.8-27B GGUF on llama.cpp with NO drafter. The autoregressive control every DFlash2 speedup claim is measured against."
 kind = "local"
 runtime = "llamacpp"
 api = "openai-chat"
@@ -298,7 +310,7 @@ health_path = "/health"
 api_key_default = "none"
 [backends.qwen-llamacpp-baseline.model]
 served_name = "qwen3.8-27b-baseline"
-target = "Qwen/Qwen3.8-27B"
+target = "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"
 quantization = "Q4_K_M"
 [backends.qwen-llamacpp-baseline.capabilities]
 streaming = true
@@ -309,13 +321,16 @@ developer_role = false
 engine = "auto"
 image = "localhost/inference/llamacpp-dflash2:dev"
 build_context = "{profile_dir}/config/inference/runtimes/llamacpp-dflash2"
-gpus = "none"
+gpus = "all"
 cpus = "8.0"
-memory = "48g"
+memory = "32g"
 ports = ["{endpoint.port}:8081"]
-volumes = ["{cache_dir}/gguf:/models"]
+volumes = ["{cache_dir}/hf:/root/.cache/llama.cpp"]
+env = { HF_TOKEN = "@HF_TOKEN", LLAMA_CACHE = "/root/.cache/llama.cpp" }
+# Identical to the speculative backend minus --spec-*, so the comparison
+# isolates speculative decoding and nothing else.
 args = [
-  "--model", "/models/qwen3.8-27b-dflash2.gguf",
+  "-hf", "{model.target}",
   "--host", "0.0.0.0",
   "--port", "8081",
   "--ctx-size", "16384",
@@ -323,54 +338,98 @@ args = [
 ]
 
 
-[backends.dflash2-qwen-omlx]
-description = "Qwen3.8-27B + DFlash2 on oMLX — native Apple-silicon path, no container. Fastest route on an M-series Mac with >=64GB unified memory."
+[backends.dflash2-qwen-llamacpp-metal]
+description = "Qwen3.8-27B + DFlash2 on a NATIVE Metal llama.cpp build. The Apple-silicon path — not containerized, because podman on macOS has no Metal access."
 kind = "local"
-runtime = "omlx"
+runtime = "llamacpp"
 api = "openai-chat"
 cost_class = "free"
 data_boundary = "public"
 speculative = true
 platforms = ["darwin-arm64"]
-[backends.dflash2-qwen-omlx.endpoint]
+[backends.dflash2-qwen-llamacpp-metal.endpoint]
 scheme = "http"
 host = "127.0.0.1"
-port = 8083
+host_env = "INF_DFLASH2_METAL_HOST"
+port = 8084
 path = "/v1"
-health_path = "/v1/models"
-[backends.dflash2-qwen-omlx.auth]
+health_path = "/health"
+[backends.dflash2-qwen-llamacpp-metal.auth]
 api_key_default = "none"
-[backends.dflash2-qwen-omlx.model]
-served_name = "qwen3.8-27b-dflash2-mlx"
-target = "Qwen/Qwen3.8-27B"
-draft = "incoai/Qwen3.8-27B-DFlash2"
-quantization = "4bit"
-[backends.dflash2-qwen-omlx.speculative_config]
-algorithm = "DFLASH"
-num_speculative_tokens = 8
-[backends.dflash2-qwen-omlx.capabilities]
+[backends.dflash2-qwen-llamacpp-metal.model]
+served_name = "qwen3.8-27b-dflash2-metal"
+target = "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"
+draft = "incoai/Qwen3.8-27B-DFlash2-GGUF:Q4_K_M"
+quantization = "Q4_K_M"
+[backends.dflash2-qwen-llamacpp-metal.speculative_config]
+algorithm = "draft-dflash"
+num_speculative_tokens = 7
+baseline_backend = "qwen-llamacpp-metal-baseline"
+[backends.dflash2-qwen-llamacpp-metal.capabilities]
 streaming = true
 tools = true
 reasoning_effort = false
 developer_role = false
-[backends.dflash2-qwen-omlx.native]
+[backends.dflash2-qwen-llamacpp-metal.native]
+# Built by bin/inference/build-llamacpp-metal, which verifies the binary
+# actually advertises --spec-type before claiming DFlash support.
 up = [
-  "omlx", "server",
-  "--model", "{model.target}",
-  "--draft-model", "{model.draft}",
-  "--speculative-algorithm", "DFLASH",
-  "--num-draft-tokens", "8",
-  "--quantize", "{model.quantization}",
+  "llama-server-dflash2",
+  "-hf", "{model.target}",
+  "-hfd", "{model.draft}",
+  "--spec-type", "draft-dflash",
+  "--spec-draft-n-max", "7",
   "--host", "127.0.0.1",
   "--port", "{endpoint.port}",
+  "--ctx-size", "16384",
+  "--alias", "{model.served_name}",
 ]
-[backends.dflash2-qwen-omlx.bindings.pi]
-provider = "dflash2-mlx"
-model_id = "qwen3.8-27b-dflash2-mlx"
+[backends.dflash2-qwen-llamacpp-metal.bindings.pi]
+provider = "dflash2-metal"
+model_id = "qwen3.8-27b-dflash2-metal"
+[backends.dflash2-qwen-llamacpp-metal.bindings.hermes]
+provider = "openai-compat"
+model = "qwen3.8-27b-dflash2-metal"
+
+
+[backends.qwen-llamacpp-metal-baseline]
+description = "Native Metal llama.cpp on the same GGUF with no drafter. The control for the Metal DFlash2 measurement."
+kind = "local"
+runtime = "llamacpp"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+platforms = ["darwin-arm64"]
+[backends.qwen-llamacpp-metal-baseline.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+port = 8085
+path = "/v1"
+health_path = "/health"
+[backends.qwen-llamacpp-metal-baseline.auth]
+api_key_default = "none"
+[backends.qwen-llamacpp-metal-baseline.model]
+served_name = "qwen3.8-27b-metal-baseline"
+target = "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"
+quantization = "Q4_K_M"
+[backends.qwen-llamacpp-metal-baseline.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.qwen-llamacpp-metal-baseline.native]
+up = [
+  "llama-server-dflash2",
+  "-hf", "{model.target}",
+  "--host", "127.0.0.1",
+  "--port", "{endpoint.port}",
+  "--ctx-size", "16384",
+  "--alias", "{model.served_name}",
+]
 
 
 [backends.dflash2-qwen-vllm]
-description = "Qwen3.8-27B + DFlash2 drafter on the vLLM DFlash branch, GPU. Sized for a single 24GB card (GCP L4) via FP8/AWQ — see SCHEMA.md capacity note."
+description = "Qwen3.8-27B + DFlash2 on the vLLM DFlash PR branch (#52816), GPU. Sized for one 24GB card (GCP L4) — see the capacity note in SCHEMA.md."
 kind = "local"
 runtime = "vllm"
 api = "openai-chat"
@@ -391,12 +450,13 @@ api_key_default = "none"
 served_name = "qwen3.8-27b-dflash2"
 target = "Qwen/Qwen3.8-27B"
 draft = "incoai/Qwen3.8-27B-DFlash2"
-# 27B at bf16 is ~54GB and will NOT fit a 24GB L4. 4-bit AWQ lands ~15GB and
-# leaves headroom for the drafter + KV cache. Override for bigger cards.
+# Qwen3.8-27B at bf16 is ~54GB of weights and will NOT fit a 24GB L4. 4-bit AWQ
+# lands near 15GB and leaves room for the drafter plus KV cache. Drop this to ""
+# (and raise gpu memory) on an 80GB card where bf16 fits.
 quantization = "awq"
 [backends.dflash2-qwen-vllm.speculative_config]
-algorithm = "DFLASH"
-num_speculative_tokens = 8
+algorithm = "dflash"
+num_speculative_tokens = 7
 tensor_parallel_size = 1
 baseline_backend = "vllm-local"
 [backends.dflash2-qwen-vllm.capabilities]
@@ -414,16 +474,17 @@ shm_size = "8g"
 ports = ["{endpoint.port}:8000"]
 volumes = ["{cache_dir}/hf:/root/.cache/huggingface"]
 env = { HF_TOKEN = "@HF_TOKEN" }
+# vLLM takes ONE JSON blob for the whole speculative config, not flag-per-field.
 args = [
-  "--model", "{model.target}",
+  "serve", "{model.target}",
   "--served-model-name", "{model.served_name}",
   "--quantization", "{model.quantization}",
-  "--speculative-algorithm", "DFLASH",
-  "--speculative-draft-model-path", "{model.draft}",
-  "--num-speculative-tokens", "8",
+  "--speculative-config", '{"method": "dflash", "model": "incoai/Qwen3.8-27B-DFlash2", "num_speculative_tokens": 7}',
   "--tensor-parallel-size", "1",
   "--max-model-len", "8192",
   "--gpu-memory-utilization", "0.92",
+  "--host", "0.0.0.0",
+  "--port", "8000",
 ]
 [backends.dflash2-qwen-vllm.bindings.pi]
 provider = "dflash2-vllm"
@@ -434,7 +495,7 @@ model = "qwen3.8-27b-dflash2"
 
 
 [backends.dflash2-glimmer-sglang]
-description = "Muse-Glimmer-30B + DFlash2 on SGLang. Multi-GPU; the reference configuration from the DFlash2 post."
+description = "Muse-Glimmer-30B + DFlash2 on SGLang. The reference configuration from the upstream post; multi-GPU."
 kind = "local"
 runtime = "sglang"
 api = "openai-chat"
@@ -456,6 +517,7 @@ target = "incoai/Muse-Glimmer-30B"
 draft = "incoai/Muse-Glimmer-30B-DFlash2"
 [backends.dflash2-glimmer-sglang.speculative_config]
 algorithm = "DFLASH"
+# 8 upstream for SGLang, unlike vLLM/llama.cpp's 7.
 num_speculative_tokens = 8
 tensor_parallel_size = 2
 [backends.dflash2-glimmer-sglang.capabilities]
@@ -477,6 +539,7 @@ args = [
   "--model-path", "{model.target}",
   "--speculative-algorithm", "DFLASH",
   "--speculative-draft-model-path", "{model.draft}",
+  "--speculative-num-draft-tokens", "8",
   "--served-model-name", "{model.served_name}",
   "--tp", "2",
   "--host", "0.0.0.0",
@@ -485,6 +548,99 @@ args = [
 [backends.dflash2-glimmer-sglang.bindings.pi]
 provider = "dflash2-sglang"
 model_id = "muse-glimmer-30b-dflash2"
+
+
+[backends.dflash2-qwen-ollama]
+description = "Qwen3.8-27B + DFlash2 via the Ollama dflash2 branch with an int4-quantized drafter. Host build, not containerized — Ollama owns its own daemon."
+kind = "local"
+runtime = "ollama"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+speculative = true
+[backends.dflash2-qwen-ollama.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_OLLAMA_HOST"
+port = 11434
+path = "/v1"
+health_path = "/api/tags"
+[backends.dflash2-qwen-ollama.auth]
+api_key_default = "ollama"
+[backends.dflash2-qwen-ollama.model]
+served_name = "qwen38-dflash2"
+target = "Qwen/Qwen3.8-27B"
+draft = "incoai/Qwen3.8-27B-DFlash2"
+quantization = "int4"
+[backends.dflash2-qwen-ollama.speculative_config]
+algorithm = "dflash"
+num_speculative_tokens = 7
+baseline_backend = "ollama-local"
+[backends.dflash2-qwen-ollama.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.dflash2-qwen-ollama.manual]
+# The dflash2 branch has to be built from source and the model registered once;
+# `inf up` prints these steps rather than pretending to automate a source build
+# of someone else's fork.
+reason = "requires building the Ollama dflash2 branch from source"
+steps = [
+  "git clone https://github.com/ollama/ollama && cd ollama && git fetch origin dflash2 && git checkout dflash2",
+  "cmake -B build . && cmake --build build --parallel 8",
+  "./ollama create qwen38-dflash2 --experimental --draft-quantize int4",
+  "./ollama serve   # then: inf probe dflash2-qwen-ollama",
+]
+[backends.dflash2-qwen-ollama.bindings.pi]
+provider = "dflash2-ollama"
+model_id = "qwen38-dflash2"
+
+
+[backends.dflash2-qwen-omlx]
+description = "Qwen3.8-27B 4-bit + DFlash2 drafter on oMLX (release 0.6.2-dflash2). Native Apple-silicon path; the app is GUI-configured, so setup is manual by design."
+kind = "local"
+runtime = "omlx"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+speculative = true
+platforms = ["darwin-arm64"]
+[backends.dflash2-qwen-omlx.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_OMLX_HOST"
+port = 8080
+path = "/v1"
+health_path = "/v1/models"
+[backends.dflash2-qwen-omlx.auth]
+api_key_default = "none"
+[backends.dflash2-qwen-omlx.model]
+served_name = "qwen3.8-27b-4bit"
+target = "mlx-community/Qwen3.8-27B-4bit"
+draft = "incoai/Qwen3.8-27B-DFlash2"
+quantization = "4bit"
+[backends.dflash2-qwen-omlx.speculative_config]
+algorithm = "dflash"
+# oMLX calls this the runtime block size, set in Model Manager.
+num_speculative_tokens = 5
+[backends.dflash2-qwen-omlx.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.dflash2-qwen-omlx.manual]
+reason = "oMLX ships as a prebuilt DMG configured through its GUI; there is no CLI to script"
+steps = [
+  "Download the oMLX 0.6.2-dflash2 release DMG and install it",
+  "Model Downloader: fetch target mlx-community/Qwen3.8-27B-4bit",
+  "Model Downloader: fetch drafter incoai/Qwen3.8-27B-DFlash2",
+  "Model Manager: set runtime block size 5 and verify mode 'dflash'",
+  "Start the oMLX server, then confirm the port with: inf probe dflash2-qwen-omlx",
+]
+[backends.dflash2-qwen-omlx.bindings.pi]
+provider = "dflash2-mlx"
+model_id = "qwen3.8-27b-4bit"
 
 
 # ────────────────────────────── generic template ──────────────────────────────

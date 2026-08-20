@@ -1,0 +1,33 @@
+# vLLM with DFlash 2 speculative decoding (upstream PR #52816).
+#
+# Installed from the PR ref rather than a release, because DFlash support is not
+# in a tagged vLLM yet. VLLM_PR is a build arg so this tracks upstream without
+# editing the Dockerfile, and pins reproducibly once the PR lands.
+ARG CUDA_IMAGE=docker.io/nvidia/cuda:12.4.1-devel-ubuntu22.04
+FROM ${CUDA_IMAGE}
+
+ARG VLLM_PR=52816
+ARG PYTHON_VERSION=3.12
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates build-essential \
+        python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3
+
+# The PR head is a moving target; record what was actually installed so a
+# benchmark result can be traced back to a build.
+RUN python3 -m pip install --no-cache-dir -U pip \
+    && python3 -m pip install --no-cache-dir -U \
+        "vllm @ git+https://github.com/vllm-project/vllm.git@refs/pull/${VLLM_PR}/head" \
+    && python3 -c "import vllm; print('vllm', vllm.__version__)" > /etc/vllm-build-ref \
+    && echo "from PR #${VLLM_PR}" >> /etc/vllm-build-ref
+
+ENV HF_HOME=/root/.cache/huggingface \
+    VLLM_LOGGING_LEVEL=INFO
+EXPOSE 8000
+
+# Registry args supply `serve <model> --speculative-config '{...}'`. vLLM takes
+# the whole speculative config as one JSON blob, unlike llama.cpp and SGLang.
+ENTRYPOINT ["vllm"]
+CMD ["--help"]

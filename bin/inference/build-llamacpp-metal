@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Build llama.cpp with DFlash 2 (upstream PR #27342) natively with Metal.
+#
+# This is the Apple-silicon path. It is deliberately NOT containerized: podman
+# on macOS runs a Linux VM with no access to Metal, so a containerized 27B model
+# falls back to CPU and loses far more than speculative decoding wins back.
+# Linux/NVIDIA hosts should use the container instead:
+#   inf up dflash2-qwen-llamacpp --build
+#
+# Installs to $INF_CACHE_DIR/llamacpp-dflash2 and symlinks llama-server so the
+# dflash2-qwen-llamacpp-metal backend can launch it.
+set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: bin/inference/build-llamacpp-metal [--ref <pr>] [--jobs N] [--force] [--help]
+
+  --ref <pr>   upstream llama.cpp PR number carrying DFlash 2 (default: 27342)
+  --jobs N     parallel build jobs (default: all cores)
+  --force      rebuild even if llama-server is already present
+USAGE
+}
+
+DFLASH_PR=27342
+JOBS=""
+FORCE=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --ref) DFLASH_PR="${2:?}"; shift 2 ;;
+        --jobs) JOBS="${2:?}"; shift 2 ;;
+        --force) FORCE=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "ERROR: this is the Metal build; on Linux use:" >&2
+    echo "         inf up dflash2-qwen-llamacpp --build" >&2
+    exit 1
+fi
+if [ "$(uname -m)" != "arm64" ]; then
+    echo "ERROR: Metal build requires Apple silicon (got $(uname -m))." >&2
+    exit 1
+fi
+
+for tool in git cmake; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "ERROR: $tool not found. Install Xcode CLT and: brew install cmake" >&2
+        exit 1
+    }
+done
+
+CACHE_DIR="${INF_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/inference}"
+SRC_DIR="${CACHE_DIR}/llamacpp-dflash2"
+BIN_DIR="${INF_BIN_DIR:-${HOME}/.local/bin}"
+JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
+
+mkdir -p "$CACHE_DIR" "$BIN_DIR"
+
+if [ -x "${SRC_DIR}/build/bin/llama-server" ] && [ "$FORCE" -eq 0 ]; then
+    echo "✓ already built: ${SRC_DIR}/build/bin/llama-server"
+    echo "  (re-run with --force to rebuild)"
+else
+    if [ -d "${SRC_DIR}/.git" ]; then
+        echo "Updating existing clone in ${SRC_DIR}..."
+        git -C "$SRC_DIR" fetch origin "pull/${DFLASH_PR}/head:dflash2" --force
+        git -C "$SRC_DIR" checkout dflash2
+        git -C "$SRC_DIR" reset --hard "dflash2"
+    else
+        echo "Cloning llama.cpp and fetching PR #${DFLASH_PR}..."
+        git clone --filter=blob:none https://github.com/ggml-org/llama.cpp.git "$SRC_DIR"
+        git -C "$SRC_DIR" fetch origin "pull/${DFLASH_PR}/head:dflash2"
+        git -C "$SRC_DIR" checkout dflash2
+    fi
+
+    git -C "$SRC_DIR" log -1 --format='build ref: %H %s' | tee "${SRC_DIR}/BUILD_REF"
+
+    echo "Building with Metal (-j${JOBS})..."
+    cmake -S "$SRC_DIR" -B "${SRC_DIR}/build" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_METAL=ON \
+        -DLLAMA_CURL=ON
+    cmake --build "${SRC_DIR}/build" --config Release -j"$JOBS" \
+        --target llama-server llama-cli
+fi
+
+ln -fns "${SRC_DIR}/build/bin/llama-server" "${BIN_DIR}/llama-server-dflash2"
+ln -fns "${SRC_DIR}/build/bin/llama-cli"    "${BIN_DIR}/llama-cli-dflash2"
+echo "✓ Linked llama-server-dflash2 → ${BIN_DIR}"
+
+if ! "${BIN_DIR}/llama-server-dflash2" --help 2>&1 | grep -q -- "--spec-type"; then
+    echo "" >&2
+    echo "⚠ WARNING: the built llama-server does not advertise --spec-type." >&2
+    echo "  PR #${DFLASH_PR} may have been rebased or renamed its flags upstream." >&2
+    echo "  Check the flag names and update speculative_config in the registry." >&2
+    exit 1
+fi
+echo "✓ --spec-type present; DFlash 2 support is in this build"
+
+cat <<NEXT
+
+Built. Next:
+
+  inf up dflash2-qwen-llamacpp-metal        # starts llama-server with the drafter
+  inf probe dflash2-qwen-llamacpp-metal     # does it satisfy the harness contract
+  inf bench dflash2-qwen-llamacpp-metal     # speedup vs the no-drafter baseline
+  inf bind pi dflash2-qwen-llamacpp-metal   # point pi at it
+
+First run downloads ~17GB of GGUF weights (target + drafter) into
+${CACHE_DIR}.
+NEXT

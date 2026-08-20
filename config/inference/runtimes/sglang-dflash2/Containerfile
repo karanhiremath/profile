@@ -1,0 +1,30 @@
+# SGLang with DFlash 2 speculative decoding.
+#
+# Upstream installs DFlash support straight from git main
+# (sglang[all] @ git+...#subdirectory=python), so SGLANG_REF pins which commit
+# a given image — and therefore a given benchmark number — came from.
+ARG CUDA_IMAGE=docker.io/nvidia/cuda:12.4.1-devel-ubuntu22.04
+FROM ${CUDA_IMAGE}
+
+ARG SGLANG_REF=main
+ARG PYTHON_VERSION=3.12
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates build-essential \
+        python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3
+
+RUN python3 -m pip install --no-cache-dir -U pip \
+    && python3 -m pip install --no-cache-dir -U \
+        "sglang[all] @ git+https://github.com/sgl-project/sglang.git@${SGLANG_REF}#subdirectory=python" \
+    && python3 -c "import sglang; print('sglang', sglang.__version__)" > /etc/sglang-build-ref \
+    && echo "ref ${SGLANG_REF}" >> /etc/sglang-build-ref
+
+ENV HF_HOME=/root/.cache/huggingface
+EXPOSE 30000
+
+# Registry args supply --speculative-algorithm DFLASH plus the drafter path and
+# --speculative-num-draft-tokens (8 upstream for SGLang, vs 7 for vLLM).
+ENTRYPOINT ["python3", "-m", "sglang.launch_server"]
+CMD ["--help"]

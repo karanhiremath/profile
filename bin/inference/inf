@@ -59,7 +59,8 @@ CONTAINER_LABEL = "inf-backend"
 TOP_KEYS = {
     "description", "kind", "runtime", "api", "cost_class", "data_boundary",
     "speculative", "template", "platforms", "endpoint", "auth", "model",
-    "speculative_config", "capabilities", "sandbox", "native", "bindings", "notes",
+    "speculative_config", "capabilities", "sandbox", "native", "manual",
+    "bindings", "notes",
 }
 KINDS = {"local", "remote", "cloud"}
 APIS = {"openai-chat", "openai-codex", "anthropic", "cursor-cli"}
@@ -342,8 +343,11 @@ def cmd_validate(args) -> int:
             if not (ep.get("host") or ep.get("host_env")):
                 errors.append(f"{where} endpoint needs host or host_env")
         if table.get("kind") == "local" and table.get("runtime") not in ("none", "cursor-cli"):
-            if not (table.get("sandbox") or table.get("native")):
-                errors.append(f"{where} local backend needs a [.sandbox] or [.native] launch spec")
+            if not (table.get("sandbox") or table.get("native") or table.get("manual")):
+                errors.append(f"{where} local backend needs a [.sandbox], [.native] or [.manual] launch spec")
+        manual = table.get("manual") or {}
+        if manual and not manual.get("steps"):
+            errors.append(f"{where} [.manual] must list the steps an operator has to run")
         # Secret hygiene: a registry file must never carry a literal key.
         auth = table.get("auth") or {}
         default_key = str(auth.get("api_key_default", ""))
@@ -409,6 +413,11 @@ def cmd_doctor(args) -> int:
         if b.get("native"):
             exe = (b["native"].get("up") or ["?"])[0]
             checks.append((shutil.which(exe) is not None, f"{exe} on PATH"))
+        if b.get("manual"):
+            # Nothing to check on the host — an operator has to set it up. Report
+            # whether it is currently answering instead of claiming readiness.
+            reachable = bool(b.get("health_url")) and 200 <= http_json(b["health_url"], timeout=2)[0] < 300
+            checks.append((reachable, f"manual setup — {'serving now' if reachable else 'not serving (see: inf up ' + bid + ')'}"))
         if runtime == "cursor-cli":
             checks.append((shutil.which("cursor-agent") is not None, "cursor-agent on PATH"))
             key_env = (b.get("auth") or {}).get("api_key_env")
@@ -444,6 +453,15 @@ def cmd_up(args) -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     for sub in ("hf", "gguf"):
         (CACHE_DIR / sub).mkdir(parents=True, exist_ok=True)
+
+    if b.get("manual") and not (b.get("sandbox") or b.get("native")):
+        man = b["manual"]
+        print(f"{WARN} {b['id']} cannot be started automatically: {man.get('reason', 'manual setup required')}")
+        print("\nRun these once, then re-probe:\n")
+        for i, step in enumerate(man.get("steps", []), 1):
+            print(f"  {i}. {step}")
+        print(f"\nWhen it is serving:  inf probe {b['id']}")
+        return 0
 
     if b.get("native") and not b.get("sandbox"):
         cmd = [str(x) for x in b["native"]["up"]]

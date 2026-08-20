@@ -1,0 +1,57 @@
+# llama.cpp with DFlash 2 speculative decoding (upstream PR #27342).
+#
+# CUDA build — this image is for Linux hosts with an NVIDIA GPU (including the
+# GCP L4 box). It is deliberately NOT the Mac path: containers on macOS cannot
+# reach Metal, so a 27B model here would fall back to CPU in a VM and be far
+# slower than no speculation at all. For Apple silicon use the native Metal
+# build (bin/inference/build-llamacpp-metal) or the oMLX backend.
+#
+# Pinning: DFLASH_PR is upstream's PR number and LLAMACPP_REF the base commit it
+# is merged onto. Both are build args so a broken upstream rebase is a one-line
+# change, and an image can be rebuilt bit-identically later.
+ARG CUDA_IMAGE=docker.io/nvidia/cuda:12.4.1-devel-ubuntu22.04
+FROM ${CUDA_IMAGE} AS build
+
+ARG DFLASH_PR=27342
+ARG LLAMACPP_REF=master
+ARG CUDA_ARCHITECTURES=89
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git cmake build-essential curl libcurl4-openssl-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --filter=blob:none https://github.com/ggml-org/llama.cpp.git . \
+    && git fetch origin "pull/${DFLASH_PR}/head:dflash2" \
+    && git checkout dflash2 \
+    && git log -1 --format='llama.cpp dflash2 build: %H %s' > /BUILD_REF
+
+# CUDA_ARCHITECTURES defaults to 89 (L4 / Ada). Override for other cards:
+#   80 = A100, 86 = A10/3090, 90 = H100.
+RUN cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_CUDA=ON \
+        -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
+        -DLLAMA_CURL=ON \
+    && cmake --build build --config Release -j"$(nproc)" --target llama-server llama-cli
+
+FROM docker.io/nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libcurl4 curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 llama
+
+COPY --from=build /src/build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=build /src/build/bin/llama-cli    /usr/local/bin/llama-cli
+COPY --from=build /BUILD_REF                  /etc/llamacpp-build-ref
+
+# -hf / -hfd download the target and drafter GGUFs into LLAMA_CACHE, which the
+# caller mounts so weights survive container replacement.
+ENV LLAMA_CACHE=/root/.cache/llama.cpp
+EXPOSE 8081
+
+# `inf up` supplies -hf/-hfd/--spec-type/--spec-draft-n-max from the registry,
+# so the flags live in one place and the baseline differs only by omitting them.
+ENTRYPOINT ["llama-server"]
+CMD ["--help"]
