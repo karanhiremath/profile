@@ -74,9 +74,50 @@ mkdir -p "${HOME}/.config/mise"
 ln -fns "${PROFILE_DIR}"/config/mise/config.toml "${HOME}"/.config/mise/config.toml
 echo "✓ Linked mise config → ~/.config/mise/config.toml"
 
-# --- Provision the declared tools (node, pnpm, neovim) ---
+# --- Provision the declared tools, one at a time ---
+# `mise install` aborts the whole run on the first tool it cannot fetch, so one
+# upstream outage (or a proxy blocking one release asset) leaves the machine with
+# nothing provisioned. Install each tool separately, keep going, and report a
+# summary — a missing editor should not block node/pnpm/uv/python.
 echo "Installing tools declared in mise config..."
-mise install
+mise_config="${PROFILE_DIR}/config/mise/config.toml"
+# The config is the authoritative list of what SHOULD be installed. `mise ls`
+# omits any tool whose version it cannot resolve, which would silently skip the
+# one tool that is broken instead of reporting it.
+tools="$(python3 "${PROFILE_DIR}/bin/mise/config-tools" "$mise_config" 2>/dev/null || true)"
+if [ -z "$tools" ]; then
+    # Fresh box: mise is what provides Python, so tomllib may not exist yet.
+    tools="$(sed -n '/^\[tools\]/,/^\[[^t]/p' "$mise_config" \
+        | sed -n 's/^\([a-zA-Z0-9_-]*\) *=.*/\1/p')"
+fi
+
+failed=""
+installed=""
+for tool in $tools; do
+    printf '  %-10s ' "$tool"
+    if mise install "$tool" >/dev/null 2>&1; then
+        echo "✓"
+        installed="${installed} ${tool}"
+    else
+        echo "✗ (see: mise install ${tool})"
+        failed="${failed} ${tool}"
+    fi
+done
+
+echo ""
+echo "provisioned:${installed:- none}"
+if [ -n "$failed" ]; then
+    echo "FAILED:${failed}"
+    echo ""
+    echo "A tool can fail for reasons outside this repo — an upstream release"
+    echo "pulled, a plugin's API changed, or egress to the release host blocked."
+    if [ "${MISE_ALLOW_PARTIAL:-0}" = "1" ] || [ "${1:-}" = "--allow-partial" ]; then
+        echo "Continuing anyway (--allow-partial / MISE_ALLOW_PARTIAL=1)."
+    else
+        echo "Re-run with --allow-partial to accept a partial provision."
+        exit 1
+    fi
+fi
 
 install_messages "end" "$app_name"
 

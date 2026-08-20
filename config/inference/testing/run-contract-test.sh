@@ -100,6 +100,54 @@ for b in stub-fast stub-baseline; do
     fi
 done
 
+# ── 4b. probe rejects a stream with no terminal finish_reason ────────────────
+# Regression guard. probe once passed a backend whose SSE stream never sent a
+# terminal finish_reason; pi then failed every turn with "Stream ended without
+# finish_reason". Counting SSE chunks is not enough — the stream must terminate.
+head_ "4b. probe rejects an unterminated stream"
+python3 "$STUB" --port 8201 --model stub-model --speed 2000 --broken-stream \
+    >"${WORK}/stub-broken.log" 2>&1 &
+PIDS+=("$!")
+for _ in $(seq 1 40); do
+    curl -sf "http://127.0.0.1:8201/health" >/dev/null 2>&1 && break
+    sleep 0.25
+done
+cat > "${WORK}/broken.toml" <<'BROKEN'
+schema_version = 1
+[backends.stub-broken]
+description = "Streams without a terminal finish_reason; probe must reject it."
+kind = "local"
+runtime = "none"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+[backends.stub-broken.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+port = 8201
+path = "/v1"
+health_path = "/health"
+[backends.stub-broken.auth]
+api_key_default = "none"
+[backends.stub-broken.model]
+served_name = "stub-model"
+[backends.stub-broken.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+BROKEN
+if INF_REGISTRY_PATH="${WORK}/broken.toml" "$INF" probe stub-broken \
+        >"${WORK}/probe-broken.log" 2>&1; then
+    bad "probe PASSED a backend whose stream never terminates (pi would fail every turn)"
+else
+    if grep -q "finish_reason" "${WORK}/probe-broken.log"; then
+        ok "probe rejected it and named the reason (missing terminal finish_reason)"
+    else
+        ok "probe rejected it"
+    fi
+fi
+
 # ── 5. bench + speculative speedup ────────────────────────────────────────────
 head_ "5. bench computes speculative speedup vs baseline"
 if "$INF" bench stub-fast --runs 2 --max-tokens 96 --out "${WORK}/bench.json" \

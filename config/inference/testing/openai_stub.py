@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -30,6 +31,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *a):  # quiet
         pass
+
+    def _trace(self, label: str, obj) -> None:
+        """Dump requests/responses when --log-requests is set. Real harnesses
+        send fields a hand-written probe does not, so being able to see the
+        actual request is how compat gaps get found."""
+        if not ARGS.log_requests:
+            return
+        print(f"[{label}] {json.dumps(obj)[:1200]}", file=sys.stderr, flush=True)
 
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
         self.send_response(code)
@@ -57,13 +66,23 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send(400, b'{"error":"bad json"}')
             return
-        n = min(int(req.get("max_tokens") or 32), 4096)
+        self._trace("request", {k: v for k, v in req.items() if k != "messages"})
+        self._trace("messages", req.get("messages"))
+        # Real clients send max_completion_tokens (the current OpenAI field);
+        # older ones send max_tokens. A server that honours only one of them
+        # silently ignores the caller's limit.
+        limit = req.get("max_completion_tokens") or req.get("max_tokens") or 32
+        n = max(1, min(int(limit), 512))
         delay = 1.0 / ARGS.speed if ARGS.speed > 0 else 0.0
+        want_usage = bool((req.get("stream_options") or {}).get("include_usage"))
 
-        if req.get("tools"):
+        # stream wins over tools. A coding agent sends BOTH on every turn, and
+        # answering a streaming request with a non-SSE body is exactly the bug
+        # this fixture exists to catch.
+        if req.get("stream"):
+            self._stream(n, delay, tools=bool(req.get("tools")), want_usage=want_usage)
+        elif req.get("tools"):
             self._tool_call(req)
-        elif req.get("stream"):
-            self._stream(n, delay)
         else:
             self._blocking(req, n, delay)
 
@@ -94,19 +113,58 @@ class Handler(BaseHTTPRequestHandler):
             "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
         }).encode())
 
-    def _stream(self, n: int, delay: float) -> None:
+    def _sse(self, obj) -> None:
+        self.wfile.write(f"data: {json.dumps(obj)}\n\n".encode())
+        self.wfile.flush()
+
+    def _stream(self, n: int, delay: float, *, tools: bool = False,
+                want_usage: bool = False) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
+
+        base = {"id": "stub-3", "object": "chat.completion.chunk", "model": ARGS.model}
+        # Role-only opening delta, as real servers send.
+        self._sse({**base, "choices": [{"index": 0, "delta": {"role": "assistant"},
+                                        "finish_reason": None}]})
         for i in range(n):
-            chunk = {"id": "stub-3", "object": "chat.completion.chunk", "model": ARGS.model,
-                     "choices": [{"index": 0, "delta": {"content": WORDS[i % len(WORDS)] + " "}}]}
-            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
-            self.wfile.flush()
+            self._sse({**base, "choices": [
+                {"index": 0, "delta": {"content": WORDS[i % len(WORDS)] + " "},
+                 "finish_reason": None}]})
             if delay:
                 time.sleep(delay)
+
+        # finish_reason must match what was actually emitted. Claiming
+        # "tool_calls" without streaming any tool_call deltas makes an agent loop
+        # forever waiting for calls that never arrive, so the default is "stop"
+        # even when tools were offered — a model declining to call a tool is a
+        # normal turn. --stream-tool-calls exercises the streamed-tool-call path
+        # deliberately, emitting the deltas AND the matching finish_reason.
+        if tools and ARGS.stream_tool_calls:
+            self._sse({**base, "choices": [{"index": 0, "finish_reason": None, "delta": {
+                "tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                                "function": {"name": "read", "arguments": ""}}]}}]})
+            self._sse({**base, "choices": [{"index": 0, "finish_reason": None, "delta": {
+                "tool_calls": [{"index": 0,
+                                "function": {"arguments": '{"path":"README.md"}'}}]}}]})
+            self._sse({**base, "choices": [
+                {"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
+        elif ARGS.broken_stream:
+            # Regression fixture: end the stream with no terminal finish_reason,
+            # exactly the shape that made pi fail with "Stream ended without
+            # finish_reason". `inf probe` must reject this.
+            pass
+        else:
+            self._sse({**base, "choices": [
+                {"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        if want_usage:
+            # stream_options.include_usage asks for a final usage-only chunk with
+            # an empty choices array.
+            self._sse({**base, "choices": [],
+                       "usage": {"prompt_tokens": 12, "completion_tokens": n,
+                                 "total_tokens": 12 + n}})
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 
@@ -118,6 +176,13 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--model", default="stub-model")
     ap.add_argument("--speed", type=float, default=500.0, help="emitted tokens/sec")
+    ap.add_argument("--log-requests", action="store_true",
+                    help="dump each request to stderr (for harness compat debugging)")
+    ap.add_argument("--broken-stream", action="store_true",
+                    help="omit the terminal finish_reason chunk (regression fixture)")
+    ap.add_argument("--stream-tool-calls", action="store_true",
+                    help="emit streamed tool_call deltas + finish_reason=tool_calls "
+                         "(off by default so agent loops terminate)")
     ARGS = ap.parse_args()
     srv = ThreadingHTTPServer((ARGS.host, ARGS.port), Handler)
     print(f"stub: {ARGS.model} on http://{ARGS.host}:{ARGS.port} at {ARGS.speed} tok/s", flush=True)

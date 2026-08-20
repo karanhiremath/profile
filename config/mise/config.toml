@@ -7,3 +7,7 @@ node = "lts"
 pnpm = "latest"
 neovim = "latest"
 uv = "latest"
+# `inf` and `sbx` parse TOML with the stdlib tomllib, which needs 3.11+. Pin a
+# version rather than "latest" so a harness config that validates on one machine
+# validates on the other.
+python = "3.12"

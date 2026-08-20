@@ -255,8 +255,15 @@ def http_json(url: str, *, payload: dict | None = None, api_key: str = "", timeo
         return 0, str(exc)
 
 
-def http_stream(url: str, payload: dict, api_key: str = "", timeout: float = 60.0) -> tuple[int, int, str]:
-    """Return (status, sse_chunk_count, first_error_or_text)."""
+def http_stream(url: str, payload: dict, api_key: str = "",
+                timeout: float = 60.0) -> tuple[int, int, bool, str]:
+    """Return (status, sse_chunk_count, terminated_cleanly, error).
+
+    terminated_cleanly means the stream ended the way a real OpenAI-compatible
+    server ends one: a chunk carrying a non-null finish_reason. Clients require
+    it — pi reports "Stream ended without finish_reason" and fails the turn — so
+    counting bytes is not enough to call a backend usable.
+    """
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "text/event-stream")
@@ -265,15 +272,27 @@ def http_stream(url: str, payload: dict, api_key: str = "", timeout: float = 60.
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             chunks = 0
+            finished = False
             for raw in resp:
                 line = raw.decode(errors="replace").strip()
-                if line.startswith("data:") and line != "data: [DONE]":
-                    chunks += 1
-            return resp.status, chunks, ""
+                if not line.startswith("data:"):
+                    continue
+                body = line[5:].strip()
+                if body == "[DONE]":
+                    continue
+                chunks += 1
+                try:
+                    parsed = json.loads(body)
+                except json.JSONDecodeError:
+                    continue
+                for choice in parsed.get("choices") or []:
+                    if choice.get("finish_reason"):
+                        finished = True
+            return resp.status, chunks, finished, ""
     except urllib.error.HTTPError as exc:
-        return exc.code, 0, exc.read().decode(errors="replace")[:200]
+        return exc.code, 0, False, exc.read().decode(errors="replace")[:200]
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return 0, 0, str(exc)
+        return 0, 0, False, str(exc)
 
 
 # ─────────────────────────────── subcommands ──────────────────────────────────
@@ -645,10 +664,43 @@ def cmd_probe(args) -> int:
         content = (((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
     results.append(("chat", bool(content), f"{code}: {content[:60] or str(body)[:120]}"))
 
-    status, chunks, err = http_stream(f"{base}/chat/completions", {
+    status, chunks, finished, err = http_stream(f"{base}/chat/completions", {
         "model": model, "messages": [{"role": "user", "content": "Count 1 to 5."}],
         "max_tokens": 48, "temperature": 0, "stream": True}, api_key=key, timeout=timeout * 3)
-    results.append(("stream", chunks > 1, f"{status}: {chunks} SSE chunk(s)" + (f" — {err[:80]}" if err else "")))
+    stream_ok = chunks > 1 and finished
+    detail = f"{status}: {chunks} SSE chunk(s)"
+    if chunks > 1 and not finished:
+        detail += ", no terminal finish_reason — clients will fail the turn"
+    if err:
+        detail += f" — {err[:80]}"
+    results.append(("stream", stream_ok, detail))
+
+    # The shape a coding agent actually sends on EVERY turn: streaming, with
+    # tools declared, max_completion_tokens rather than max_tokens, and
+    # stream_options asking for usage. Backends commonly handle streaming and
+    # tools individually but answer this combination with a non-SSE body, which
+    # fails the turn in pi with "Stream ended without finish_reason". Checking
+    # the two separately is not enough.
+    if (b.get("capabilities") or {}).get("tools"):
+        status, chunks, finished, err = http_stream(f"{base}/chat/completions", {
+            "model": model,
+            "messages": [{"role": "user", "content": "Read pyproject.toml using the tool."}],
+            "max_completion_tokens": 64, "temperature": 0, "stream": True,
+            "stream_options": {"include_usage": True},
+            "tools": [{"type": "function", "function": {
+                "name": "read", "description": "Read a file",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}},
+                               "required": ["path"]}}}],
+        }, api_key=key, timeout=timeout * 3)
+        agent_ok = chunks > 0 and finished
+        detail = f"{status}: {chunks} chunk(s)"
+        if chunks and not finished:
+            detail += ", no terminal finish_reason — an agent turn would fail here"
+        elif not chunks:
+            detail += " — streaming request answered without SSE data"
+        if err:
+            detail += f" — {err[:80]}"
+        results.append(("agent-turn", agent_ok, detail))
 
     if (b.get("capabilities") or {}).get("tools"):
         code, body = http_json(f"{base}/chat/completions", api_key=key, timeout=timeout, payload={
@@ -667,7 +719,7 @@ def cmd_probe(args) -> int:
     hard_fail = False
     for name, ok_, detail in results:
         print(f"  {OK if ok_ else BAD} {name:<8} {detail}")
-        if name in ("health", "chat", "stream") and not ok_:
+        if name in ("health", "chat", "stream", "agent-turn") and not ok_:
             hard_fail = True
     if args.json:
         print(json.dumps({"backend": b["id"], "base_url": base,
@@ -847,7 +899,19 @@ def save_json(path: Path, doc: dict, dry_run: bool) -> None:
     info(f"{OK} wrote {path}")
 
 
-def bind_pi(b: dict[str, Any], dry_run: bool) -> int:
+def _pi_enabled(settings: dict, provider: str, model_id: str, only: bool) -> list[str]:
+    """pi warns on every launch for an enabledModels entry whose provider is not
+    configured, so accumulating them is noisy. --only keeps just this backend,
+    which is what CI and the agent loop want; the default keeps the union so an
+    operator can still switch back in the TUI."""
+    entry = f"{provider}/{model_id}"
+    if only:
+        return [entry]
+    kept = [e for e in settings.get("enabledModels", []) if not e.startswith(f"{provider}/")]
+    return sorted(set(kept + [entry]))
+
+
+def bind_pi(b: dict[str, Any], dry_run: bool, only: bool = False) -> int:
     binding = ((b.get("bindings") or {}).get("pi") or {})
     if binding.get("unsupported"):
         die(f"pi cannot bind {b['id']}: {binding.get('reason', 'unsupported')}")
@@ -860,8 +924,7 @@ def bind_pi(b: dict[str, Any], dry_run: bool) -> int:
         settings = load_json(pi_dir / "settings.json")
         settings["defaultProvider"] = provider
         settings["defaultModel"] = model_id
-        enabled = [e for e in settings.get("enabledModels", []) if not e.startswith(f"{provider}/")]
-        settings["enabledModels"] = sorted(set(enabled + [f"{provider}/{model_id}"]))
+        settings["enabledModels"] = _pi_enabled(settings, provider, model_id, only)
         save_json(pi_dir / "settings.json", settings, dry_run)
         return 0
 
@@ -887,8 +950,7 @@ def bind_pi(b: dict[str, Any], dry_run: bool) -> int:
     settings = load_json(pi_dir / "settings.json")
     settings["defaultProvider"] = provider
     settings["defaultModel"] = model_id
-    enabled = [e for e in settings.get("enabledModels", []) if not e.startswith(f"{provider}/")]
-    settings["enabledModels"] = sorted(set(enabled + [f"{provider}/{model_id}"]))
+    settings["enabledModels"] = _pi_enabled(settings, provider, model_id, only)
     save_json(pi_dir / "settings.json", settings, dry_run)
     return 0
 
@@ -985,7 +1047,7 @@ def cmd_bind(args) -> int:
         if rc != 0:
             die(f"refusing to bind {harness} to an unhealthy backend (use --no-probe to force)")
     if harness == "pi":
-        rc = bind_pi(b, args.dry_run)
+        rc = bind_pi(b, args.dry_run, only=args.only)
     elif harness == "hermes":
         rc = bind_hermes(b, args.dry_run, args.profile)
     elif harness == "cursor":
@@ -1006,7 +1068,8 @@ def cmd_unbind(args) -> int:
         die("[defaults] backend is not set; nothing to fall back to")
     info(f"restoring {args.harness} to the registry default ({fallback})")
     return cmd_bind(argparse.Namespace(harness=args.harness, backend=fallback,
-                                       dry_run=args.dry_run, probe=False, profile=None))
+                                       dry_run=args.dry_run, probe=False, profile=None,
+                                       only=False))
 
 
 def cmd_active(args) -> int:
@@ -1087,6 +1150,8 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--profile", help="hermes profile scope")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--probe", action="store_true", help="refuse to bind an unhealthy backend")
+    sp.add_argument("--only", action="store_true",
+                    help="pi: enable ONLY this model (drops stale entries that make pi warn)")
     sp.set_defaults(func=cmd_bind)
 
     sp = sub.add_parser("unbind", help="restore a harness to the registry default")

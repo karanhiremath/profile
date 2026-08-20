@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Print the tool names declared in a mise config, one per line.
+
+Reads the CONFIG rather than `mise ls`, because `mise ls` omits any tool whose
+version cannot be resolved — which is exactly the tool you need to know failed.
+bin/mise/install uses this to provision tools one at a time.
+
+Falls back cleanly (exit 1, no output) if the file is unreadable or the Python
+running it predates tomllib; the caller then uses a sed-based parse, which
+matters on a genuinely fresh box where mise is what provides Python.
+"""
+import sys
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    sys.exit(1)
+
+if len(sys.argv) != 2:
+    print("usage: config-tools <path-to-mise-config.toml>", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    with open(sys.argv[1], "rb") as fh:
+        doc = tomllib.load(fh)
+except (OSError, tomllib.TOMLDecodeError):
+    sys.exit(1)
+
+tools = doc.get("tools") or {}
+if not isinstance(tools, dict) or not tools:
+    sys.exit(1)
+print("\n".join(sorted(tools)))

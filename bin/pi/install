@@ -83,6 +83,38 @@ configure_pi_agent() {
     cp "$theme_src" "$theme_dst"
     cp "$agents_src" "${pi_agent_dir}/AGENTS.md"
     cp "$settings_src" "$settings_file"
+
+    # settings.personal.json asks for zsh, which is right on the Macs but not
+    # guaranteed on a fresh Linux box or a CI runner. pi uses shellPath for its
+    # terminal tool, so pointing it at a shell that does not exist breaks the
+    # agent at first use rather than at install time. Resolve it here.
+    SETTINGS_FILE="$settings_file" node <<'NODE'
+const fs = require('fs');
+const path = process.env.SETTINGS_FILE;
+let settings;
+try {
+  settings = JSON.parse(fs.readFileSync(path, 'utf8'));
+} catch {
+  console.error(`WARNING: could not parse ${path}; leaving shellPath alone`);
+  process.exit(0);
+}
+const wanted = settings.shellPath;
+if (wanted && fs.existsSync(wanted)) {
+  console.log(`pi shell: ${wanted}`);
+  process.exit(0);
+}
+// Preference order keeps the operator's intent (zsh) first.
+const candidates = ['/bin/zsh', '/usr/bin/zsh', '/opt/homebrew/bin/zsh',
+                    '/bin/bash', '/usr/bin/bash', '/bin/sh'];
+const found = candidates.find((p) => fs.existsSync(p));
+if (!found) {
+  console.error('WARNING: no usable shell found; leaving shellPath as-is');
+  process.exit(0);
+}
+settings.shellPath = found;
+fs.writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
+console.log(`pi shell: ${wanted || '(unset)'} unavailable → ${found}`);
+NODE
     if [ -d "$extensions_src" ] && compgen -G "${extensions_src}/*.ts" >/dev/null; then
         cp "${extensions_src}"/*.ts "$extensions_dir"/
     fi
