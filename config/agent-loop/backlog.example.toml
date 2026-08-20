@@ -27,12 +27,14 @@ max_dispatches_per_day = 12
 worker_timeout_seconds = 2400        # 40m — must exceed the 30m tick spacing
 require_clean_worktree = true
 
+# A completed task stays in the backlog as a record; the loop skips terminal
+# statuses (done, abandoned) rather than needing them deleted.
 [[tasks]]
 id = "inf-docs-schema"
 title = "Write config/inference/SCHEMA.md from the validator rules"
 repo = "profile"
 priority = 1
-status = "ready"
+status = "done"
 brief = """
 bin/inference/inf `validate` enforces rules that are currently only expressed in
 code. Write config/inference/SCHEMA.md documenting every field a backend table

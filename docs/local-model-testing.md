@@ -116,6 +116,34 @@ memory fraction.
 
 ## Sandboxes and JIT access
 
+`sbx` is **not a sandbox runtime**. It is the lease/governance and toolchain
+layer in front of one, and it delegates isolation:
+
+| `executor` | Isolation by | Used for |
+|---|---|---|
+| `agent-sandbox` | `scripts/agentic/agent-sandbox` — scratch-backed, rootless podman/enroot/apptainer, no host secrets, network off by default | work-boundary sandboxes |
+| `direct` | a hardened container `sbx` composes itself | public sandboxes, CI runners, any host with no existing primitive |
+
+`auto` (the default) delegates work-boundary sandboxes and keeps public ones
+`direct`, because `agent-sandbox` requires a `/scratch/people/$USER` root that
+only the work machines have.
+
+That split is deliberate.
+`karan.hiremath/agentic/memory/projects/agent-sandbox-consolidation.md` records a
+standing decision **not to start a new sandbox primitive** — secure agent
+execution is largely built on cartesia-security PR #42
+(`tools/cdev/src/cdev/isolation/`), and a third parallel implementation would
+orphan it. So `sbx` adds the two things that note lists as missing — JIT
+credential scoping and an access audit trail — and hands isolation to the
+runtime that already exists. Setting `executor = "direct"` on a work-boundary
+sandbox is exactly the mistake that decision prevents, and `sbx validate` warns
+about it.
+
+**Audit format caveat.** The local hash-chained ledger is interim. The same note
+requires sandbox lifecycle events to emit `cagent.audit.AuditEvent` with a
+`frameworks/<fw>/evidence-map.yaml` entry rather than a new format. When that
+lands, this ledger becomes a local mirror rather than a second source of truth.
+
 Access is a lease, not a state. The failure mode this prevents is not a breach —
 it is a sandbox opened for one afternoon that is still open weeks later with a
 token in it.

@@ -11,6 +11,30 @@ work repo is not the machine's default state. Leases carry a TTL bounded by the
 registry's max_lease_ttl, and every grant, revoke, start and stop is appended to
 a tamper-evident audit log.
 
+THIS IS NOT A SANDBOX RUNTIME. It is the lease/governance and toolchain layer in
+front of one. Isolation is delegated to whatever primitive the host already has:
+
+  executor = "agent-sandbox"   scripts/agentic/agent-sandbox (scratch-backed,
+                               rootless podman/enroot/apptainer, no host secrets,
+                               network off by default) — the default whenever
+                               that launcher resolves
+  executor = "direct"          sbx composes a hardened container itself. Only for
+                               hosts with no existing primitive, e.g. a
+                               profile-only checkout or a CI runner.
+
+That split is deliberate. agent-sandbox-consolidation.md records a standing
+decision not to start a new sandbox primitive — secure agent execution is
+largely built on cartesia-security PR #42 (tools/cdev/src/cdev/isolation/) and a
+third parallel implementation would orphan it. `sbx` therefore adds the parts
+that note lists as missing — JIT credential scoping and an access audit trail —
+and hands isolation to the existing runtime.
+
+Audit format caveat: the local hash-chained ledger here is interim. The same
+note requires sandbox lifecycle events to emit cagent.audit.AuditEvent with a
+frameworks/<fw>/evidence-map.yaml entry rather than a new format. When that
+lands, this ledger becomes a local mirror of those events, not a second source
+of truth.
+
     sbx list                          sandboxes and their current lease state
     sbx show <name>                   the fully resolved spec
     sbx validate                      schema-check the registry (CI)
@@ -58,13 +82,17 @@ AUDIT_LOG = STATE_DIR / "audit.jsonl"
 WORK_ROOT = STATE_DIR / "work"
 LABEL = "sbx-sandbox"
 
+# Populated by load_registry(); defaults are scoped to the file that declared them.
+_DEFAULTS_BY_FILE: dict[Path, dict[str, Any]] = {}
+
 NETWORKS = {"none", "egress", "host"}
+EXECUTORS = {"agent-sandbox", "direct", "auto"}
 TOOLCHAINS = {"mise", "devbox", "none"}
 BOUNDARIES = {"public", "work"}
 TOP_KEYS = {
     "description", "repos", "mounts_ro", "toolchain", "tools", "network",
     "require_lease", "data_boundary", "cpus", "memory", "image", "persist",
-    "allow_env", "backends", "notes",
+    "allow_env", "backends", "notes", "executor", "executor_agent",
 }
 
 
@@ -134,34 +162,50 @@ def registry_files() -> list[Path]:
 
 
 def load_registry() -> tuple[dict[str, Any], dict[str, Any], dict[str, Path]]:
+    """Load every registry on the path.
+
+    `[defaults]` are PER FILE, not merged across files. They encode policy about
+    the sandboxes declared alongside them — the work overlay defaults its
+    sandboxes to executor = "agent-sandbox" because they are all work-boundary,
+    and that must not silently become the default for a public sandbox in the
+    profile repo, which has to run on a machine with no /scratch root.
+
+    The returned `defaults` is the FIRST file's, kept only so callers that want a
+    registry-wide view (and cmd_validate's messaging) have one; `resolve()` uses
+    the origin file's defaults.
+    """
     boxes: dict[str, Any] = {}
-    defaults: dict[str, Any] = {}
     origin: dict[str, Path] = {}
     files = registry_files()
     if not files:
         die("no sandbox registry found (config/sandbox/sandboxes.toml or $SBX_REGISTRY_PATH)")
+    global _DEFAULTS_BY_FILE
+    _DEFAULTS_BY_FILE = {}
     for path in files:
         try:
             with path.open("rb") as fh:
                 doc = tomllib.load(fh)
         except (OSError, tomllib.TOMLDecodeError) as exc:
             die(f"cannot read {path}: {exc}")
-        for k, v in (doc.get("defaults") or {}).items():
-            defaults.setdefault(k, v)
+        _DEFAULTS_BY_FILE[path] = doc.get("defaults") or {}
         for name, table in (doc.get("sandboxes") or {}).items():
             if name not in boxes:
                 boxes[name] = table
                 origin[name] = path
-    return boxes, defaults, origin
+    first = _DEFAULTS_BY_FILE.get(files[0], {})
+    return boxes, first, origin
 
 
 def resolve(name: str) -> dict[str, Any]:
-    boxes, defaults, origin = load_registry()
+    boxes, _first, origin = load_registry()
     if name not in boxes:
         die(f"unknown sandbox '{name}'. Available: {', '.join(sorted(boxes))}")
+    # Defaults come from the file this sandbox was declared in.
+    defaults = _DEFAULTS_BY_FILE.get(origin[name], {})
     spec: dict[str, Any] = {}
     for key in ("engine", "toolchain", "network", "require_lease", "cpus",
-                "memory", "image", "lease_ttl", "max_lease_ttl"):
+                "memory", "image", "lease_ttl", "max_lease_ttl",
+                "executor", "executor_agent"):
         if key in defaults:
             spec[key] = defaults[key]
     spec.update(json.loads(json.dumps(boxes[name])))
@@ -383,6 +427,45 @@ def cmd_render(args) -> int:
 
 # ──────────────────────────── container lifecycle ─────────────────────────────
 
+def agent_sandbox_launcher() -> Path | None:
+    """Locate the existing scratch-backed launcher, if this host has it."""
+    override = os.environ.get("SBX_AGENT_SANDBOX")
+    candidates = [Path(override)] if override else [
+        SRC_ROOT / "karan.hiremath" / "scripts" / "agentic" / "agent-sandbox",
+        Path.home() / "src" / "karan.hiremath" / "scripts" / "agentic" / "agent-sandbox",
+    ]
+    for cand in candidates:
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def resolve_executor(spec: dict[str, Any]) -> tuple[str, Path | None]:
+    """Delegate to the existing isolation primitive when one is present.
+
+    'auto' (the default) prefers agent-sandbox and falls back to direct, so a
+    profile-only checkout or a CI runner still works while a real work machine
+    never gets a second sandbox implementation.
+    """
+    want = spec.get("executor", "auto")
+    launcher = agent_sandbox_launcher()
+    if want == "agent-sandbox":
+        if not launcher:
+            die("executor = \"agent-sandbox\" but the launcher was not found "
+                "(looked for scripts/agentic/agent-sandbox under $SBX_SRC_ROOT and "
+                "~/src). Set SBX_AGENT_SANDBOX, or use executor = \"direct\".")
+        return "agent-sandbox", launcher
+    if want == "direct":
+        return "direct", None
+    # auto: the consolidation decision is about WORK isolation, so that is what
+    # gets delegated. Public sandboxes stay portable — agent-sandbox requires a
+    # /scratch/people/$USER root that only the work machines have, so routing a
+    # laptop-local experiment through it would just fail.
+    if spec.get("data_boundary") == "work" and launcher:
+        return "agent-sandbox", launcher
+    return "direct", None
+
+
 def engine_reachable(engine: str) -> bool:
     """A CLI on PATH is not a working engine: docker needs a reachable daemon and
     podman needs an initialized machine. Check before building a run command."""
@@ -430,9 +513,50 @@ def resolve_repos(spec: dict[str, Any], extra: list[str]) -> list[tuple[Path, st
     return mounts
 
 
+def delegate_cmd(spec: dict[str, Any], launcher: Path, verb: str,
+                 repos: list[str], command: list[str] | None = None) -> list[str]:
+    """Build an agent-sandbox invocation. Repos are passed by name so the
+    launcher applies its own mount policy rather than sbx guessing at it."""
+    agent = spec.get("executor_agent", "pi")
+    cmd = [str(launcher), verb]
+    if verb == "session":
+        cmd.append(agent)
+    for repo in repos:
+        cmd += ["--repo", repo]
+    if command:
+        cmd += ["--"] + command
+    return cmd
+
+
 def cmd_up(args) -> int:
     spec = resolve(args.sandbox)
     lease = require_lease(spec)
+    executor, launcher = resolve_executor(spec)
+
+    if executor == "agent-sandbox":
+        # Hand isolation to the existing primitive. sbx contributes the lease
+        # decision and the audit record; it does not compose a second runtime.
+        repos = list(spec.get("repos") or []) + list(args.repo or [])
+        if not repos:
+            die(f"{args.sandbox} declares no repos; pass at least one: "
+                f"sbx up {args.sandbox} --repo <name>")
+        cmd = delegate_cmd(spec, launcher, "session", repos)
+        forwarded = [e for e in lease.get("env", []) if os.environ.get(e)]
+        if args.dry_run:
+            print(" ".join(cmd))
+            return 0
+        audit("up", sandbox=args.sandbox, executor="agent-sandbox",
+              launcher=str(launcher), repos=repos, env_forwarded=forwarded,
+              boundary=spec.get("data_boundary", "public"),
+              lease_expires=lease.get("expires_at", "n/a"))
+        print(f"{OK} delegating to {c(launcher.name, '1')} "
+              f"({spec.get('executor_agent', 'pi')}, {len(repos)} repo(s))")
+        if lease:
+            print(f"  lease expires in {fmt_delta(lease['_expires'] - now())}")
+        # agent-sandbox owns network and secret policy from here on.
+        proc = subprocess.run(cmd)
+        return proc.returncode
+
     # --dry-run only prints the command, so it must work on a machine with no
     # engine at all — that is how you review a spec in CI.
     engine = engine_for(spec, require_running=not args.dry_run)
@@ -538,6 +662,12 @@ def cmd_up(args) -> int:
 def cmd_shell(args) -> int:
     spec = resolve(args.sandbox)
     require_lease(spec)
+    executor, launcher = resolve_executor(spec)
+    if executor == "agent-sandbox":
+        repos = list(spec.get("repos") or [])
+        audit("shell", sandbox=args.sandbox, executor="agent-sandbox")
+        cmd = delegate_cmd(spec, launcher, "shell", repos)
+        os.execvp(cmd[0], cmd)
     engine = engine_for(spec)
     cname = container_name(args.sandbox)
     if container_state(engine, cname) != "running":
@@ -549,6 +679,15 @@ def cmd_shell(args) -> int:
 def cmd_exec(args) -> int:
     spec = resolve(args.sandbox)
     require_lease(spec)
+    if not args.command:
+        die("exec needs a command after --")
+    executor, launcher = resolve_executor(spec)
+    if executor == "agent-sandbox":
+        audit("exec", sandbox=args.sandbox, executor="agent-sandbox",
+              command=" ".join(args.command)[:200])
+        cmd = delegate_cmd(spec, launcher, "run", list(spec.get("repos") or []),
+                           args.command)
+        return subprocess.run(cmd).returncode
     engine = engine_for(spec)
     cname = container_name(args.sandbox)
     if container_state(engine, cname) != "running":
@@ -562,6 +701,16 @@ def cmd_exec(args) -> int:
 
 def cmd_down(args) -> int:
     spec = resolve(args.sandbox)
+    executor, _ = resolve_executor(spec)
+    if executor == "agent-sandbox":
+        # The launcher owns those sessions; tearing them down from here would be
+        # guessing at its container naming.
+        audit("down", sandbox=args.sandbox, executor="agent-sandbox",
+              note="delegated — exit the agent-sandbox session to end it")
+        print(f"{WARN} {args.sandbox} runs under agent-sandbox; exit that session "
+              f"to end it.\n  Revoking the lease stops new starts: "
+              f"sbx revoke {args.sandbox}")
+        return 0
     engine = engine_for(spec)
     cname = container_name(args.sandbox)
     if container_state(engine, cname) == "absent":
@@ -576,8 +725,9 @@ def cmd_down(args) -> int:
 def cmd_list(args) -> int:
     boxes, defaults, origin = load_registry()
     engine = next((e for e in ("podman", "docker") if shutil.which(e)), None)
-    print(f"{'SANDBOX':<20} {'BOUNDARY':<9} {'TOOLCHAIN':<10} {'NET':<7} "
-          f"{'LEASE':<18} {'STATE':<9} REPOS")
+    launcher_present = agent_sandbox_launcher() is not None
+    print(f"{'SANDBOX':<20} {'BOUNDARY':<9} {'EXECUTOR':<14} {'TOOLCHAIN':<10} "
+          f"{'NET':<7} {'LEASE':<18} REPOS")
     for name in sorted(boxes):
         spec = resolve(name)
         lease = read_lease(name)
@@ -589,12 +739,21 @@ def cmd_list(args) -> int:
             lease_txt = c("expired", "33")
         else:
             lease_txt = c("none", "2")
-        state = container_state(engine, container_name(name)) if engine else "?"
         repos = ",".join(spec.get("repos") or []) or "(per-run)"
+        want = spec.get("executor", "auto")
+        if want == "auto":
+            eff = ("agent-sandbox" if (spec.get("data_boundary") == "work"
+                                       and launcher_present) else "direct")
+            executor_txt = f"{eff}*"
+        else:
+            executor_txt = want
         print(f"{name:<20} {spec.get('data_boundary', 'public'):<9} "
-              f"{spec.get('toolchain', 'mise'):<10} {spec.get('network', 'none'):<7} "
-              f"{lease_txt:<18} {state:<9} {repos}")
-    print(f"\nsources: {', '.join(str(p) for p in registry_files())}")
+              f"{executor_txt:<14} {spec.get('toolchain', 'mise'):<10} "
+              f"{spec.get('network', 'none'):<7} {lease_txt:<18} {repos}")
+    print(f"\n* resolved by auto: work boundary delegates to agent-sandbox "
+          f"({'launcher found' if launcher_present else 'launcher ABSENT — falls back to direct'}), "
+          f"public stays direct so it runs on any machine")
+    print(f"sources: {', '.join(str(p) for p in registry_files())}")
     return 0
 
 
@@ -645,6 +804,13 @@ def cmd_validate(args) -> int:
             errors.append(f"{where} data_boundary=work must set require_lease = true")
         if spec.get("network") == "host":
             warns.append(f"{where} network=host removes network isolation")
+        if spec.get("executor", "auto") not in EXECUTORS:
+            errors.append(f"{where} executor '{spec.get('executor')}' not in {sorted(EXECUTORS)}")
+        if spec.get("data_boundary") == "work" and spec.get("executor") == "direct":
+            # agent-sandbox-consolidation.md: do not start a new sandbox
+            # primitive for work isolation.
+            warns.append(f"{where} data_boundary=work with executor=direct builds a "
+                         f"second isolation implementation; prefer agent-sandbox")
         if spec.get("allow_env") and not spec.get("require_lease", True):
             errors.append(f"{where} allow_env without require_lease would forward "
                           f"secrets with no audit trail")
