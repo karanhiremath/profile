@@ -438,6 +438,27 @@ gemini-cli:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/gemini-cli/install
 
+# Install the inf inference-backend CLI (registry + harness bindings)
+inference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/inference/install
+
+# Validate the inference registry (no network, no containers)
+inference-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./bin/inference/inf validate
+
+# End-to-end test: registry + probe + bench + every harness renderer, vs stubs
+inference-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    ./config/inference/testing/run-contract-test.sh
+
 # Install/upgrade vLLM
 vllm:
     #!/usr/bin/env bash

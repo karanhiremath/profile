@@ -1,0 +1,515 @@
+# Inference backend registry — GENERIC / PUBLIC.
+#
+# One declarative source of truth for every inference backend any harness in
+# this toolkit can talk to (pi, hermes/herm-tui, cursor-agent, claude, codex).
+# Harness-native config is RENDERED from here by `bin/inference/inf bind`, so a
+# backend is described exactly once instead of being hardcoded per harness.
+#
+# Data boundary: this file lives in the profile repo (both machines, public).
+# NEVER put internal hostnames, cluster names, or secrets here. Point at those
+# with `endpoint.host_env` / `auth.api_key_env` and keep the values machine-local
+# (~/.hermes/.env, keychain, or `op run`). Work-only backends belong in the
+# work overlay: ~/src/karan.hiremath/agentic/inference/backends.toml
+#
+# Schema: config/inference/SCHEMA.md   Search path: INF_REGISTRY_PATH
+
+schema_version = 1
+
+[defaults]
+# Backend used when a harness/profile does not name one. Keeps today's behavior.
+backend = "codex-gpt55"
+# Fallback chain when the preferred backend fails `inf probe`. First healthy wins.
+fallback = ["codex-gpt55", "cursor-grok-46-fast", "ollama-local"]
+probe_timeout_seconds = 20
+bench_prompt = "Write a Python function that reverses a linked list. Code only."
+bench_max_tokens = 256
+
+
+# ─────────────────────────────── cloud / hosted ───────────────────────────────
+
+[backends.codex-gpt55]
+description = "OpenAI Codex gpt-5.5 — current fleet default for implementation work."
+kind = "cloud"
+runtime = "none"
+api = "openai-codex"
+cost_class = "metered"
+data_boundary = "public"
+[backends.codex-gpt55.model]
+served_name = "gpt-5.5"
+[backends.codex-gpt55.capabilities]
+streaming = true
+tools = true
+reasoning_effort = true
+developer_role = true
+[backends.codex-gpt55.bindings.pi]
+provider = "openai-codex"
+model_id = "gpt-5.5"
+[backends.codex-gpt55.bindings.hermes]
+provider = "openai-codex"
+model = "gpt-5.5"
+[backends.codex-gpt55.bindings.codex]
+model = "gpt-5.5"
+
+
+[backends.cursor-grok-46-fast]
+description = "Grok 4.6 Fast driven through the cursor-agent CLI. Cheap, high-throughput; the cost-efficient dispatcher for the pi work loop."
+kind = "cloud"
+runtime = "cursor-cli"
+api = "cursor-cli"
+cost_class = "cheap"
+data_boundary = "public"
+[backends.cursor-grok-46-fast.model]
+# Cursor model slugs move. `inf doctor` validates this against
+# `cursor-agent models` (or --model probe) instead of trusting it blindly.
+served_name = "grok-4.6-fast"
+slug_candidates = ["grok-4.6-fast", "grok-4-6-fast", "grok-4.6-fast-high"]
+[backends.cursor-grok-46-fast.auth]
+api_key_env = "CURSOR_API_KEY"
+[backends.cursor-grok-46-fast.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.cursor-grok-46-fast.bindings.cursor]
+model = "grok-4.6-fast"
+[backends.cursor-grok-46-fast.bindings.pi]
+# cursor-agent is a CLI, not an OpenAI endpoint — pi cannot bind it directly.
+unsupported = true
+reason = "cursor-agent exposes no OpenAI-compatible endpoint; use it as a dispatcher that spawns pi, not as pi's provider."
+
+
+[backends.cursor-opus-48]
+description = "Claude Opus 4.8 thinking-high via cursor-agent — orchestrator role."
+kind = "cloud"
+runtime = "cursor-cli"
+api = "cursor-cli"
+cost_class = "premium"
+data_boundary = "public"
+[backends.cursor-opus-48.model]
+served_name = "claude-opus-4-8-thinking-high"
+[backends.cursor-opus-48.auth]
+api_key_env = "CURSOR_API_KEY"
+[backends.cursor-opus-48.capabilities]
+streaming = true
+tools = true
+reasoning_effort = true
+developer_role = true
+[backends.cursor-opus-48.bindings.cursor]
+model = "claude-opus-4-8-thinking-high"
+
+
+# ──────────────────────────── local: general runtimes ─────────────────────────
+
+[backends.ollama-local]
+description = "Ollama on the host. Zero-config local fallback; good for smoke tests, not for long-context coding."
+kind = "local"
+runtime = "ollama"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+[backends.ollama-local.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_OLLAMA_HOST"
+port = 11434
+path = "/v1"
+health_path = "/api/tags"
+[backends.ollama-local.auth]
+api_key_env = "INF_OLLAMA_API_KEY"
+api_key_default = "ollama"
+[backends.ollama-local.model]
+served_name = "qwen3.8:14b"
+[backends.ollama-local.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.ollama-local.native]
+# Host process, not a container: ollama manages its own daemon.
+up = ["ollama", "serve"]
+pull = ["ollama", "pull", "{model.served_name}"]
+[backends.ollama-local.bindings.pi]
+provider = "ollama-local"
+model_id = "qwen3.8:14b"
+[backends.ollama-local.bindings.hermes]
+provider = "openai-compat"
+model = "qwen3.8:14b"
+
+
+[backends.lmstudio-local]
+description = "LM Studio local server. GUI-managed model loading; handy on the Mac for quick A/B of quantizations."
+kind = "local"
+runtime = "lmstudio"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+[backends.lmstudio-local.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_LMSTUDIO_HOST"
+port = 1234
+path = "/v1"
+health_path = "/v1/models"
+[backends.lmstudio-local.auth]
+api_key_default = "lm-studio"
+[backends.lmstudio-local.model]
+served_name = "local-model"
+[backends.lmstudio-local.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.lmstudio-local.native]
+# LM Studio is GUI-managed but ships the `lms` CLI, which can drive the server
+# headlessly. Model loading still happens in the app (or `lms load <model>`).
+up = ["lms", "server", "start", "--port", "{endpoint.port}"]
+[backends.lmstudio-local.bindings.pi]
+provider = "lmstudio-local"
+model_id = "local-model"
+
+
+[backends.vllm-local]
+description = "Plain vLLM OpenAI server in a sandbox container. Baseline for autoregressive-vs-speculative comparisons."
+kind = "local"
+runtime = "vllm"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+[backends.vllm-local.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_VLLM_HOST"
+port = 8000
+path = "/v1"
+health_path = "/health"
+[backends.vllm-local.auth]
+api_key_default = "none"
+[backends.vllm-local.model]
+served_name = "vllm-local"
+target = "Qwen/Qwen3.8-27B"
+quantization = "fp8"
+[backends.vllm-local.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.vllm-local.sandbox]
+engine = "auto"
+image = "docker.io/vllm/vllm-openai:latest"
+gpus = "all"
+memory = "32g"
+shm_size = "8g"
+ports = ["{endpoint.port}:8000"]
+volumes = ["{cache_dir}/hf:/root/.cache/huggingface"]
+env = { HF_TOKEN = "@HF_TOKEN", VLLM_LOGGING_LEVEL = "INFO" }
+args = [
+  "--model", "{model.target}",
+  "--served-model-name", "{model.served_name}",
+  "--quantization", "{model.quantization}",
+  "--max-model-len", "8192",
+  "--gpu-memory-utilization", "0.90",
+]
+[backends.vllm-local.bindings.pi]
+provider = "vllm-local"
+model_id = "vllm-local"
+[backends.vllm-local.bindings.hermes]
+provider = "openai-compat"
+model = "vllm-local"
+
+
+# ───────────────────── local: DFlash 2 speculative decoding ───────────────────
+# DFlash 2 (https://inco.ai/blog/dflash2/) is a speculative-decoding method:
+# a small DRAFTER proposes a block of tokens in parallel, the TARGET model
+# verifies them in one forward pass. Every dflash2-* backend therefore names
+# BOTH `model.target` and `model.draft`, and is only meaningful when compared
+# against the same target running autoregressively (see `inf bench --baseline`).
+
+[backends.dflash2-qwen-llamacpp]
+description = "Qwen3.8-27B + DFlash2 drafter on llama.cpp (DFlash branch), GGUF-quantized, in a sandbox container. Primary local weekend target — runs on a laptop."
+kind = "local"
+runtime = "llamacpp"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+speculative = true
+[backends.dflash2-qwen-llamacpp.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_DFLASH2_HOST"
+port = 8081
+path = "/v1"
+health_path = "/health"
+[backends.dflash2-qwen-llamacpp.auth]
+api_key_default = "none"
+[backends.dflash2-qwen-llamacpp.model]
+served_name = "qwen3.8-27b-dflash2"
+target = "Qwen/Qwen3.8-27B"
+draft = "incoai/Qwen3.8-27B-DFlash2"
+quantization = "Q4_K_M"
+[backends.dflash2-qwen-llamacpp.speculative_config]
+algorithm = "DFLASH"
+num_speculative_tokens = 8
+baseline_backend = "qwen-llamacpp-baseline"
+[backends.dflash2-qwen-llamacpp.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.dflash2-qwen-llamacpp.sandbox]
+engine = "auto"
+image = "localhost/inference/llamacpp-dflash2:dev"
+build_context = "{profile_dir}/config/inference/runtimes/llamacpp-dflash2"
+gpus = "none"
+cpus = "8.0"
+memory = "48g"
+ports = ["{endpoint.port}:8081"]
+volumes = ["{cache_dir}/gguf:/models"]
+args = [
+  "--model", "/models/{model.served_name}.gguf",
+  "--model-draft", "/models/{model.served_name}-draft.gguf",
+  "--draft-max", "8",
+  "--host", "0.0.0.0",
+  "--port", "8081",
+  "--ctx-size", "16384",
+  "--alias", "{model.served_name}",
+]
+[backends.dflash2-qwen-llamacpp.bindings.pi]
+provider = "dflash2-local"
+model_id = "qwen3.8-27b-dflash2"
+[backends.dflash2-qwen-llamacpp.bindings.hermes]
+provider = "openai-compat"
+model = "qwen3.8-27b-dflash2"
+
+
+[backends.qwen-llamacpp-baseline]
+description = "Same Qwen3.8-27B GGUF on llama.cpp with NO drafter. The autoregressive control for DFlash2 speedup claims."
+kind = "local"
+runtime = "llamacpp"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+[backends.qwen-llamacpp-baseline.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+port = 8082
+path = "/v1"
+health_path = "/health"
+[backends.qwen-llamacpp-baseline.auth]
+api_key_default = "none"
+[backends.qwen-llamacpp-baseline.model]
+served_name = "qwen3.8-27b-baseline"
+target = "Qwen/Qwen3.8-27B"
+quantization = "Q4_K_M"
+[backends.qwen-llamacpp-baseline.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.qwen-llamacpp-baseline.sandbox]
+engine = "auto"
+image = "localhost/inference/llamacpp-dflash2:dev"
+build_context = "{profile_dir}/config/inference/runtimes/llamacpp-dflash2"
+gpus = "none"
+cpus = "8.0"
+memory = "48g"
+ports = ["{endpoint.port}:8081"]
+volumes = ["{cache_dir}/gguf:/models"]
+args = [
+  "--model", "/models/qwen3.8-27b-dflash2.gguf",
+  "--host", "0.0.0.0",
+  "--port", "8081",
+  "--ctx-size", "16384",
+  "--alias", "{model.served_name}",
+]
+
+
+[backends.dflash2-qwen-omlx]
+description = "Qwen3.8-27B + DFlash2 on oMLX — native Apple-silicon path, no container. Fastest route on an M-series Mac with >=64GB unified memory."
+kind = "local"
+runtime = "omlx"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+speculative = true
+platforms = ["darwin-arm64"]
+[backends.dflash2-qwen-omlx.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+port = 8083
+path = "/v1"
+health_path = "/v1/models"
+[backends.dflash2-qwen-omlx.auth]
+api_key_default = "none"
+[backends.dflash2-qwen-omlx.model]
+served_name = "qwen3.8-27b-dflash2-mlx"
+target = "Qwen/Qwen3.8-27B"
+draft = "incoai/Qwen3.8-27B-DFlash2"
+quantization = "4bit"
+[backends.dflash2-qwen-omlx.speculative_config]
+algorithm = "DFLASH"
+num_speculative_tokens = 8
+[backends.dflash2-qwen-omlx.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.dflash2-qwen-omlx.native]
+up = [
+  "omlx", "server",
+  "--model", "{model.target}",
+  "--draft-model", "{model.draft}",
+  "--speculative-algorithm", "DFLASH",
+  "--num-draft-tokens", "8",
+  "--quantize", "{model.quantization}",
+  "--host", "127.0.0.1",
+  "--port", "{endpoint.port}",
+]
+[backends.dflash2-qwen-omlx.bindings.pi]
+provider = "dflash2-mlx"
+model_id = "qwen3.8-27b-dflash2-mlx"
+
+
+[backends.dflash2-qwen-vllm]
+description = "Qwen3.8-27B + DFlash2 drafter on the vLLM DFlash branch, GPU. Sized for a single 24GB card (GCP L4) via FP8/AWQ — see SCHEMA.md capacity note."
+kind = "local"
+runtime = "vllm"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+speculative = true
+[backends.dflash2-qwen-vllm.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_DFLASH2_VLLM_HOST"
+port = 8000
+path = "/v1"
+health_path = "/health"
+[backends.dflash2-qwen-vllm.auth]
+api_key_env = "INF_DFLASH2_VLLM_API_KEY"
+api_key_default = "none"
+[backends.dflash2-qwen-vllm.model]
+served_name = "qwen3.8-27b-dflash2"
+target = "Qwen/Qwen3.8-27B"
+draft = "incoai/Qwen3.8-27B-DFlash2"
+# 27B at bf16 is ~54GB and will NOT fit a 24GB L4. 4-bit AWQ lands ~15GB and
+# leaves headroom for the drafter + KV cache. Override for bigger cards.
+quantization = "awq"
+[backends.dflash2-qwen-vllm.speculative_config]
+algorithm = "DFLASH"
+num_speculative_tokens = 8
+tensor_parallel_size = 1
+baseline_backend = "vllm-local"
+[backends.dflash2-qwen-vllm.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.dflash2-qwen-vllm.sandbox]
+engine = "auto"
+image = "localhost/inference/vllm-dflash2:dev"
+build_context = "{profile_dir}/config/inference/runtimes/vllm-dflash2"
+gpus = "all"
+memory = "48g"
+shm_size = "8g"
+ports = ["{endpoint.port}:8000"]
+volumes = ["{cache_dir}/hf:/root/.cache/huggingface"]
+env = { HF_TOKEN = "@HF_TOKEN" }
+args = [
+  "--model", "{model.target}",
+  "--served-model-name", "{model.served_name}",
+  "--quantization", "{model.quantization}",
+  "--speculative-algorithm", "DFLASH",
+  "--speculative-draft-model-path", "{model.draft}",
+  "--num-speculative-tokens", "8",
+  "--tensor-parallel-size", "1",
+  "--max-model-len", "8192",
+  "--gpu-memory-utilization", "0.92",
+]
+[backends.dflash2-qwen-vllm.bindings.pi]
+provider = "dflash2-vllm"
+model_id = "qwen3.8-27b-dflash2"
+[backends.dflash2-qwen-vllm.bindings.hermes]
+provider = "openai-compat"
+model = "qwen3.8-27b-dflash2"
+
+
+[backends.dflash2-glimmer-sglang]
+description = "Muse-Glimmer-30B + DFlash2 on SGLang. Multi-GPU; the reference configuration from the DFlash2 post."
+kind = "local"
+runtime = "sglang"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+speculative = true
+[backends.dflash2-glimmer-sglang.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_SGLANG_HOST"
+port = 30000
+path = "/v1"
+health_path = "/health"
+[backends.dflash2-glimmer-sglang.auth]
+api_key_default = "none"
+[backends.dflash2-glimmer-sglang.model]
+served_name = "muse-glimmer-30b-dflash2"
+target = "incoai/Muse-Glimmer-30B"
+draft = "incoai/Muse-Glimmer-30B-DFlash2"
+[backends.dflash2-glimmer-sglang.speculative_config]
+algorithm = "DFLASH"
+num_speculative_tokens = 8
+tensor_parallel_size = 2
+[backends.dflash2-glimmer-sglang.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.dflash2-glimmer-sglang.sandbox]
+engine = "auto"
+image = "localhost/inference/sglang-dflash2:dev"
+build_context = "{profile_dir}/config/inference/runtimes/sglang-dflash2"
+gpus = "all"
+memory = "96g"
+shm_size = "16g"
+ports = ["{endpoint.port}:30000"]
+volumes = ["{cache_dir}/hf:/root/.cache/huggingface"]
+env = { HF_TOKEN = "@HF_TOKEN" }
+args = [
+  "--model-path", "{model.target}",
+  "--speculative-algorithm", "DFLASH",
+  "--speculative-draft-model-path", "{model.draft}",
+  "--served-model-name", "{model.served_name}",
+  "--tp", "2",
+  "--host", "0.0.0.0",
+  "--port", "30000",
+]
+[backends.dflash2-glimmer-sglang.bindings.pi]
+provider = "dflash2-sglang"
+model_id = "muse-glimmer-30b-dflash2"
+
+
+# ────────────────────────────── generic template ──────────────────────────────
+
+[backends.openai-compat-template]
+description = "Copy me. Any OpenAI-compatible endpoint (remote box, tunnel, in-cluster service) becomes a first-class backend for every harness."
+kind = "remote"
+runtime = "none"
+api = "openai-chat"
+cost_class = "unknown"
+data_boundary = "public"
+template = true
+[backends.openai-compat-template.endpoint]
+scheme = "http"
+host_env = "INF_TEMPLATE_HOST"
+port = 8000
+path = "/v1"
+health_path = "/health"
+[backends.openai-compat-template.auth]
+api_key_env = "INF_TEMPLATE_API_KEY"
+api_key_default = "none"
+[backends.openai-compat-template.model]
+served_name = "replace-me"
+[backends.openai-compat-template.capabilities]
+streaming = true
+tools = false
+reasoning_effort = false
+developer_role = false

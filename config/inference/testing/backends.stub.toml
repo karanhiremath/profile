@@ -1,0 +1,95 @@
+# Test-only registry overlay. Two stub backends whose ONLY difference is decode
+# speed, so the speculative-speedup math in `inf bench` is exercised for real.
+# Loaded by pointing INF_REGISTRY_PATH at this file. Never on the default path.
+schema_version = 1
+
+[defaults]
+backend = "stub-fast"
+fallback = ["stub-fast", "stub-baseline"]
+bench_prompt = "Reverse a linked list."
+bench_max_tokens = 64
+
+[backends.stub-fast]
+description = "Stub standing in for a DFlash2 speculative backend (fast decode)."
+kind = "local"
+runtime = "none"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+speculative = true
+[backends.stub-fast.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+host_env = "INF_STUB_FAST_HOST"
+port = 8199
+path = "/v1"
+health_path = "/health"
+[backends.stub-fast.auth]
+api_key_default = "none"
+[backends.stub-fast.model]
+served_name = "stub-model"
+target = "stub/target"
+draft = "stub/draft"
+[backends.stub-fast.speculative_config]
+algorithm = "DFLASH"
+num_speculative_tokens = 8
+baseline_backend = "stub-baseline"
+[backends.stub-fast.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+[backends.stub-fast.bindings.pi]
+provider = "stub-local"
+model_id = "stub-model"
+[backends.stub-fast.bindings.hermes]
+provider = "openai-compat"
+model = "stub-model"
+
+[backends.stub-baseline]
+description = "Stub standing in for the autoregressive control (slow decode)."
+kind = "local"
+runtime = "none"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+[backends.stub-baseline.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+port = 8200
+path = "/v1"
+health_path = "/health"
+[backends.stub-baseline.auth]
+api_key_default = "none"
+[backends.stub-baseline.model]
+served_name = "stub-model"
+[backends.stub-baseline.capabilities]
+streaming = true
+tools = true
+reasoning_effort = false
+developer_role = false
+
+[backends.stub-down]
+description = "Stub pointed at a port nothing serves. Proves `inf probe` fails closed."
+kind = "local"
+runtime = "none"
+api = "openai-chat"
+cost_class = "free"
+data_boundary = "public"
+[backends.stub-down.endpoint]
+scheme = "http"
+host = "127.0.0.1"
+# Deliberately a port the suite never binds, so the fail-closed check is
+# deterministic no matter what else is listening on the machine.
+port = 8299
+path = "/v1"
+health_path = "/health"
+[backends.stub-down.auth]
+api_key_default = "none"
+[backends.stub-down.model]
+served_name = "stub-model"
+[backends.stub-down.capabilities]
+streaming = true
+tools = false
+reasoning_effort = false
+developer_role = false

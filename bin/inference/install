@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: bin/inference/install [--help]
+
+Install the `inf` inference-backend CLI: link it onto PATH, create the state and
+model-cache directories, and validate every registry on the search path.
+
+`inf` is the single place a backend (local or cloud) is declared. It renders
+harness-native config for pi, hermes/herm-tui, cursor-agent, claude and codex,
+so no harness hardcodes a provider/model pair.
+
+Requires: python3 >= 3.11 (tomllib). A container engine (podman preferred,
+docker accepted) is only needed to run *local* backends.
+
+Idempotent: re-running refreshes the symlink and re-validates.
+USAGE
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+else
+    SCRIPT_DIR="${PROFILE_DIR}/bin/inference"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="inference"
+install_messages "start" "$app_name"
+
+# --- python3 >= 3.11 (tomllib is stdlib from 3.11) ---
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 not found. mise provides it: run 'just mise'." >&2
+    exit 1
+fi
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "ERROR: python3 >= 3.11 required (tomllib); found $(python3 --version)." >&2
+    echo "       Add python to config/mise/config.toml and run 'just mise'." >&2
+    exit 1
+fi
+echo "✓ python3 $(python3 --version 2>&1 | awk '{print $2}')"
+
+# --- link inf onto PATH ---
+bin_dir="${INF_BIN_DIR:-${HOME}/.local/bin}"
+mkdir -p "$bin_dir"
+ln -fns "${SCRIPT_DIR}/inf" "${bin_dir}/inf"
+echo "✓ Linked inf → ${bin_dir}/inf"
+
+# --- state + model cache ---
+state_dir="${INF_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/inference}"
+cache_dir="${INF_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/inference}"
+mkdir -p "$state_dir" "${cache_dir}/hf" "${cache_dir}/gguf"
+chmod 700 "$state_dir"
+echo "✓ State ${state_dir}, model cache ${cache_dir}"
+
+# --- container engine (only needed for local backends) ---
+if command -v podman >/dev/null 2>&1; then
+    echo "✓ Container engine: podman ($(podman --version 2>&1 | awk '{print $3}'))"
+elif command -v docker >/dev/null 2>&1; then
+    echo "⚠ podman not found; falling back to docker. Local sandboxes will not be rootless."
+    echo "  Install podman for the hardened path: just podman"
+else
+    echo "⚠ No container engine. Cloud backends work; local sandboxed backends need one."
+    echo "  Install with: just podman"
+fi
+
+# --- validate the registry ---
+echo ""
+echo "Validating inference registry..."
+"${bin_dir}/inf" validate
+
+install_messages "end" "$app_name"
+
+cat <<'NEXT'
+
+inf installed.
+
+  inf list                    what backends exist
+  inf doctor                  what this machine can actually run
+  inf bind pi codex-gpt55     point a harness at a backend
+  inf up dflash2-qwen-llamacpp --build
+  inf probe dflash2-qwen-llamacpp
+  inf bench dflash2-qwen-llamacpp     # vs its autoregressive baseline
+
+Work-only backends live in the work overlay and are picked up automatically:
+  ~/src/karan.hiremath/agentic/inference/backends.toml
+NEXT

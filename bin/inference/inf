@@ -1,0 +1,1048 @@
+#!/usr/bin/env python3
+"""inf — one plug-and-play inference backend registry for every agent harness.
+
+A backend (local or cloud) is declared once in config/inference/backends.toml.
+This CLI resolves it, starts it in a sandbox when it is local, proves it speaks
+OpenAI-compatible HTTP, and RENDERS the harness-native config so pi, hermes /
+herm-tui, cursor-agent, claude and codex all point at the same thing.
+
+    inf list                       backends across the registry search path
+    inf show <id>                  fully resolved backend (secrets redacted)
+    inf validate                   schema-check every registry on the path (CI)
+    inf doctor [<id>]              are this machine's prerequisites present?
+    inf env <id>                   shell exports for the resolved endpoint
+    inf up <id> [--build]          start a local backend in its sandbox
+    inf down <id>                  stop it
+    inf status                     what is running right now
+    inf probe <id>                 OpenAI-compat conformance (health/models/chat/stream)
+    inf bench <id> [--baseline B]  tokens/sec, and speculative speedup vs B
+    inf bind <harness> <id>        render harness-native config
+    inf unbind <harness>           restore the harness to registry defaults
+    inf active                     which backend each harness is bound to
+
+Registry search path (first match wins per backend id, like $PATH):
+    $INF_REGISTRY_PATH  (os.pathsep-separated files or dirs)
+  else:
+    ~/src/karan.hiremath/agentic/inference/backends.toml   (work overlay)
+    <profile>/config/inference/backends.toml               (generic/public)
+
+Secrets are never printed and never written to a registry file. A sandbox `env`
+value of "@NAME" means "read env var NAME at launch time".
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROFILE_DIR = Path(os.environ.get("PROFILE_DIR") or SCRIPT_DIR.parent.parent).resolve()
+STATE_DIR = Path(os.environ.get("INF_STATE_DIR") or (Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "inference"))
+CACHE_DIR = Path(os.environ.get("INF_CACHE_DIR") or (Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "inference"))
+ACTIVE_FILE = STATE_DIR / "active.json"
+
+HARNESSES = ("pi", "hermes", "cursor", "claude", "codex")
+CONTAINER_LABEL = "inf-backend"
+
+# Keys a backend table may declare. Anything else is a typo and `validate` says so.
+TOP_KEYS = {
+    "description", "kind", "runtime", "api", "cost_class", "data_boundary",
+    "speculative", "template", "platforms", "endpoint", "auth", "model",
+    "speculative_config", "capabilities", "sandbox", "native", "bindings", "notes",
+}
+KINDS = {"local", "remote", "cloud"}
+APIS = {"openai-chat", "openai-codex", "anthropic", "cursor-cli"}
+RUNTIMES = {"none", "ollama", "lmstudio", "vllm", "llamacpp", "sglang", "omlx", "cursor-cli"}
+
+
+# ───────────────────────────────── output ─────────────────────────────────────
+
+def _tty() -> bool:
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def c(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _tty() else text
+
+
+def info(msg: str) -> None:
+    print(f"inf: {msg}", file=sys.stderr)
+
+
+def die(msg: str, code: int = 1) -> "NoReturn":  # type: ignore[valid-type]
+    print(f"inf: {c('ERROR', '1;31')}: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+OK, BAD, WARN = c("✓", "32"), c("✗", "31"), c("⚠", "33")
+
+
+# ──────────────────────────────── registry ────────────────────────────────────
+
+def registry_files() -> list[Path]:
+    raw = os.environ.get("INF_REGISTRY_PATH")
+    if raw:
+        candidates = [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
+    else:
+        candidates = [
+            Path.home() / "src" / "karan.hiremath" / "agentic" / "inference" / "backends.toml",
+            PROFILE_DIR / "config" / "inference" / "backends.toml",
+        ]
+    files: list[Path] = []
+    for cand in candidates:
+        if cand.is_dir():
+            files.extend(sorted(cand.glob("*.toml")))
+        elif cand.is_file():
+            files.append(cand)
+    return files
+
+
+def load_registry() -> tuple[dict[str, Any], dict[str, Any], dict[str, Path]]:
+    """Return (backends, defaults, origin-per-id). First file on the path wins."""
+    backends: dict[str, Any] = {}
+    origin: dict[str, Path] = {}
+    defaults: dict[str, Any] = {}
+    files = registry_files()
+    if not files:
+        die("no registry found. Expected config/inference/backends.toml or $INF_REGISTRY_PATH")
+    for path in files:
+        try:
+            with path.open("rb") as fh:
+                doc = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            die(f"cannot read registry {path}: {exc}")
+        for key, val in (doc.get("defaults") or {}).items():
+            defaults.setdefault(key, val)
+        for bid, table in (doc.get("backends") or {}).items():
+            if bid not in backends:
+                backends[bid] = table
+                origin[bid] = path
+    return backends, defaults, origin
+
+
+def interpolate(value: Any, ctx: dict[str, Any]) -> Any:
+    """Expand {a.b} placeholders against the resolved backend + machine paths."""
+    if isinstance(value, str):
+        out = value
+        for _ in range(5):  # bounded: placeholders may expand into placeholders
+            if "{" not in out:
+                break
+            for key, repl in ctx.items():
+                out = out.replace("{" + key + "}", str(repl))
+        return out
+    if isinstance(value, list):
+        return [interpolate(v, ctx) for v in value]
+    if isinstance(value, dict):
+        return {k: interpolate(v, ctx) for k, v in value.items()}
+    return value
+
+
+def resolve(bid: str, *, backends: dict[str, Any] | None = None) -> dict[str, Any]:
+    if backends is None:
+        backends, _, _ = load_registry()
+    table = backends.get(bid)
+    if table is None:
+        near = ", ".join(sorted(k for k in backends if bid.split("-")[0] in k)) or ", ".join(sorted(backends))
+        die(f"unknown backend '{bid}'. Available: {near}")
+    b = json.loads(json.dumps(table))  # deep copy
+    b["id"] = bid
+
+    ep = b.setdefault("endpoint", {})
+    host_env = ep.get("host_env")
+    host = (os.environ.get(host_env) if host_env else None) or ep.get("host") or ""
+    # A host_env may carry a whole base_url; honour that rather than re-deriving.
+    if host.startswith(("http://", "https://")):
+        b["base_url"] = host.rstrip("/")
+        ep["host"] = host.split("://", 1)[1].split("/")[0].split(":")[0]
+    elif host:
+        ep["host"] = host
+        b["base_url"] = f"{ep.get('scheme', 'http')}://{host}:{ep.get('port', 80)}{ep.get('path', '/v1')}"
+    else:
+        b["base_url"] = ""
+
+    auth = b.setdefault("auth", {})
+    key_env = auth.get("api_key_env")
+    b["api_key"] = (os.environ.get(key_env) if key_env else None) or auth.get("api_key_default") or ""
+    b["api_key_source"] = ("env:" + key_env) if (key_env and os.environ.get(key_env)) else ("default" if auth.get("api_key_default") else "none")
+
+    ctx = {
+        "profile_dir": PROFILE_DIR,
+        "cache_dir": CACHE_DIR,
+        "state_dir": STATE_DIR,
+        "id": bid,
+        "base_url": b["base_url"],
+    }
+    for section in ("model", "endpoint", "speculative_config"):
+        for k, v in (b.get(section) or {}).items():
+            ctx[f"{section}.{k}"] = v
+    for section in ("sandbox", "native", "model", "endpoint"):
+        if section in b:
+            b[section] = interpolate(b[section], ctx)
+    if b.get("base_url"):
+        b["health_url"] = f"{ep.get('scheme','http')}://{ep['host']}:{ep.get('port',80)}{ep.get('health_path', '/health')}"
+    else:
+        b["health_url"] = ""
+    return b
+
+
+def redact(b: dict[str, Any]) -> dict[str, Any]:
+    out = json.loads(json.dumps(b, default=str))
+    if out.get("api_key"):
+        out["api_key"] = "***redacted***"
+    return out
+
+
+# ───────────────────────────── container engine ───────────────────────────────
+
+def engine_for(b: dict[str, Any]) -> str:
+    """Resolve the sandbox engine. podman is preferred (rootless, matches cosw);
+    docker is accepted so CI runners and this dev container work unchanged."""
+    want = (b.get("sandbox") or {}).get("engine", "auto")
+    override = os.environ.get("INF_CONTAINER_ENGINE")
+    order = [override] if override else ([want] if want != "auto" else ["podman", "docker"])
+    for cand in order:
+        if cand and shutil.which(cand):
+            return cand
+    die(f"no container engine available (tried {', '.join(x for x in order if x)}). "
+        "Install podman, or set INF_CONTAINER_ENGINE=docker.")
+
+
+def container_name(bid: str) -> str:
+    return f"inf-{bid}"
+
+
+def run(cmd: list[str], *, check: bool = True, capture: bool = False, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    merged = {**os.environ, **(env or {})}
+    return subprocess.run(cmd, check=check, capture_output=capture, text=True, env=merged)
+
+
+def container_state(engine: str, name: str) -> str:
+    proc = subprocess.run([engine, "inspect", name, "--format", "{{.State.Status}}"],
+                          capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else "absent"
+
+
+# ────────────────────────────────── HTTP ──────────────────────────────────────
+
+def http_json(url: str, *, payload: dict | None = None, api_key: str = "", timeout: float = 20.0) -> tuple[int, Any]:
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+    req.add_header("Content-Type", "application/json")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode(errors="replace")
+            try:
+                return resp.status, json.loads(body)
+            except json.JSONDecodeError:
+                return resp.status, body
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode(errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return 0, str(exc)
+
+
+def http_stream(url: str, payload: dict, api_key: str = "", timeout: float = 60.0) -> tuple[int, int, str]:
+    """Return (status, sse_chunk_count, first_error_or_text)."""
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "text/event-stream")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            chunks = 0
+            for raw in resp:
+                line = raw.decode(errors="replace").strip()
+                if line.startswith("data:") and line != "data: [DONE]":
+                    chunks += 1
+            return resp.status, chunks, ""
+    except urllib.error.HTTPError as exc:
+        return exc.code, 0, exc.read().decode(errors="replace")[:200]
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return 0, 0, str(exc)
+
+
+# ─────────────────────────────── subcommands ──────────────────────────────────
+
+def cmd_list(args) -> int:
+    backends, defaults, origin = load_registry()
+    rows = []
+    for bid in sorted(backends):
+        b = resolve(bid, backends=backends)
+        if args.kind and b.get("kind") != args.kind:
+            continue
+        if args.local_only and b.get("kind") != "local":
+            continue
+        if b.get("template") and not args.all:
+            continue
+        rows.append((bid, b))
+    if args.json:
+        print(json.dumps({bid: redact(b) for bid, b in rows}, indent=2))
+        return 0
+    active = read_active()
+    print(f"{'BACKEND':<28} {'KIND':<7} {'RUNTIME':<10} {'COST':<9} {'SPEC':<5} ENDPOINT")
+    for bid, b in rows:
+        spec = "yes" if b.get("speculative") else "-"
+        target = b.get("base_url") or f"({b.get('api')})"
+        bound = [h for h, v in active.items() if v == bid]
+        suffix = c(f"  ← {'+'.join(bound)}", "36") if bound else ""
+        mark = "*" if bid == defaults.get("backend") else " "
+        print(f"{mark}{bid:<27} {b.get('kind',''):<7} {b.get('runtime',''):<10} "
+              f"{b.get('cost_class',''):<9} {spec:<5} {target}{suffix}")
+    print(f"\n* = registry default. Sources: {', '.join(str(p) for p in registry_files())}")
+    return 0
+
+
+def cmd_show(args) -> int:
+    b = resolve(args.backend)
+    print(json.dumps(redact(b), indent=2))
+    return 0
+
+
+def cmd_validate(args) -> int:
+    backends, defaults, origin = load_registry()
+    errors: list[str] = []
+    warns: list[str] = []
+    for bid, table in sorted(backends.items()):
+        where = f"{origin[bid].name}:[backends.{bid}]"
+        unknown = set(table) - TOP_KEYS
+        if unknown:
+            errors.append(f"{where} unknown key(s): {', '.join(sorted(unknown))}")
+        for req in ("description", "kind", "runtime", "api"):
+            if not table.get(req):
+                errors.append(f"{where} missing required key '{req}'")
+        if table.get("kind") not in KINDS:
+            errors.append(f"{where} kind '{table.get('kind')}' not in {sorted(KINDS)}")
+        if table.get("api") not in APIS:
+            errors.append(f"{where} api '{table.get('api')}' not in {sorted(APIS)}")
+        if table.get("runtime") not in RUNTIMES:
+            errors.append(f"{where} runtime '{table.get('runtime')}' not in {sorted(RUNTIMES)}")
+        model = table.get("model") or {}
+        if not model.get("served_name"):
+            errors.append(f"{where} model.served_name is required")
+        if table.get("speculative") and not model.get("draft"):
+            errors.append(f"{where} speculative=true requires model.draft (the DFlash drafter)")
+        if table.get("speculative") and not (table.get("speculative_config") or {}).get("algorithm"):
+            errors.append(f"{where} speculative=true requires speculative_config.algorithm")
+        if table.get("kind") in ("local", "remote") and table.get("api") == "openai-chat":
+            ep = table.get("endpoint") or {}
+            if not (ep.get("host") or ep.get("host_env")):
+                errors.append(f"{where} endpoint needs host or host_env")
+        if table.get("kind") == "local" and table.get("runtime") not in ("none", "cursor-cli"):
+            if not (table.get("sandbox") or table.get("native")):
+                errors.append(f"{where} local backend needs a [.sandbox] or [.native] launch spec")
+        # Secret hygiene: a registry file must never carry a literal key.
+        auth = table.get("auth") or {}
+        default_key = str(auth.get("api_key_default", ""))
+        if len(default_key) > 24 or default_key.startswith(("sk-", "xai-", "csk_", "hf_")):
+            errors.append(f"{where} auth.api_key_default looks like a real secret — use api_key_env")
+        for section in ("endpoint", "sandbox"):
+            blob = json.dumps(table.get(section) or {})
+            if "cartesia" in blob.lower() or ".internal" in blob.lower():
+                if origin[bid].parts and "karan.hiremath" not in str(origin[bid]):
+                    errors.append(f"{where} internal hostname in a public registry — move to the work overlay")
+        spec = table.get("speculative_config") or {}
+        base = spec.get("baseline_backend")
+        if base and base not in backends:
+            warns.append(f"{where} baseline_backend '{base}' is not in the registry")
+        for h in (table.get("bindings") or {}):
+            if h not in HARNESSES:
+                warns.append(f"{where} binding for unknown harness '{h}' (known: {', '.join(HARNESSES)})")
+    if defaults.get("backend") and defaults["backend"] not in backends:
+        errors.append(f"[defaults] backend '{defaults['backend']}' is not in the registry")
+    for fb in defaults.get("fallback") or []:
+        if fb not in backends:
+            errors.append(f"[defaults] fallback '{fb}' is not in the registry")
+
+    for w in warns:
+        print(f"{WARN} {w}")
+    for e in errors:
+        print(f"{BAD} {e}")
+    if errors:
+        print(f"\n{len(errors)} error(s), {len(warns)} warning(s) across {len(backends)} backend(s)")
+        return 1
+    print(f"{OK} {len(backends)} backend(s) valid ({len(warns)} warning(s)) "
+          f"from {', '.join(p.name for p in registry_files())}")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    backends, _, _ = load_registry()
+    ids = [args.backend] if args.backend else sorted(backends)
+    host_plat = f"{platform.system().lower()}-{platform.machine().lower().replace('x86_64','amd64').replace('aarch64','arm64')}"
+    failures = 0
+    for bid in ids:
+        b = resolve(bid, backends=backends)
+        if b.get("template"):
+            continue
+        checks: list[tuple[bool, str]] = []
+        plats = b.get("platforms")
+        if plats:
+            checks.append((host_plat in plats, f"platform {host_plat} in {plats}"))
+        runtime = b.get("runtime")
+        if b.get("sandbox"):
+            eng = None
+            for cand in ([os.environ["INF_CONTAINER_ENGINE"]] if os.environ.get("INF_CONTAINER_ENGINE") else ["podman", "docker"]):
+                if shutil.which(cand):
+                    eng = cand
+                    break
+            checks.append((eng is not None, f"container engine ({eng or 'none found'})"))
+            if (b["sandbox"].get("gpus") or "none") != "none":
+                checks.append((shutil.which("nvidia-smi") is not None, "nvidia-smi (GPU passthrough)"))
+            for spec in b["sandbox"].get("env", {}).values():
+                if isinstance(spec, str) and spec.startswith("@"):
+                    name = spec[1:]
+                    checks.append((bool(os.environ.get(name)), f"env {name} set"))
+        if b.get("native"):
+            exe = (b["native"].get("up") or ["?"])[0]
+            checks.append((shutil.which(exe) is not None, f"{exe} on PATH"))
+        if runtime == "cursor-cli":
+            checks.append((shutil.which("cursor-agent") is not None, "cursor-agent on PATH"))
+            key_env = (b.get("auth") or {}).get("api_key_env")
+            if key_env:
+                checks.append((bool(os.environ.get(key_env)), f"env {key_env} set"))
+        if b.get("kind") == "cloud" and runtime != "cursor-cli":
+            checks.append((True, "hosted — no local prerequisites"))
+        bad = [d for ok_, d in checks if not ok_]
+        head = f"{OK if not bad else WARN} {bid}"
+        print(f"{head}  {c(b.get('runtime',''),'2')}")
+        for ok_, desc in checks:
+            print(f"    {OK if ok_ else BAD} {desc}")
+        failures += 1 if bad and args.strict else 0
+    return 1 if failures else 0
+
+
+def cmd_env(args) -> int:
+    b = resolve(args.backend)
+    key_env = (b.get("auth") or {}).get("api_key_env") or "INF_API_KEY"
+    print(f"export INF_BACKEND={b['id']}")
+    print(f"export INF_BASE_URL={b.get('base_url','')}")
+    print(f"export INF_MODEL={(b.get('model') or {}).get('served_name','')}")
+    print(f"export OPENAI_BASE_URL={b.get('base_url','')}")
+    print(f"export OPENAI_API_KEY=\"${{{key_env}:-{(b.get('auth') or {}).get('api_key_default','none')}}}\"")
+    return 0
+
+
+def cmd_up(args) -> int:
+    b = resolve(args.backend)
+    if b.get("kind") == "cloud" and not b.get("sandbox"):
+        info(f"{b['id']} is hosted — nothing to start. Bind it: inf bind pi {b['id']}")
+        return 0
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    for sub in ("hf", "gguf"):
+        (CACHE_DIR / sub).mkdir(parents=True, exist_ok=True)
+
+    if b.get("native") and not b.get("sandbox"):
+        cmd = [str(x) for x in b["native"]["up"]]
+        if not shutil.which(cmd[0]):
+            die(f"{cmd[0]} not on PATH — run `inf doctor {b['id']}`")
+        info(f"starting {b['id']} natively: {' '.join(cmd)}")
+        log = STATE_DIR / f"{b['id']}.log"
+        with log.open("ab") as fh:
+            proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        (STATE_DIR / f"{b['id']}.pid").write_text(str(proc.pid))
+        info(f"pid {proc.pid}, log {log}")
+        return wait_healthy(b, args.wait)
+
+    sb = b.get("sandbox") or {}
+    engine = engine_for(b)
+    name = container_name(b["id"])
+    state = container_state(engine, name)
+    if state == "running":
+        info(f"{name} already running")
+        return wait_healthy(b, args.wait)
+    if state != "absent":
+        run([engine, "rm", "-f", name], check=False, capture=True)
+
+    image = sb.get("image", "")
+    have_image = subprocess.run([engine, "image", "inspect", image],
+                                capture_output=True).returncode == 0
+    if not have_image or args.build:
+        ctx = sb.get("build_context")
+        if ctx and Path(ctx).is_dir():
+            info(f"building {image} from {ctx}")
+            run([engine, "build", "-t", image, str(ctx)])
+        elif not have_image and "/" in image and not image.startswith("localhost/"):
+            info(f"pulling {image}")
+            run([engine, "pull", image])
+        elif not have_image:
+            die(f"image {image} absent and no build_context to build it from")
+
+    cmd = [engine, "run", "-d", "--name", name,
+           "--label", f"{CONTAINER_LABEL}={b['id']}",
+           "--init", "--restart", "no",
+           # Same hardening posture as the cosw sandbox preflight.
+           "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+           "--pids-limit", "512"]
+    if sb.get("cpus"):
+        cmd += ["--cpus", str(sb["cpus"])]
+    if sb.get("memory"):
+        cmd += ["--memory", str(sb["memory"])]
+    if sb.get("shm_size"):
+        cmd += ["--shm-size", str(sb["shm_size"])]
+    if (sb.get("gpus") or "none") != "none":
+        cmd += (["--device", "nvidia.com/gpu=all"] if engine == "podman"
+                else ["--gpus", str(sb["gpus"])])
+    for port in sb.get("ports", []):
+        cmd += ["-p", f"127.0.0.1:{port}" if port.count(":") == 1 else port]
+    for vol in sb.get("volumes", []):
+        host = vol.split(":", 1)[0]
+        Path(host).mkdir(parents=True, exist_ok=True)
+        cmd += ["-v", vol]
+    missing_env = []
+    for key, spec in (sb.get("env") or {}).items():
+        if isinstance(spec, str) and spec.startswith("@"):
+            val = os.environ.get(spec[1:])
+            if not val:
+                missing_env.append(spec[1:])
+                continue
+            cmd += ["-e", f"{key}={val}"]      # value passed at launch, never stored
+        else:
+            cmd += ["-e", f"{key}={spec}"]
+    if missing_env:
+        info(f"{WARN} unset env, not forwarded: {', '.join(missing_env)} "
+             "(gated model downloads will fail)")
+    cmd += [image] + [str(a) for a in sb.get("args", [])]
+
+    info(f"starting {name} via {engine}")
+    if args.dry_run:
+        print(" ".join(cmd))
+        return 0
+    run(cmd)
+    return wait_healthy(b, args.wait)
+
+
+def wait_healthy(b: dict[str, Any], wait: int) -> int:
+    if wait <= 0 or not b.get("health_url"):
+        return 0
+    info(f"waiting up to {wait}s for {b['health_url']}")
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        status, _ = http_json(b["health_url"], timeout=5)
+        if 200 <= status < 300:
+            info(f"{OK} healthy after {int(wait - (deadline - time.time()))}s")
+            return 0
+        time.sleep(3)
+    info(f"{WARN} not healthy within {wait}s — model load can take much longer; "
+         f"check `inf status` and the container log")
+    return 1
+
+
+def cmd_down(args) -> int:
+    b = resolve(args.backend)
+    stopped = False
+    pid_file = STATE_DIR / f"{b['id']}.pid"
+    if pid_file.exists():
+        try:
+            os.kill(int(pid_file.read_text().strip()), 15)
+            stopped = True
+        except (ProcessLookupError, ValueError, PermissionError):
+            pass
+        pid_file.unlink(missing_ok=True)
+    if b.get("sandbox"):
+        engine = engine_for(b)
+        name = container_name(b["id"])
+        if container_state(engine, name) != "absent":
+            run([engine, "rm", "-f", name], capture=True)
+            stopped = True
+    info(f"{OK} stopped {b['id']}" if stopped else f"{b['id']} was not running")
+    return 0
+
+
+def cmd_status(args) -> int:
+    backends, _, _ = load_registry()
+    engine = None
+    for cand in ["podman", "docker"]:
+        if shutil.which(cand):
+            engine = cand
+            break
+    rows = []
+    for bid in sorted(backends):
+        b = resolve(bid, backends=backends)
+        if b.get("template") or b.get("kind") == "cloud":
+            continue
+        state = "-"
+        if b.get("sandbox") and engine:
+            state = container_state(engine, container_name(bid))
+        pid_file = STATE_DIR / f"{bid}.pid"
+        if state in ("-", "absent") and pid_file.exists():
+            state = "native"
+        health = "-"
+        if b.get("health_url"):
+            code, _ = http_json(b["health_url"], timeout=2)
+            health = "up" if 200 <= code < 300 else (f"http {code}" if code else "down")
+        rows.append((bid, state, health, b.get("base_url", "")))
+    print(f"{'BACKEND':<28} {'SANDBOX':<10} {'HEALTH':<9} ENDPOINT")
+    for bid, state, health, url in rows:
+        colour = "32" if health == "up" else "2"
+        print(f"{bid:<28} {state:<10} {c(health,colour):<9} {url}")
+    active = read_active()
+    if active:
+        print("\nbound: " + ", ".join(f"{h}={v}" for h, v in sorted(active.items())))
+    return 0
+
+
+def cmd_probe(args) -> int:
+    """OpenAI-compat conformance. This is what makes a backend swappable —
+    a harness only works if these four things behave."""
+    b = resolve(args.backend)
+    if b.get("api") == "cursor-cli":
+        return probe_cursor(b)
+    if not b.get("base_url"):
+        die(f"{b['id']} has no resolvable endpoint (api={b.get('api')}); nothing to probe over HTTP")
+    base, key = b["base_url"], b["api_key"]
+    model = (b.get("model") or {}).get("served_name", "")
+    timeout = float(args.timeout)
+    results: list[tuple[str, bool, str]] = []
+
+    code, _ = http_json(b["health_url"], timeout=timeout)
+    results.append(("health", 200 <= code < 300, f"{b['health_url']} → {code or 'unreachable'}"))
+
+    code, body = http_json(f"{base}/models", api_key=key, timeout=timeout)
+    ids = [m.get("id") for m in body.get("data", [])] if isinstance(body, dict) else []
+    served_ok = model in ids if ids else False
+    results.append(("models", bool(ids), f"{len(ids)} listed" + (f", served_name '{model}' present" if served_ok else f", {c('served_name ' + model + ' NOT listed', '33')}" if ids else "")))
+
+    code, body = http_json(f"{base}/chat/completions", api_key=key, timeout=timeout, payload={
+        "model": model, "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+        "max_tokens": 8, "temperature": 0, "stream": False})
+    content = ""
+    if isinstance(body, dict):
+        content = (((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    results.append(("chat", bool(content), f"{code}: {content[:60] or str(body)[:120]}"))
+
+    status, chunks, err = http_stream(f"{base}/chat/completions", {
+        "model": model, "messages": [{"role": "user", "content": "Count 1 to 5."}],
+        "max_tokens": 48, "temperature": 0, "stream": True}, api_key=key, timeout=timeout * 3)
+    results.append(("stream", chunks > 1, f"{status}: {chunks} SSE chunk(s)" + (f" — {err[:80]}" if err else "")))
+
+    if (b.get("capabilities") or {}).get("tools"):
+        code, body = http_json(f"{base}/chat/completions", api_key=key, timeout=timeout, payload={
+            "model": model, "messages": [{"role": "user", "content": "What is the weather in Oakland? Use the tool."}],
+            "max_tokens": 128, "temperature": 0, "stream": False,
+            "tools": [{"type": "function", "function": {
+                "name": "get_weather", "description": "Get weather for a city",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}]})
+        calls = []
+        if isinstance(body, dict):
+            calls = ((body.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or []
+        results.append(("tools", bool(calls), f"{code}: {len(calls)} tool_call(s)"
+                        + ("" if calls else f" — declared tools=true but none returned")))
+
+    print(f"probe {c(b['id'], '1')}  ({b.get('runtime')} @ {base})")
+    hard_fail = False
+    for name, ok_, detail in results:
+        print(f"  {OK if ok_ else BAD} {name:<8} {detail}")
+        if name in ("health", "chat", "stream") and not ok_:
+            hard_fail = True
+    if args.json:
+        print(json.dumps({"backend": b["id"], "base_url": base,
+                          "results": {n: {"ok": o, "detail": d} for n, o, d in results}}, indent=2))
+    if hard_fail:
+        print(f"\n{BAD} {b['id']} is NOT usable as a harness backend yet")
+        return 1
+    print(f"\n{OK} {b['id']} satisfies the harness contract")
+    return 0
+
+
+def probe_cursor(b: dict[str, Any]) -> int:
+    """cursor-agent is a CLI, not an endpoint. Validate the binary, the key, and
+    that the model slug is actually accepted — slugs change without notice."""
+    exe = shutil.which("cursor-agent")
+    print(f"probe {c(b['id'], '1')}  (cursor-cli)")
+    print(f"  {OK if exe else BAD} binary   {exe or 'cursor-agent not on PATH'}")
+    key_env = (b.get("auth") or {}).get("api_key_env") or "CURSOR_API_KEY"
+    has_key = bool(os.environ.get(key_env))
+    print(f"  {OK if has_key else WARN} auth     {key_env} {'set' if has_key else 'unset (interactive login may still work)'}")
+    if not exe:
+        return 1
+    try:
+        listing = subprocess.run([exe, "models"], capture_output=True, text=True, timeout=60)
+        catalog = (listing.stdout + listing.stderr) if listing.returncode == 0 else ""
+    except (subprocess.TimeoutExpired, OSError):
+        catalog = ""
+    model = (b.get("model") or {}).get("served_name", "")
+    candidates = (b.get("model") or {}).get("slug_candidates") or [model]
+    if catalog:
+        matched = [s for s in candidates if s in catalog]
+        ok_ = bool(matched)
+        print(f"  {OK if ok_ else BAD} slug     " +
+              (f"'{matched[0]}' accepted by `cursor-agent models`" if ok_
+               else f"none of {candidates} found in the model catalog"))
+        if not ok_:
+            print(f"    {WARN} update model.served_name in the registry to one of the listed slugs")
+        return 0 if ok_ and has_key else 1
+    print(f"  {WARN} slug     `cursor-agent models` unavailable — cannot verify '{model}'")
+    return 0 if has_key else 1
+
+
+def cmd_bench(args) -> int:
+    """Measure decode throughput. For a speculative backend, compare against its
+    baseline so the number means something (DFlash2 claims 2.7-3.4x)."""
+    _, defaults, _ = load_registry()
+    prompt = args.prompt or defaults.get("bench_prompt", "Write a haiku about caching.")
+    max_tokens = args.max_tokens or int(defaults.get("bench_max_tokens", 256))
+
+    def measure(bid: str) -> dict[str, Any]:
+        b = resolve(bid)
+        if not b.get("base_url"):
+            die(f"{bid} has no HTTP endpoint to benchmark")
+        url = f"{b['base_url']}/chat/completions"
+        payload = {"model": (b.get("model") or {}).get("served_name"),
+                   "messages": [{"role": "user", "content": prompt}],
+                   "max_tokens": max_tokens, "temperature": 0, "stream": False}
+        samples = []
+        for i in range(args.runs):
+            t0 = time.perf_counter()
+            code, body = http_json(url, payload=payload, api_key=b["api_key"], timeout=600)
+            dt = time.perf_counter() - t0
+            if not isinstance(body, dict) or code >= 300:
+                die(f"{bid} run {i+1} failed ({code}): {str(body)[:200]}")
+            out_tokens = ((body.get("usage") or {}).get("completion_tokens")
+                          or len(str(((body.get("choices") or [{}])[0].get("message") or {}).get("content", "")).split()))
+            samples.append({"seconds": dt, "output_tokens": out_tokens, "tok_per_s": out_tokens / dt if dt else 0})
+            print(f"  {bid} run {i+1}/{args.runs}: {out_tokens} tok in {dt:.2f}s = {samples[-1]['tok_per_s']:.1f} tok/s")
+        best = max(s["tok_per_s"] for s in samples)
+        mean = sum(s["tok_per_s"] for s in samples) / len(samples)
+        return {"backend": bid, "runs": samples, "tok_per_s_mean": mean, "tok_per_s_best": best,
+                "speculative": bool(b.get("speculative")),
+                "model": (b.get("model") or {}).get("served_name")}
+
+    target = resolve(args.backend)
+    print(f"bench {c(args.backend,'1')} — {args.runs} run(s), max_tokens={max_tokens}")
+    out = {"primary": measure(args.backend)}
+    baseline_id = args.baseline or (target.get("speculative_config") or {}).get("baseline_backend")
+    if baseline_id and not args.no_baseline:
+        print(f"baseline {c(baseline_id,'1')}")
+        out["baseline"] = measure(baseline_id)
+        gain = out["primary"]["tok_per_s_mean"] / out["baseline"]["tok_per_s_mean"] if out["baseline"]["tok_per_s_mean"] else 0
+        out["speedup_mean"] = gain
+        print(f"\n{OK} speculative speedup: {c(f'{gain:.2f}x', '1;32')} "
+              f"({out['primary']['tok_per_s_mean']:.1f} vs {out['baseline']['tok_per_s_mean']:.1f} tok/s mean)")
+    elif target.get("speculative"):
+        print(f"\n{WARN} no baseline measured — a speculative-decoding number without its "
+              f"autoregressive control does not show a speedup. Use --baseline <id>.")
+    if args.out:
+        Path(args.out).write_text(json.dumps(out, indent=2) + "\n")
+        info(f"wrote {args.out}")
+    else:
+        print(json.dumps(out, indent=2))
+    return 0
+
+
+# ──────────────────────────── harness bindings ────────────────────────────────
+
+def read_active() -> dict[str, str]:
+    if ACTIVE_FILE.exists():
+        try:
+            return json.loads(ACTIVE_FILE.read_text()).get("harnesses", {})
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def write_active(harness: str, bid: str | None) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    doc = {"harnesses": read_active()}
+    if bid is None:
+        doc["harnesses"].pop(harness, None)
+    else:
+        doc["harnesses"][harness] = bid
+    doc["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    ACTIVE_FILE.write_text(json.dumps(doc, indent=2) + "\n")
+
+
+def load_json(path: Path) -> dict:
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            info(f"{WARN} {path} is not valid JSON; starting from empty")
+    return {}
+
+
+def save_json(path: Path, doc: dict, dry_run: bool) -> None:
+    text = json.dumps(doc, indent=2) + "\n"
+    if dry_run:
+        print(f"--- would write {path} ---\n{text}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        backup = path.with_suffix(path.suffix + ".inf-bak")
+        backup.write_text(path.read_text())
+    path.write_text(text)
+    info(f"{OK} wrote {path}")
+
+
+def bind_pi(b: dict[str, Any], dry_run: bool) -> int:
+    binding = ((b.get("bindings") or {}).get("pi") or {})
+    if binding.get("unsupported"):
+        die(f"pi cannot bind {b['id']}: {binding.get('reason', 'unsupported')}")
+    pi_dir = Path(os.environ.get("PI_AGENT_DIR") or (Path.home() / ".pi" / "agent"))
+    provider = binding.get("provider") or b["id"]
+    model_id = binding.get("model_id") or (b.get("model") or {}).get("served_name")
+
+    if b.get("api") == "openai-codex":
+        # Native pi provider: no models.json entry needed, just the defaults.
+        settings = load_json(pi_dir / "settings.json")
+        settings["defaultProvider"] = provider
+        settings["defaultModel"] = model_id
+        enabled = [e for e in settings.get("enabledModels", []) if not e.startswith(f"{provider}/")]
+        settings["enabledModels"] = sorted(set(enabled + [f"{provider}/{model_id}"]))
+        save_json(pi_dir / "settings.json", settings, dry_run)
+        return 0
+
+    if not b.get("base_url"):
+        die(f"{b['id']} has no OpenAI-compatible endpoint; pi cannot use it as a provider")
+    caps = b.get("capabilities") or {}
+    models_doc = load_json(pi_dir / "models.json")
+    providers = models_doc.setdefault("providers", {})
+    providers[provider] = {
+        "baseUrl": b["base_url"],
+        "api": "openai-completions",
+        # pi reads the key from this env var at runtime, so no secret is written.
+        "apiKey": f"${{{(b.get('auth') or {}).get('api_key_env', 'INF_API_KEY')}:-{(b.get('auth') or {}).get('api_key_default', 'none')}}}",
+        "compat": {
+            "supportsDeveloperRole": bool(caps.get("developer_role")),
+            "supportsReasoningEffort": bool(caps.get("reasoning_effort")),
+        },
+        "models": [{"id": model_id, "name": f"{model_id} ({b['id']})"}],
+    }
+    models_doc["_managed_by"] = "profile/bin/inference/inf — edits may be overwritten by `inf bind pi`"
+    save_json(pi_dir / "models.json", models_doc, dry_run)
+
+    settings = load_json(pi_dir / "settings.json")
+    settings["defaultProvider"] = provider
+    settings["defaultModel"] = model_id
+    enabled = [e for e in settings.get("enabledModels", []) if not e.startswith(f"{provider}/")]
+    settings["enabledModels"] = sorted(set(enabled + [f"{provider}/{model_id}"]))
+    save_json(pi_dir / "settings.json", settings, dry_run)
+    return 0
+
+
+def bind_hermes(b: dict[str, Any], dry_run: bool, profile: str | None) -> int:
+    """Hermes profiles read `llm.backend` and resolve it here, so the binding is
+    just the active-backend pointer plus an env file the launcher can source."""
+    binding = ((b.get("bindings") or {}).get("hermes") or {})
+    if binding.get("unsupported"):
+        die(f"hermes cannot bind {b['id']}: {binding.get('reason', 'unsupported')}")
+    provider = binding.get("provider") or ("openai-compat" if b.get("api") == "openai-chat" else b.get("api"))
+    model = binding.get("model") or (b.get("model") or {}).get("served_name")
+    env_path = STATE_DIR / "hermes-backend.env"
+    lines = [
+        "# Generated by `inf bind hermes`. Sourced by bin/hermes/agents. Do not edit.",
+        f"HERMES_AGENT_MODEL_PROVIDER={provider}",
+        f"HERMES_AGENT_MODEL_DEFAULT={model}",
+    ]
+    if b.get("base_url"):
+        lines.append(f"HERMES_AGENT_MODEL_BASE_URL={b['base_url']}")
+    key_env = (b.get("auth") or {}).get("api_key_env")
+    if key_env:
+        lines.append(f"HERMES_AGENT_MODEL_API_KEY_ENV={key_env}")
+    if profile:
+        lines.append(f"HERMES_AGENT_PROFILE_SCOPE={profile}")
+    text = "\n".join(lines) + "\n"
+    if dry_run:
+        print(f"--- would write {env_path} ---\n{text}")
+    else:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        env_path.write_text(text)
+        info(f"{OK} wrote {env_path}")
+    info("herm/hermes picks this up on next launch (cos / cosw / pm / pl).")
+    return 0
+
+
+def bind_cursor(b: dict[str, Any], dry_run: bool) -> int:
+    binding = ((b.get("bindings") or {}).get("cursor") or {})
+    if b.get("api") != "cursor-cli" and not binding.get("model"):
+        die(f"cursor-agent only drives its own hosted models; {b['id']} (api={b.get('api')}) "
+            f"is not one. Bind a cursor-* backend, or use {b['id']} with pi/hermes instead.")
+    model = binding.get("model") or (b.get("model") or {}).get("served_name")
+    cfg_path = Path.home() / ".cursor" / "cli-config.json"
+    cfg = load_json(cfg_path)
+    cfg["model"] = model
+    # Keep the fleet security posture from AGENTS.md: never --force / --yolo.
+    cfg.setdefault("approvalMode", "allowlist")
+    cfg.setdefault("sandbox", {}).setdefault("mode", "disabled")
+    save_json(cfg_path, cfg, dry_run)
+    return 0
+
+
+def bind_env_harness(b: dict[str, Any], harness: str, dry_run: bool) -> int:
+    """claude / codex: emit an env file the launcher sources."""
+    path = STATE_DIR / f"{harness}-backend.env"
+    model = ((b.get("bindings") or {}).get(harness) or {}).get("model") or (b.get("model") or {}).get("served_name")
+    lines = [f"# Generated by `inf bind {harness}`. Source before launching {harness}."]
+    if harness == "claude":
+        if b.get("api") == "anthropic":
+            lines.append(f"ANTHROPIC_MODEL={model}")
+            if b.get("base_url"):
+                lines.append(f"ANTHROPIC_BASE_URL={b['base_url']}")
+        elif b.get("base_url"):
+            # Claude Code can front an OpenAI-compatible endpoint via a proxy only.
+            lines.append(f"# {b['id']} speaks {b.get('api')}, not the Anthropic API.")
+            lines.append(f"# Route it through an anthropic-compat proxy, then set ANTHROPIC_BASE_URL.")
+            lines.append(f"INF_OPENAI_BASE_URL={b['base_url']}")
+            lines.append(f"INF_MODEL={model}")
+        else:
+            die(f"claude cannot bind {b['id']} (api={b.get('api')})")
+    else:  # codex
+        lines.append(f"CODEX_MODEL={model}")
+        if b.get("base_url"):
+            lines.append(f"OPENAI_BASE_URL={b['base_url']}")
+    text = "\n".join(lines) + "\n"
+    if dry_run:
+        print(f"--- would write {path} ---\n{text}")
+    else:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        info(f"{OK} wrote {path}")
+    return 0
+
+
+def cmd_bind(args) -> int:
+    harness = args.harness
+    if harness not in HARNESSES:
+        die(f"unknown harness '{harness}' (known: {', '.join(HARNESSES)})")
+    b = resolve(args.backend)
+    if b.get("template"):
+        die(f"{b['id']} is a template — copy it to a real backend id first")
+    if args.probe:
+        rc = cmd_probe(argparse.Namespace(backend=args.backend, timeout=20, json=False))
+        if rc != 0:
+            die(f"refusing to bind {harness} to an unhealthy backend (use --no-probe to force)")
+    if harness == "pi":
+        rc = bind_pi(b, args.dry_run)
+    elif harness == "hermes":
+        rc = bind_hermes(b, args.dry_run, args.profile)
+    elif harness == "cursor":
+        rc = bind_cursor(b, args.dry_run)
+    else:
+        rc = bind_env_harness(b, harness, args.dry_run)
+    if rc == 0 and not args.dry_run:
+        write_active(harness, b["id"])
+        print(f"{OK} {harness} → {c(b['id'], '1;36')} "
+              f"({b.get('runtime')}, {b.get('cost_class')})")
+    return rc
+
+
+def cmd_unbind(args) -> int:
+    _, defaults, _ = load_registry()
+    fallback = defaults.get("backend")
+    if not fallback:
+        die("[defaults] backend is not set; nothing to fall back to")
+    info(f"restoring {args.harness} to the registry default ({fallback})")
+    return cmd_bind(argparse.Namespace(harness=args.harness, backend=fallback,
+                                       dry_run=args.dry_run, probe=False, profile=None))
+
+
+def cmd_active(args) -> int:
+    active = read_active()
+    if not active:
+        _, defaults, _ = load_registry()
+        print(f"nothing bound; harnesses fall back to the registry default: {defaults.get('backend')}")
+        return 0
+    for harness in HARNESSES:
+        bid = active.get(harness)
+        print(f"{harness:<8} {bid or '(default)'}")
+    return 0
+
+
+# ──────────────────────────────────  main  ────────────────────────────────────
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="inf", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("list", help="list backends")
+    sp.add_argument("--kind", choices=sorted(KINDS))
+    sp.add_argument("--local", dest="local_only", action="store_true")
+    sp.add_argument("--all", action="store_true", help="include templates")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_list)
+
+    sp = sub.add_parser("show", help="show a resolved backend")
+    sp.add_argument("backend")
+    sp.set_defaults(func=cmd_show)
+
+    sp = sub.add_parser("validate", help="schema-check the registry (CI gate)")
+    sp.set_defaults(func=cmd_validate)
+
+    sp = sub.add_parser("doctor", help="check machine prerequisites")
+    sp.add_argument("backend", nargs="?")
+    sp.add_argument("--strict", action="store_true", help="exit non-zero on any missing prerequisite")
+    sp.set_defaults(func=cmd_doctor)
+
+    sp = sub.add_parser("env", help="print shell exports for a backend")
+    sp.add_argument("backend")
+    sp.set_defaults(func=cmd_env)
+
+    sp = sub.add_parser("up", help="start a local backend")
+    sp.add_argument("backend")
+    sp.add_argument("--build", action="store_true", help="rebuild the sandbox image first")
+    sp.add_argument("--wait", type=int, default=180, help="seconds to wait for health (0 = don't)")
+    sp.add_argument("--dry-run", action="store_true", help="print the engine command only")
+    sp.set_defaults(func=cmd_up)
+
+    sp = sub.add_parser("down", help="stop a local backend")
+    sp.add_argument("backend")
+    sp.set_defaults(func=cmd_down)
+
+    sp = sub.add_parser("status", help="what is running")
+    sp.set_defaults(func=cmd_status)
+
+    sp = sub.add_parser("probe", help="OpenAI-compat conformance check")
+    sp.add_argument("backend")
+    sp.add_argument("--timeout", default=20)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_probe)
+
+    sp = sub.add_parser("bench", help="throughput, and speculative speedup vs baseline")
+    sp.add_argument("backend")
+    sp.add_argument("--baseline", help="backend id to compare against")
+    sp.add_argument("--no-baseline", action="store_true")
+    sp.add_argument("--runs", type=int, default=3)
+    sp.add_argument("--max-tokens", type=int)
+    sp.add_argument("--prompt")
+    sp.add_argument("--out", help="write JSON results here")
+    sp.set_defaults(func=cmd_bench)
+
+    sp = sub.add_parser("bind", help="render harness-native config")
+    sp.add_argument("harness", choices=HARNESSES)
+    sp.add_argument("backend")
+    sp.add_argument("--profile", help="hermes profile scope")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--probe", action="store_true", help="refuse to bind an unhealthy backend")
+    sp.set_defaults(func=cmd_bind)
+
+    sp = sub.add_parser("unbind", help="restore a harness to the registry default")
+    sp.add_argument("harness", choices=HARNESSES)
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_unbind)
+
+    sp = sub.add_parser("active", help="show harness bindings")
+    sp.set_defaults(func=cmd_active)
+
+    args = p.parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
