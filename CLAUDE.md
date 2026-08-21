@@ -46,3 +46,11 @@ This repo is purely tooling. Project-specific memory, notes, and decisions live 
 
 ## Granola is optional
 `cursor/rules/granola-optional.mdc` is the synced Cursor user rule. `just cursor-setup` links it into `~/.cursor/rules`. Do not query Granola unless the user names a meeting, a decision, "what we discussed", or their schedule.
+
+## Output SOP (P0)
+`cursor/rules/output-sop.mdc` is the canonical reporting contract for every session, subagent and
+fleet worker in this repo. `just cursor-setup` links it into `~/.cursor/rules`. Load it; never
+restate or duplicate its rules here. Tables for status/inventory/comparison/results, fenced
+YAML/JSON for config and contracts, mermaid for sequences and dependency graphs, status vocabulary
+`PASS|FAIL|BLOCKED|PENDING|SKIPPED|UNKNOWN`, verified-vs-inferred as a column, and a fenced YAML
+`summary:` block on any report another agent consumes.

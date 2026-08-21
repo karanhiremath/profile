@@ -1,0 +1,116 @@
+---
+description: Output SOP — structured, human + machine readable reporting is mandatory
+alwaysApply: true
+---
+
+# Output SOP (P0) — structured, human + machine readable
+
+Binds **every** agent, subagent, fleet worker, and orchestrator turn. Not a style preference.
+Breaking it means the operator does not review the output, so the work does not land.
+
+## The rule
+
+**Default to structured. Prose is the exception, never the container.**
+
+| Content | Required form |
+|---|---|
+| Any status, inventory, comparison, or result set | **table** |
+| Config, manifest, contract, schema, payload | **fenced YAML or JSON** |
+| Sequence / dependency / state machine / flow | **mermaid diagram** |
+| Numeric series, distribution, trend | **chart** (mermaid, or an artifact when richer) |
+| Per-item verdicts (pass/fail/blocked) | **table with an explicit status column** |
+| Rationale for a decision | ≤2 sentences, attached to the row it explains |
+
+**Scope: GLOBAL.** Binds every repo, project, session and machine — not one repo. This file is the
+canonical rule; `just cursor-setup` links it into `~/.cursor/rules`. Repo-level `CLAUDE.md` and
+`AGENTS.md` files point here, never restate.
+
+## Links are mandatory, not decorative
+
+Every referenced artifact appears as a **resolvable link in the cell that names it** — never a
+bare number or name the reader has to go find.
+
+| Artifact | Required form |
+|---|---|
+| Issue tracker issue | issue key linked to its URL — `[ABC-123](<issue-url>)` |
+| Issue tracker project / epic | full project URL |
+| PR | `[org/repo#92](https://github.com/org/repo/pull/92)` — org/repo prefixed when >1 repo is in scope |
+| Commit / branch | short SHA linked to the commit; branch name verbatim |
+| Build / CI run | build or run ID + link to it |
+| Image | `repo/name@sha256:<12-hex min>` — digest, never a floating tag |
+| Doc / playbook / draft | repo-relative path |
+| Cluster / node pool / object store | fully qualified name (`project/cluster/pool`, `bucket/prefix`) |
+
+A row that cites a PR, issue, build or digest without its link is incomplete — same defect class
+as a missing version tuple. When a report is posted **into** an issue tracker or a PR, cross-link
+the other direction too, so the artifact and the tracker each point at the other.
+
+## Hard requirements
+
+1. **Every row carries its full identifying tuple.** Versions, digests, branch/commit SHAs, PR
+   numbers, build IDs. A row missing them is a defect in the report, not a formatting nit.
+2. **Never bury a number, verdict, or identifier in a sentence.** If it is data, it goes in a cell.
+3. **Status columns use fixed vocabulary**, not adjectives: `PASS | FAIL | BLOCKED | PENDING |
+   SKIPPED | UNKNOWN`. `UNKNOWN` is mandatory when something was not measured — never infer.
+4. **Verified vs inferred is a column**, not a caveat buried in prose.
+5. **Machine-readable summary block** on any report another agent or tool will consume — fenced
+   YAML/JSON, so it can be parsed without an LLM.
+6. **Prose budget: ≤2 sentences per point.** Analysis lives in the table; the sentence explains
+   *why*, never *what*.
+
+## Canonical shapes
+
+Per-item status:
+
+```
+| Item | Version tuple / digest | Status | Evidence ref | Verified? |
+|---|---|---|---|---|
+| service-a | py3.13.2 / libfoo1.4.0 / sha256:9f21… | PASS | <evidence-uri> | measured |
+| service-b | py3.13.2 / libfoo1.3.7 / sha256:0ab4… | UNKNOWN | — | not measured |
+```
+
+Machine-readable tail on any consumable report:
+
+```yaml
+summary:
+  lane: <name>
+  status: PASS|FAIL|BLOCKED
+  blockers: [<id>, …]
+  next_action: <one line>
+  evidence: [<uri>, …]
+```
+
+Dependency / land order:
+
+```mermaid
+graph LR
+  A[#83 MERGED] --> B[#86 CI]
+  B --> C[#91 retarget]
+```
+
+## Enforcement
+
+- Referenced as **P0 from `CLAUDE.md` / `AGENTS.md`** — every session loads it.
+- Every spawned agent's prompt MUST carry the reporting fragment below, verbatim, alongside the
+  permission/verification fragments. Omitting it is a designer failure, same class as a permission
+  gap.
+
+### Mandatory agent prompt fragment
+
+```
+REPORTING (P0 — SOP, not preference)
+Report in structured form: tables for any status/inventory/comparison/result set, fenced
+YAML/JSON for config/contracts/payloads, mermaid for sequences and dependency graphs, charts
+for numeric series. Every row carries its full version tuple and digest/SHA. Status columns use
+PASS|FAIL|BLOCKED|PENDING|SKIPPED|UNKNOWN — never adjectives, and UNKNOWN where you did not
+measure. Add a "verified vs inferred" column. End any report another agent will consume with a
+fenced YAML `summary:` block (lane, status, blockers, next_action, evidence). Prose <= 2
+sentences per point, attached to the row it explains. Never bury a number, verdict, digest or
+identifier in a sentence.
+```
+
+## Related
+
+- `config/pi/AGENTS.personal.md` § Output & Thinking Formatting Policy — the pi-side companion
+  (thinking-block discipline); this file is the reporting contract it defers to.
+- `cursor/rules/granola-optional.mdc` — sibling user-global rule, same install path.

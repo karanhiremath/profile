@@ -34,6 +34,7 @@ Override per session: `cursor-agent --model <slug>`.
 - Secrets: never commit; fleet secrets at `~/.local/share/fleet/` only
 - No Cartesia proprietary paths in committed profile artifacts
 - **Granola is optional (all projects):** `just cursor-setup` links `cursor/rules/*.mdc` into `~/.cursor/rules`. Do not query Granola MCP or granola skills unless the user names a meeting, a decision, "what we discussed", or their schedule. Plugin `alwaysApply` means consider, not preload.
+- **Output SOP is P0:** `cursor/rules/output-sop.mdc` is the canonical reporting contract, linked into `~/.cursor/rules` by `just cursor-setup`. Structured output is mandatory (tables, fenced YAML/JSON, mermaid); every spawned agent prompt carries that file's reporting fragment verbatim. Omitting it is a designer failure, same class as a permission gap.
 
 ### Hermes CoS/PM command layer
 
