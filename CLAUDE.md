@@ -43,3 +43,6 @@ tool-name:
 
 ## No Project Context Here
 This repo is purely tooling. Project-specific memory, notes, and decisions live in `notes` (personal) or `karan.hiremath` (work).
+
+## Granola is optional
+`cursor/rules/granola-optional.mdc` is the synced Cursor user rule. `just cursor-setup` links it into `~/.cursor/rules`. Do not query Granola unless the user names a meeting, a decision, "what we discussed", or their schedule.
