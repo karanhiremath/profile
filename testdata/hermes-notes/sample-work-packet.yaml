@@ -1,0 +1,23 @@
+work_capture_packet:
+  date: 2026-08-06
+  source_agent: pi
+  source_session: fixture-session
+  project: hermes-note-capture
+  ledger_targets:
+    - daily
+  summary: Added deterministic fixture coverage for two-ledger note capture.
+  decisions:
+    - Keep initial capture deterministic and local-only.
+  shipped_or_changed:
+    - Fixture note packet for work ledger validation.
+  blockers: []
+  followups:
+    - Wire Herm TUI capture UI to this CLI later.
+  evidence:
+    - profile/testdata/hermes-notes/sample-work-packet.yaml
+  personal_signal_allowed: true
+  work_load_signal:
+    load: medium
+    category: planning
+    impact: context-switching
+    personal_next_action: schedule-focus-block

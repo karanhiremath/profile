@@ -19,8 +19,10 @@ bin/hermes/env           # print PATH additions
 bin/hermes/agents        # run isolated Hermes voice agents for daily terminal use
 bin/hermes/cos           # launch personal Chief of Staff profile
 bin/hermes/cosw          # launch work Chief of Staff profile
+bin/hermes/cosw-hostctl  # sandbox-safe client for CoS-W host project coordination
 bin/hermes/pm <project>  # attach/start a registered project-manager tmux/TUI
 bin/hermes/pl <project>  # attach a registered project-lead implementation session
+bin/hermes/notes-ledger  # deterministic two-ledger daily/review note capture
 ```
 
 ## CoS / PM / PL command model
@@ -35,6 +37,46 @@ pl <project>                # attach the project-lead implementation tmux sessio
 bin/hermes/project_sessions.py list
 bin/hermes/project_sessions.py resolve <project>
 ```
+
+### CoS-W sandbox manager bridge
+
+`cosw` bootstraps a dedicated host-side sandbox manager before launching the
+work CoS. The Docker sandbox does **not** receive the raw host tmux socket;
+instead it gets an allowlisted `cosw-hostctl` client plus a private Unix socket.
+
+```bash
+cosw --dispatch-doctor
+cosw-hostctl bootstrap
+cosw-hostctl fleet-status
+cosw-hostctl status <project>
+cosw-hostctl ensure-pm <project>
+cosw-hostctl dispatch-pm <project> --message 'PM ACTION REQUIRED: ...' --handoff /absolute/path --wait-ack 120
+```
+
+Allowed bridge actions are project-registry driven: ensure PM/PL sessions,
+append registered non-secret project-bus events, dispatch PM action requests,
+and check dispatch acknowledgement. Project names, tmux sessions, writable bus
+paths, and PM profiles come from the project registry, not from sandbox guesses.
+
+## Notes ledger capture
+
+`notes-ledger` is the first deterministic layer for CoS note-taking. It can
+create daily notes, ingest bounded work/personal capture packets, emit only the
+sanitized work-load signal across ledgers, generate weekly/monthly review notes,
+and detect optional local inference providers.
+
+```bash
+bin/hermes/notes-ledger schema
+bin/hermes/notes-ledger create-daily --ledger personal
+bin/hermes/notes-ledger capture --ledger personal --packet <personal-packet.yaml>
+bin/hermes/notes-ledger emit-work-signal --packet <work-packet.yaml>
+bin/hermes/notes-ledger index --ledger work --write
+bin/hermes/notes-ledger rollup --ledger work --cadence weekly --write
+bin/hermes/notes-ledger-fixture-test
+```
+
+Stdout is JSON only. Optional inference is local-only, off by default, and
+falls back to deterministic templates when unavailable.
 
 Project registries are searched in:
 

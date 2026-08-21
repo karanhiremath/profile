@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Sandbox client for the allowlisted Hermes host manager."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import socket
+import time
+import uuid
+from pathlib import Path
+
+def default_state() -> Path:
+    if value := os.environ.get("COSW_HOST_CONTROL_MOUNT"):
+        return Path(value)
+    if Path("/run/hermes-manager").exists():
+        return Path("/mnt/cosw-host-control")
+    data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return data / "hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/host-control"
+
+
+def default_socket() -> Path:
+    if value := os.environ.get("COSW_HOST_CONTROL_SOCKET"):
+        return Path(value)
+    sandbox = Path("/run/hermes-manager/manager.sock")
+    if sandbox.exists():
+        return sandbox
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/hermes-{os.getuid()}"))
+    return runtime / "hermes-sandbox-manager/chief-of-staff-work/manager.sock"
+
+
+DEFAULT_STATE = default_state()
+DEFAULT_SOCKET = default_socket()
+SCHEMA = "cosw.dispatch.v1"
+
+
+def envelope(action: str, project: str | None) -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema_version": SCHEMA,
+        "id": f"{int(time.time())}-{uuid.uuid4().hex}",
+        "action": action,
+        "sandbox_id": os.environ.get("HERMES_SANDBOX_ID", os.environ.get("HOSTNAME", "unknown")),
+        "session_id": os.environ.get("HERMES_SESSION_ID", "unknown"),
+        "expires_at": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+    }
+    if project:
+        value["project"] = project
+    parent = os.environ.get("TRACEPARENT", "").strip()
+    if parent:
+        value["traceparent"] = parent
+    return value
+
+
+def via_socket(path: Path, request: dict[str, object], timeout: float) -> dict[str, object]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(timeout)
+        client.connect(str(path))
+        client.sendall(json.dumps(request, separators=(",", ":")).encode() + b"\n")
+        data = bytearray()
+        while b"\n" not in data:
+            chunk = client.recv(8192)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > 1024 * 1024:
+                raise ValueError("host manager response exceeded 1 MiB")
+    value = json.loads(bytes(data).split(b"\n", 1)[0])
+    if not isinstance(value, dict):
+        raise ValueError("host manager returned a non-object")
+    return value
+
+
+def via_spool(root: Path, request: dict[str, object], timeout: float) -> dict[str, object]:
+    requests = root / "requests"
+    responses = root / "responses"
+    request_id = str(request["id"])
+    tmp = requests / f".{request_id}.tmp"
+    final = requests / f"{request_id}.json"
+    tmp.write_text(json.dumps(request, separators=(",", ":")) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(final)
+    response = responses / f"{request_id}.json"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if response.exists():
+            value = json.loads(response.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("host manager returned a non-object")
+            response.unlink(missing_ok=True)
+            return value
+        time.sleep(0.1)
+    raise TimeoutError(f"timed out waiting for host response: {request_id}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Use the allowlisted host bridge from a sandboxed COSW session."
+    )
+    parser.add_argument(
+        "action",
+        choices=(
+            "bootstrap", "dispatch-pm", "dispatch-status", "ensure-pm", "ensure-pl",
+            "event-append", "fleet-status", "notify-pm", "status",
+        ),
+    )
+    parser.add_argument("project", nargs="?")
+    parser.add_argument("--dispatch-id")
+    parser.add_argument("--event-json")
+    parser.add_argument("--handoff")
+    parser.add_argument("--message")
+    parser.add_argument("--source")
+    parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--wait-ack", type=float, default=0.0, metavar="SECONDS")
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
+    parser.add_argument("--socket", type=Path, default=DEFAULT_SOCKET)
+    parser.add_argument("--allow-spool-fallback", action="store_true")
+    args = parser.parse_args()
+    if args.action not in {"bootstrap", "fleet-status"} and not args.project:
+        parser.error(f"{args.action} requires project")
+    if args.action in {"notify-pm", "dispatch-pm"} and not args.message:
+        parser.error(f"{args.action} requires --message")
+    if args.action == "dispatch-status" and not args.dispatch_id:
+        parser.error("dispatch-status requires --dispatch-id")
+    if args.action == "event-append" and not args.event_json:
+        parser.error("event-append requires --event-json")
+    request = envelope(args.action, args.project)
+    if args.dispatch_id:
+        request["dispatch_id"] = args.dispatch_id
+    if args.handoff:
+        request["handoff"] = args.handoff
+    if args.message:
+        request["message"] = args.message
+    if args.source:
+        request["source"] = args.source
+    if args.event_json:
+        event = json.loads(args.event_json)
+        if not isinstance(event, dict):
+            parser.error("--event-json must decode to an object")
+        request["event"] = event
+    if args.socket.exists():
+        value = via_socket(args.socket, request, args.timeout)
+    elif args.allow_spool_fallback:
+        value = via_spool(args.state_dir, request, args.timeout)
+    else:
+        parser.error(
+            f"COSW host manager socket is unavailable: {args.socket}. "
+            "Start a fresh session with `cosw`, or run `cosw --dispatch-doctor`."
+        )
+    if value.get("ok") and args.action == "dispatch-pm" and args.wait_ack > 0:
+        result = value.get("result") or {}
+        dispatch_id = str(result.get("dispatch_id") or "") if isinstance(result, dict) else ""
+        deadline = time.monotonic() + args.wait_ack
+        while dispatch_id and time.monotonic() < deadline:
+            status_request = envelope("dispatch-status", args.project)
+            status_request["dispatch_id"] = dispatch_id
+            status_value = via_socket(args.socket, status_request, min(args.timeout, 10.0))
+            status_result = status_value.get("result") or {}
+            if status_value.get("ok") and isinstance(status_result, dict) and status_result.get("semantic_acknowledged"):
+                value["result"]["semantic_acknowledged"] = True
+                value["result"]["ack"] = status_result.get("ack")
+                break
+            time.sleep(1.0)
+    print(json.dumps(value, indent=2, sort_keys=True))
+    return 0 if value.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

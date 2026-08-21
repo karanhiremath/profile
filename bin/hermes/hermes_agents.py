@@ -91,6 +91,8 @@ def find_profile(name: str) -> Path:
 
 
 def _data_home() -> Path:
+    if override := os.environ.get("HERMES_AGENTS_DATA_HOME"):
+        return Path(override).expanduser()
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "hermes-agents"
 
@@ -180,11 +182,15 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
     if not tts_on and "tts" in toolsets:
         toolsets.remove("tts")
 
+    model_cfg: Dict[str, Any] = {
+        "provider": llm.get("provider", "openai-codex"),
+        "default": llm.get("model", "gpt-5.5"),
+    }
+    llm_base_url = str(llm.get("base_url") or "").strip()
+    if llm_base_url:
+        model_cfg["base_url"] = llm_base_url
     cfg: Dict[str, Any] = {
-        "model": {
-            "provider": llm.get("provider", "openai-codex"),
-            "default": llm.get("model", "gpt-5.5"),
-        },
+        "model": model_cfg,
         "toolsets": toolsets,
         "plugins": {"enabled": ["cartesia"] if (tts_on or stt_on) else []},
     }
@@ -197,7 +203,7 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         terminal = dict(terminal) if isinstance(terminal, dict) else {}
         terminal["backend"] = override
         if override in {"docker", "singularity", "modal", "daytona"} and not terminal.get("cwd"):
-            terminal["cwd"] = "/root"
+            terminal["cwd"] = os.environ.get("TERMINAL_CWD") or ("/workspace" if override == "docker" else "/root")
         if override == "docker":
             terminal.setdefault("docker_image", os.environ.get("TERMINAL_DOCKER_IMAGE", "localhost/hermes-agent/python-node:dev"))
             volumes_env = os.environ.get("TERMINAL_DOCKER_VOLUMES", "").strip()
@@ -212,8 +218,45 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
             if src.is_dir() and not terminal.get("docker_volumes"):
                 terminal["docker_volumes"] = [f"{src}:/root/src", f"{src}:/home/hermes/src"]
             terminal.setdefault("docker_persist_across_processes", False)
+            extra_args_env = os.environ.get("TERMINAL_DOCKER_EXTRA_ARGS", "").strip()
+            if extra_args_env:
+                try:
+                    extra_args = json.loads(extra_args_env)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(f"ERROR: TERMINAL_DOCKER_EXTRA_ARGS must be a JSON array: {exc}") from exc
+                if not isinstance(extra_args, list) or not all(isinstance(item, str) for item in extra_args):
+                    raise SystemExit("ERROR: TERMINAL_DOCKER_EXTRA_ARGS must be a JSON array of strings")
+                terminal["docker_extra_args"] = extra_args
+            docker_env_raw = os.environ.get("TERMINAL_DOCKER_ENV", "").strip()
+            if docker_env_raw:
+                try:
+                    docker_env = json.loads(docker_env_raw)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(f"ERROR: TERMINAL_DOCKER_ENV must be a JSON object: {exc}") from exc
+                if not isinstance(docker_env, dict) or not all(
+                    isinstance(key, str) and isinstance(value, str) for key, value in docker_env.items()
+                ):
+                    raise SystemExit("ERROR: TERMINAL_DOCKER_ENV must be a JSON object of string values")
+                terminal["docker_env"] = docker_env
     if isinstance(terminal, dict) and terminal:
+        cwd = terminal.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            terminal = dict(terminal)
+            terminal["cwd"] = str(Path(os.path.expandvars(cwd)).expanduser())
         cfg["terminal"] = terminal
+    providers = profile.get("providers")
+    if isinstance(providers, dict) and providers:
+        # Pass through named custom providers so profile-scoped MoA slots can
+        # route to local/OpenAI-compatible endpoints (vLLM, Together, etc.)
+        # without hand-editing the isolated HERMES_HOME config. Profiles should
+        # use key_env for secrets; committed profiles must not inline api_key.
+        cfg["providers"] = providers
+    moa = profile.get("moa")
+    if isinstance(moa, dict) and moa:
+        # Pass through declarative MoA presets so profiles can avoid the
+        # built-in OpenRouter-backed default when that provider is not
+        # configured in the runtime home.
+        cfg["moa"] = moa
     if tts_on:
         cfg["tts"] = {"provider": "cartesia", "model": tts.get("model", "sonic-3.5"), "voice": voice}
     if stt_on:
@@ -276,8 +319,19 @@ def materialize(name: str) -> Path:
     if herm_prefs:
         _merge_json_file(home / "herm" / "tui.json", herm_prefs)
 
-    # SOUL.md — persona.
+    # SOUL.md — persona plus a launcher-supplied, generic bootstrap contract.
+    # The append file is intentionally explicit rather than discovered from the
+    # work repo, so generic launchers can expose capabilities without embedding
+    # project-specific state in profile tooling.
     persona = (profile.get("persona") or "").strip()
+    append_path = os.environ.get("HERMES_PERSONA_APPEND_FILE", "").strip()
+    if append_path:
+        source = Path(append_path).expanduser()
+        if not source.is_file():
+            raise SystemExit(f"ERROR: HERMES_PERSONA_APPEND_FILE is unavailable: {source}")
+        appendix = source.read_text(encoding="utf-8").strip()
+        if appendix:
+            persona = f"{persona}\n\n{appendix}" if persona else appendix
     if persona:
         (home / "SOUL.md").write_text(persona + "\n", encoding="utf-8")
 
@@ -296,6 +350,13 @@ def materialize(name: str) -> Path:
             env_updates["TERMINAL_DOCKER_VOLUMES"] = json.dumps(terminal_cfg["docker_volumes"])
         if "docker_persist_across_processes" in terminal_cfg:
             env_updates["TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES"] = "true" if terminal_cfg["docker_persist_across_processes"] else "false"
+        # Terraform AWS provider / AWS CLI v2 SSO profiles need shared config
+        # loading when host ~/.aws is staged into the sandbox.
+        env_updates["AWS_SDK_LOAD_CONFIG"] = "1"
+        for key in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION"):
+            value = os.environ.get(key, "").strip()
+            if value:
+                env_updates[key] = value
         docker_bin = os.environ.get("HERMES_DOCKER_BINARY", "").strip()
         if docker_bin:
             env_updates["HERMES_DOCKER_BINARY"] = docker_bin
@@ -308,6 +369,21 @@ def materialize(name: str) -> Path:
         voice = cfg.get("tts", {}).get("voice")
         if voice:
             env_updates["CARTESIA_VOICE_ID"] = voice
+    providers_cfg = cfg.get("providers")
+    if isinstance(providers_cfg, dict):
+        # Existing isolated homes are not re-seeded from ~/.hermes/.env after
+        # first creation. Keep named provider credentials in sync when profiles
+        # declare a key_env, while preserving manually-added per-profile values
+        # if the source env is absent. Never inline or print secret values.
+        for entry in providers_cfg.values():
+            if not isinstance(entry, dict):
+                continue
+            key_env = str(entry.get("key_env") or "").strip()
+            if not key_env or key_env in env_updates:
+                continue
+            value = _resolve_env(key_env)
+            if value:
+                env_updates[key_env] = value
     _upsert_env(home / ".env", env_updates)
 
     def sync_runtime_home(runtime_home: Path) -> None:

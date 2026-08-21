@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Validate notes-ledger against synthetic fixtures only; no real notes are read.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_ROOT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
+FIXTURES="$PROFILE_ROOT/testdata/hermes-notes"
+CLI="$SCRIPT_DIR/notes-ledger"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+WORK_ROOT="$TMP/work-ledger"
+PERSONAL_ROOT="$TMP/personal-ledger"
+mkdir -p "$WORK_ROOT/templates" "$PERSONAL_ROOT/00_includes/templates"
+
+cat >"$WORK_ROOT/templates/daily-note.md" <<'TEMPLATE'
+# {{date:YYYY-MM-DD dddd}}
+
+## Focus
+- 
+
+## Work Log
+
+## Decisions Made
+
+## Blockers
+
+## Tomorrow
+- 
+TEMPLATE
+
+cat >"$PERSONAL_ROOT/00_includes/templates/note_daily.md" <<'TEMPLATE'
+# Daily — {{date}}
+
+## Intentions #personal
+- [ ]
+
+## Agent activity
+
+## Personal notes #personal
+
+## Projects #personal
+-
+
+## Work-load signal #work
+Sanitized only. No proprietary details.
+
+## Decisions
+-
+
+## Open loops
+- [ ]
+
+## Tomorrow
+- [ ]
+TEMPLATE
+
+run_json() {
+  "$CLI" --work-root "$WORK_ROOT" --personal-root "$PERSONAL_ROOT" "$@" >/dev/null
+}
+
+run_json create-daily --ledger work --date 2026-08-06
+run_json create-daily --ledger personal --date 2026-08-06
+run_json capture --ledger work --packet "$FIXTURES/sample-work-packet.yaml"
+run_json capture --ledger personal --packet "$FIXTURES/sample-personal-packet.yaml"
+run_json emit-work-signal --packet "$FIXTURES/sample-work-packet.yaml"
+run_json rollup --ledger work --cadence weekly --date 2026-08-06 --write
+run_json rollup --ledger work --cadence monthly --date 2026-08-06 --write
+run_json rollup --ledger personal --cadence weekly --date 2026-08-06 --write
+run_json rollup --ledger personal --cadence monthly --date 2026-08-06 --write
+run_json index --ledger work --kind simple --include-reviews --write
+run_json index --ledger personal --include-reviews --write
+run_json providers
+
+if "$CLI" --work-root "$WORK_ROOT" --personal-root "$PERSONAL_ROOT" privacy-lint --ledger personal --packet "$FIXTURES/leaky-personal-packet.yaml" >/dev/null; then
+  printf '{"ok":false,"error":"leaky personal packet unexpectedly passed"}\n'
+  exit 1
+fi
+
+for path in \
+  "$WORK_ROOT/daily/2026-08-06.md" \
+  "$PERSONAL_ROOT/02_personal/daily/2026-08-06 Thu.md" \
+  "$WORK_ROOT/agentic/memory/reviews/weekly/2026-W32.md" \
+  "$WORK_ROOT/agentic/memory/reviews/monthly/2026-08.md" \
+  "$WORK_ROOT/agentic/memory/brain/notes-ledger-index.jsonl" \
+  "$PERSONAL_ROOT/02_personal/reviews/weekly/2026-W32.md" \
+  "$PERSONAL_ROOT/02_personal/reviews/monthly/2026-08.md" \
+  "$PERSONAL_ROOT/02_personal/reviews/notes-ledger-index.jsonl"; do
+  test -s "$path"
+done
+
+printf '{"ok":true,"fixture":"hermes-notes","real_notes_read":false}\n'
