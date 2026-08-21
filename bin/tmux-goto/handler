@@ -1,0 +1,137 @@
+#!/bin/bash
+# tmux-goto/handler — resolves a tmux-goto://<target> URI to an actual tmux
+# jump. Registered as the OS handler for the tmux-goto:// scheme by
+# bin/tmux-goto/install; can also be run directly for testing.
+#
+# <target> = session[:window[.pane]]  (tmux's own target syntax)
+#
+# Resolution order:
+#   1. Session exists in the LOCAL tmux server:
+#        - if this process is itself inside an attached tmux client ($TMUX
+#          set), `tmux switch-client` to the target directly.
+#        - otherwise, open a new terminal window that attaches and selects
+#          the target (the common case: clicks land here as a detached
+#          process with no ambient tmux client).
+#   2. Not found locally: walk bin/tmux/hosts/registry.conf (+ any
+#      TMUX_CONNECT_EXTRA_REGISTRIES) for a remote host whose tmux server has
+#      a session of that name, then open a terminal that SSHes in and
+#      attaches there.
+#   3. Not found anywhere: log + best-effort desktop notification, exit 1.
+#
+# Usage: handler <tmux-goto://target | target>
+
+set -euo pipefail
+
+LOG="${HOME}/.cache/tmux-goto.log"
+mkdir -p "$(dirname "$LOG")"
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG"; }
+
+notify() {
+    local msg="$1"
+    log "notify: $msg"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send "tmux-goto" "$msg" || true
+    elif command -v osascript >/dev/null 2>&1; then
+        osascript -e "display notification $(printf '%q' "$msg") with title \"tmux-goto\"" >/dev/null 2>&1 || true
+    fi
+}
+
+RAW="${1:-}"
+if [ -z "$RAW" ]; then
+    echo "Usage: handler tmux-goto://<session[:window[.pane]]>" >&2
+    exit 2
+fi
+
+TARGET="${RAW#tmux-goto://}"
+TARGET="${TARGET#tmux-goto:}"
+# Best-effort percent-decode for the few characters a scheme handler might encode.
+TARGET="${TARGET//%3A/:}"; TARGET="${TARGET//%3a/:}"
+TARGET="${TARGET//%2E/.}"; TARGET="${TARGET//%2e/.}"
+
+SESSION="${TARGET%%:*}"
+
+log "resolving raw='${RAW}' target='${TARGET}' session='${SESSION}'"
+
+# Build the attach-and-select command for a given target. `select-pane -t`
+# with a session:window.pane target also switches the active window, so a
+# single select-pane after attach is enough when a pane is specified.
+attach_cmd() {
+    local sess="$1" tgt="$2"
+    if [ "$tgt" != "$sess" ]; then
+        printf 'tmux attach-session -t %q \\; select-pane -t %q' "$sess" "$tgt"
+    else
+        printf 'tmux attach-session -t %q' "$sess"
+    fi
+}
+
+open_terminal() {
+    # $1 = shell command string to run in a new terminal window/tab.
+    local cmd="$1"
+    if command -v ghostty >/dev/null 2>&1; then
+        # Reuses a running Ghostty instance if there is one. Ghostty may show
+        # a one-time "Allow Ghostty to Execute" confirmation for -e commands.
+        if ghostty +new-window -e bash -lc "$cmd" >/dev/null 2>&1; then
+            return 0
+        fi
+        if ghostty -e bash -lc "$cmd" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    case "$(uname -s)" in
+        Darwin)
+            open -na Ghostty --args -e bash -lc "$cmd"
+            ;;
+        Linux)
+            if command -v x-terminal-emulator >/dev/null 2>&1; then
+                x-terminal-emulator -e bash -lc "$cmd" &
+            else
+                log "no terminal launcher available for: $cmd"
+                notify "No terminal launcher found — run manually: $cmd"
+                return 1
+            fi
+            ;;
+        *)
+            log "unsupported platform for opening a terminal: $(uname -s)"
+            return 1
+            ;;
+    esac
+}
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    log "session '$SESSION' found on local tmux server"
+    if [ -n "${TMUX:-}" ]; then
+        tmux switch-client -t "$TARGET"
+        log "switched local client to $TARGET"
+        exit 0
+    fi
+    open_terminal "$(attach_cmd "$SESSION" "$TARGET")"
+    exit $?
+fi
+
+# Not local — walk the registered host list (same registry tmux-connect uses).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REGISTRY="${SCRIPT_DIR}/../tmux/hosts/registry.conf"
+REGISTRIES=("$REGISTRY")
+if [ -n "${TMUX_CONNECT_EXTRA_REGISTRIES:-}" ]; then
+    IFS=':' read -ra _extra <<<"$TMUX_CONNECT_EXTRA_REGISTRIES"
+    REGISTRIES+=("${_extra[@]}")
+fi
+
+for reg in "${REGISTRIES[@]}"; do
+    [ -f "$reg" ] || continue
+    while IFS='|' read -r h_name h_ssh h_session h_desc; do
+        [[ -z "$h_name" || "$h_name" == \#* ]] && continue
+        [[ "$h_ssh" == "local" ]] && continue
+        if ssh -o ConnectTimeout=3 -o BatchMode=yes "$h_ssh" \
+            "tmux has-session -t '$SESSION'" 2>/dev/null; then
+            log "session '$SESSION' found on remote host '$h_name' ($h_ssh)"
+            REMOTE_CMD="$(printf 'ssh -t %q %q' "$h_ssh" "$(attach_cmd "$SESSION" "$TARGET")")"
+            open_terminal "$REMOTE_CMD"
+            exit $?
+        fi
+    done <"$reg"
+done
+
+log "session '$SESSION' not found locally or on any registered host"
+notify "tmux session '${SESSION}' not found locally or on registered hosts"
+exit 1
