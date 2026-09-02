@@ -133,12 +133,73 @@ function local_tmux ()
     echo "Connecting to local session name: ${sessionname}"
     tmux has-session -t "${sessionname}" && tmux attach-session -t "${sessionname}" || exec tmux new -s "${sessionname}"
 }
+
 function mac ()
 {
-    local sessionname="${1:-mac}"
-    echo "Connecting to local session name: ${sessionname}"
-    local_tmux "${sessionname}"
+    local _tc="${PROFILE_DIR:-$HOME/src/profile}/bin/tmux/tmux-connect"
+    case "${1:-}" in
+        -h|--help|help)
+            echo "Usage: mac [session]   attach/create local tmux session (default: mac)"
+            echo "       mac --ls        list attachable local tmux sessions"
+            ;;
+        --ls|-l)
+            "$_tc" --ls local
+            ;;
+        *)
+            local_tmux "${1:-mac}"
+            ;;
+    esac
 }
+
+_mac_completions() {
+    local -a flags sessions
+    flags=("--ls:list attachable sessions" "--help:show help")
+    sessions=(${(f)"$(tmux list-sessions -F '#S' 2>/dev/null)"})
+    if (( CURRENT == 2 )); then
+        _describe 'flag' flags
+        _describe 'session' sessions
+    fi
+}
+compdef _mac_completions mac
+
+# Generic tc — tmux-connect passthrough. Work machines override this in
+# ~/src/karan.hiremath/scripts/shell-ext.sh with cluster routing.
+function tc() {
+    local _tc="${PROFILE_DIR:-$HOME/src/profile}/bin/tmux/tmux-connect"
+    case "${1:-}" in
+        --ls|-l) "$_tc" --ls "${2:-local}" ;;
+        *)       "$_tc" "$@" ;;
+    esac
+}
+
+_tc_completions() {
+    local -a flags hosts sessions
+    local _tc="${PROFILE_DIR:-$HOME/src/profile}/bin/tmux/tmux-connect"
+    local registry="${_tc%/*}/hosts/registry.conf"
+    flags=("--ls:list attachable sessions" "--list" "--status" "--help")
+    if [[ -f "$registry" ]]; then
+        hosts=(${(f)"$(grep -v '^#' "$registry" | grep -v '^$' | cut -d'|' -f1)"})
+    fi
+    if (( CURRENT == 2 )); then
+        _describe 'flag' flags
+        _describe 'host' hosts
+        sessions=(${(f)"$("$_tc" --ls-cache local 2>/dev/null)"})
+        (( ${#sessions} )) && _describe 'session' sessions
+    elif (( CURRENT == 3 )); then
+        case "${words[2]}" in
+            --ls)
+                _describe 'host' hosts
+                ;;
+            *)
+                sessions=(${(f)"$("$_tc" --ls-cache "${words[2]}" 2>/dev/null)"})
+                flags=("--ls:list attachable sessions")
+                _describe 'flag' flags
+                (( ${#sessions} )) && _describe 'session' sessions
+                ;;
+        esac
+    fi
+}
+compdef _tc_completions tc
 
 alias reload-ssh='eval $(tmux show-env -s | grep '^SSH_')'
 
