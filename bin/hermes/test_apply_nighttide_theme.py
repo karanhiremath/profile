@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.machinery
+import json
 import unittest
 from pathlib import Path
 
@@ -39,6 +40,12 @@ class HostThemeTests(unittest.TestCase):
             "nighttide-ember",
         ):
             self.assertIn(name, mod.THEME_VARIANTS)
+
+    def test_cos_surfaces_are_transparent(self) -> None:
+        body = json.loads(mod.theme_json("nighttide-teal"))
+        self.assertEqual(body["defs"]["ntBg0"], "transparent")
+        self.assertEqual(body["theme"]["background"]["dark"], "ntBg0")
+        self.assertEqual(body["defs"]["ntAccent"], mod.TEAL)
 
     def test_fork_manifest_insert(self) -> None:
         import tempfile
