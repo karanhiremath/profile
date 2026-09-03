@@ -240,6 +240,34 @@ nvim:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/nvim/install
 
+# Build and install atop (agent-fleet TUI) from karan.hiremath crate
+# Crate source (first hit with Cargo.toml):
+#   ATOP_SRC, $KH_DIR/agentic/telemetry/atop, ~/src/karan.hiremath/...,
+#   or the thin worktree kh/atop-rust-thin-20260902
+atop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    resolve_atop_src() {
+        local cand
+        for cand in \
+            "${ATOP_SRC:-}" \
+            "${KH_DIR:-$HOME/src/karan.hiremath}/agentic/telemetry/atop" \
+            "$HOME/src/karan.hiremath/agentic/telemetry/atop" \
+            "$HOME/src/karan.hiremath/.worktrees/atop-rust-thin-20260902/agentic/telemetry/atop"
+        do
+            [[ -n "$cand" && -f "$cand/Cargo.toml" ]] && { printf '%s\n' "$cand"; return 0; }
+        done
+        echo "just atop: crate not found. Fetch origin/kh/atop-rust-thin-20260902 or set ATOP_SRC." >&2
+        return 2
+    }
+    src="$(resolve_atop_src)"
+    echo "Building atop from $src"
+    cargo build --release --manifest-path "$src/Cargo.toml"
+    mkdir -p "$HOME/.local/bin"
+    cp "$src/target/release/atop" "$HOME/.local/bin/atop"
+    chmod 755 "$HOME/.local/bin/atop"
+    echo "installed $HOME/.local/bin/atop"
+
 # Build and install pc (pi-code session manager)
 pc:
     #!/usr/bin/env bash
