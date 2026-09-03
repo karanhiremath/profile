@@ -40,6 +40,22 @@ class HostThemeTests(unittest.TestCase):
         ):
             self.assertIn(name, mod.THEME_VARIANTS)
 
+    def test_fork_manifest_insert(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "manifest.ts"
+            manifest.write_text(
+                'export const PREVIEW = {\n'
+                '  "nighttide-violet": { primary: "#64ba9a", accent: "#c792ea", background: "#2e3d4e" },\n'
+                '};\n'
+            )
+            mod.ensure_fork_manifest(manifest)
+            text = manifest.read_text()
+            self.assertIn('"nighttide-teal":', text)
+            self.assertIn('"nighttide-violet":', text)
+
 
 if __name__ == "__main__":
     unittest.main()

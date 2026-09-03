@@ -119,6 +119,11 @@ case "$cmd" in
     [ -n "$surface" ] || surface="cli"
 
     home="$(materialize "$profile")"
+    # Cos YAML / older install-tui can leave a theme name the running herm fork
+    # does not ship. Re-apply host nighttide built-ins + prefs before exec.
+    if [ -x "$SCRIPT_DIR/apply-nighttide-theme" ]; then
+      "$SCRIPT_DIR/apply-nighttide-theme" --quiet || true
+    fi
     runtime_profile="$(sed -n '1p' "$home/active_profile" 2>/dev/null || true)"
     runtime_home="$home"
     if [ -n "$runtime_profile" ] && [ "$runtime_profile" != "default" ] && [ -d "$home/profiles/$runtime_profile" ]; then
