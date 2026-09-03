@@ -328,6 +328,22 @@ opentofu:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/opentofu/install
 
+# Bootstrap/update the private-intended personal krop.ai infra checkout.
+krop-infra-bootstrap:
+    ./bin/krop-infra bootstrap
+
+# Pull the krop-infra checkout when it has an origin remote; otherwise no-op with help.
+krop-infra-update:
+    ./bin/krop-infra update
+
+# Show local krop-infra checkout status and remotes.
+krop-infra-status:
+    ./bin/krop-infra status
+
+# Print krop-infra helper usage.
+krop-infra-help:
+    ./bin/krop-infra help
+
 steampipe:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -441,6 +457,12 @@ cursor-setup:
     export APP_BIN="${PROFILE_DIR}/bin"
     chmod +x ./bin/cursor-cli/setup
     ./bin/cursor-cli/setup
+
+# Run focused Cursor Agent CLI helper tests
+test-cursor-cli:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 -m unittest tests/test_cursor_cli_stage_api_key.py
 
 # Install/upgrade Devin for Terminal
 devin:
