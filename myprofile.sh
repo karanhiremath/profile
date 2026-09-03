@@ -353,6 +353,7 @@ unset _hermes_toolchain_home
 # Hermes voice/agent launcher (profiles -> isolated agents; CLI/TUI/gateway)
 alias agents="$HOME/src/profile/bin/hermes/agents"
 alias cos="$HOME/src/profile/bin/hermes/cos"
+alias cos-gpt5.5="$HOME/src/profile/bin/hermes/cos-gpt5.5"
 alias cosw="$HOME/src/profile/bin/hermes/cosw"
 alias pm="$HOME/src/profile/bin/hermes/pm"
 alias pl="$HOME/src/profile/bin/hermes/pl"

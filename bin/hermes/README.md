@@ -28,7 +28,8 @@ bin/hermes/pl <project>  # attach a registered project-lead implementation sessi
 These commands are generic profile-level wrappers. They do not embed work/private project state; they resolve profiles and project session registries from the normal Hermes search paths.
 
 ```bash
-cos                         # agents up chief-of-staff
+cos                         # agents up chief-of-staff (YAML seat)
+cos gpt5.5                  # same TUI on openai-codex/gpt-5.5 (`cos --codex`)
 cosw                        # agents up chief-of-staff-work
 pm <project>                # attach/start the Hermes PM TUI session for project
 pl <project>                # attach the project-lead implementation tmux session

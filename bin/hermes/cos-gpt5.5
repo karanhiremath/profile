@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Convenience wrapper: personal CoS herm-tui on openai-codex/gpt-5.5.
+set -euo pipefail
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+exec "$SCRIPT_DIR/cos" --codex "$@"

@@ -168,10 +168,22 @@ def _redact_host(url: str) -> str:
         return "<redacted>"
 
 
+def llm_from_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """Profile YAML seat, with launch-scoped env overrides from `cos --codex`."""
+    llm = dict(profile.get("llm") or {})
+    provider = os.environ.get("HERMES_AGENT_LLM_PROVIDER", "").strip()
+    model = os.environ.get("HERMES_AGENT_LLM_MODEL", "").strip()
+    if provider:
+        llm["provider"] = provider
+    if model:
+        llm["model"] = model
+    return llm
+
+
 def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
     tts = profile.get("tts") or {}
     stt = profile.get("stt") or {}
-    llm = profile.get("llm") or {}
+    llm = llm_from_profile(profile)
     tts_on = bool(tts.get("enabled", True))
     stt_on = bool(stt.get("enabled", True))
     voice = (tts.get("voice") or "").strip() or _resolve_env("CARTESIA_VOICE_ID") or ""
