@@ -296,9 +296,76 @@ def write_theme_dir(dest: Path) -> None:
         (dest / f"{name}.json").write_text(theme_json(name))
 
 
+def herm_fork_dirs() -> list[Path]:
+    """Fork checkouts that Cos actually execs (often not the pnpm/npm package)."""
+    found: list[Path] = []
+    seen: set[Path] = set()
+    candidates = []
+    env = os.environ.get("HERMES_HERM_TUI_DIR")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(HOME / "src/herm")
+    if HERM_TUI.exists():
+        candidates.append(HERM_TUI)
+    for raw in candidates:
+        try:
+            key = raw.resolve()
+        except FileNotFoundError:
+            continue
+        if key in seen:
+            continue
+        if (key / "src/theme/themes").is_dir() and (key / "src/theme/manifest.ts").exists():
+            seen.add(key)
+            found.append(key)
+    return found
+
+
+def _preview_entry(name: str) -> str:
+    accent, primary, _line = THEME_VARIANTS[name]
+    return f'  "{name}": {{ primary: "{primary}", accent: "{accent}", background: "{GHOSTTY_BG}" }},'
+
+
+def ensure_fork_manifest(manifest: Path) -> None:
+    text = manifest.read_text()
+    changed = False
+    for name in THEME_VARIANTS:
+        entry = _preview_entry(name)
+        token = f'"{name}":'
+        pattern = (
+            rf'  "{re.escape(name)}": \{{ primary: "#[0-9A-Fa-f]{{6}}", '
+            rf'accent: "#[0-9A-Fa-f]{{6}}", background: "#[0-9A-Fa-f]{{6}}" \}},'
+        )
+        if token in text:
+            text, n = re.subn(pattern, entry, text, count=1)
+            changed = changed or bool(n)
+            continue
+        anchor = '  "nighttide-violet":' if '"nighttide-violet":' in text else '  "nighttide":'
+        idx = text.find(anchor)
+        if idx < 0:
+            raise SystemExit(f"could not patch herm fork manifest: {manifest}")
+        line_end = text.find("\n", idx)
+        insert_at = line_end + 1 if line_end >= 0 else idx
+        text = text[:insert_at] + entry + "\n" + text[insert_at:]
+        changed = True
+    if changed:
+        manifest.write_text(text)
+
+
+def write_fork_themes() -> list[str]:
+    """Older herm forks have no user-theme loader; Cos falls back to tokyonight
+    unless nighttide-* exists in src/theme/themes + manifest PREVIEW."""
+    written = []
+    for fork in herm_fork_dirs():
+        dest = fork / "src/theme/themes"
+        write_theme_dir(dest)
+        ensure_fork_manifest(fork / "src/theme/manifest.ts")
+        written.append(str(dest))
+    return written
+
+
 def write_package_themes() -> str | None:
     """Write into a published herm-tui package. Skip dirtying a local fork."""
-    if BUILTIN_THEMES.is_dir():
+    if (HERM_TUI / "src/theme/themes").is_dir():
         return None
     if not HERM_TUI.exists():
         return None
@@ -440,6 +507,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="remap non-Cos homes even when they already have a nighttide-* theme",
     )
+    p.add_argument("--quiet", action="store_true", help="suppress per-home listing")
     return p.parse_args(argv)
 
 
@@ -448,17 +516,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(f"herm-tui={HERM_TUI}")
         print(f"machine={machine_id()} cos={host_cos_theme()}")
-        print(f"package_themes={'skip-fork' if BUILTIN_THEMES.is_dir() else THEMES}")
+        print(f"package_themes={'skip-fork' if (HERM_TUI / 'src/theme/themes').is_dir() else THEMES}")
+        print(f"forks={[str(p) for p in herm_fork_dirs()]}")
         for home in candidate_homes():
             print(f"  {home}: {theme_for_home(home, force=args.force)}")
         return 0
 
-    if not HERM_TUI.exists() and not candidate_homes():
+    if not HERM_TUI.exists() and not candidate_homes() and not herm_fork_dirs():
         raise SystemExit(f"herm-tui install not found: {HERM_TUI}")
 
     package_dir = write_package_themes()
     if package_dir:
         ensure_registry()
+    forks = write_fork_themes()
 
     applied = []
     for home in candidate_homes():
@@ -466,14 +536,15 @@ def main(argv: list[str] | None = None) -> int:
         theme = merge_pref(home, force=args.force)
         applied.append(f"{home}: {theme}")
 
-    print(f"nighttide themes installed with Ghostty background {GHOSTTY_BG}")
-    print(f"  machine={machine_id()} cos={host_cos_theme()}")
-    if package_dir:
-        print(f"  package={package_dir}")
-    elif BUILTIN_THEMES.is_dir():
-        print(f"  fork={HERM_TUI} (user-theme overlay only; built-ins owned by herm repo)")
-    for line in applied:
-        print(f"  {line}")
+    if not args.quiet:
+        print(f"nighttide themes installed with Ghostty background {GHOSTTY_BG}")
+        print(f"  machine={machine_id()} cos={host_cos_theme()}")
+        if package_dir:
+            print(f"  package={package_dir}")
+        for fork in forks:
+            print(f"  fork={fork}")
+        for line in applied:
+            print(f"  {line}")
     return 0
 
 
