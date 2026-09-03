@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+# Hermes agent sandbox control plane.
+# Attach, rebuild, and inspect Podman sandboxes for cosw / pm / fleet profiles.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage: sandbox-ctl [--profile NAME] <command> [args]
+
+Commands:
+  status              Image, container, materialized backend (stdout JSON)
+  up                  Start or reuse the long-lived sandbox container
+  down                Stop/remove the long-lived sandbox container
+  attach              exec -it into the running sandbox
+  exec -- CMD...      exec a non-interactive command in the sandbox
+  rebuild             Build localhost/hermes-agent/python-node:dev with isolated registry auth
+
+Defaults:
+  --profile chief-of-staff-work
+  image: ${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}
+
+Auth isolation:
+  Rebuild and smoke never consult ~/.docker/config.json gcloud credHelpers.
+EOF
+}
+
+log() { printf 'sandbox-ctl: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+PROFILE="${HERMES_SANDBOX_PROFILE:-chief-of-staff-work}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --profile) PROFILE="${2:?}"; shift 2 ;;
+    --) shift; break ;;
+    -*) die "unknown option: $1" ;;
+    *) break ;;
+  esac
+done
+
+CMD="${1:-}"; shift || true
+[ -n "$CMD" ] || { usage >&2; exit 2; }
+
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+AGENT_HOME="${HERMES_AGENT_HOME:-$DATA_HOME/hermes-agents/$PROFILE}"
+RUNTIME_HOME="$AGENT_HOME/profiles/$PROFILE"
+[ -d "$RUNTIME_HOME" ] || RUNTIME_HOME="$AGENT_HOME"
+IMAGE="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
+CONTAINER="${HERMES_SANDBOX_CONTAINER:-${PROFILE}-sandbox}"
+OBSERVER_DIR="${COSW_HOST_OBSERVER_DIR:-$DATA_HOME/hermes-agents/chief-of-staff-work/host-observer}"
+BUILDER="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh"
+MODE_FILE="$AGENT_HOME/SANDBOX-MODE"
+
+podman_bin() {
+  local p="${HERMES_DOCKER_BINARY:-$(command -v podman 2>/dev/null || true)}"
+  [ -n "$p" ] || die "podman not found"
+  printf '%s\n' "$p"
+}
+
+with_isolated_auth() {
+  # Isolate credHelpers so expired gcloud tokens cannot fail a local Fedora build.
+  local dir
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/hermes-docker-config.XXXXXX")"
+  printf '%s\n' '{"auths":{}}' > "$dir/config.json"
+  printf '%s\n' '{}' > "$dir/auth.json"
+  export DOCKER_CONFIG="$dir"
+  export REGISTRY_AUTH_FILE="$dir/auth.json"
+  HERMES_DOCKER_CONFIG_TMP="$dir"
+}
+
+cleanup_isolated_auth() {
+  [ -n "${HERMES_DOCKER_CONFIG_TMP:-}" ] || return 0
+  rm -rf "$HERMES_DOCKER_CONFIG_TMP"
+  unset HERMES_DOCKER_CONFIG_TMP
+}
+
+ensure_podman_ready() {
+  local podman="$1"
+  if "$podman" info >/dev/null 2>&1; then
+    return 0
+  fi
+  if "$podman" machine start >/dev/null 2>&1; then
+    "$podman" info >/dev/null 2>&1 && return 0
+  fi
+  die "podman is installed but not reachable"
+}
+
+write_mode() {
+  mkdir -p "$(dirname "$MODE_FILE")"
+  printf '%s\n' "$1" > "$MODE_FILE"
+}
+
+config_backend() {
+  local cfg="$RUNTIME_HOME/config.yaml"
+  [ -f "$cfg" ] || { printf 'unset\n'; return 0; }
+  python3 -c '
+import sys
+try:
+    import yaml
+except ImportError:
+    print("unset")
+    raise SystemExit(0)
+from pathlib import Path
+data = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
+term = data.get("terminal") or {}
+print(term.get("backend") or "unset")
+' "$cfg" 2>/dev/null || printf 'unset\n'
+}
+
+env_backend() {
+  local envf="$RUNTIME_HOME/.env" value=""
+  [ -f "$envf" ] || { printf 'unset\n'; return 0; }
+  value="$(awk -F= '/^TERMINAL_ENV=/{v=$2} END{if(v=="") print "unset"; else print v}' "$envf")"
+  printf '%s\n' "$value"
+}
+
+image_present() {
+  local podman="$1"
+  "$podman" image inspect "$IMAGE" >/dev/null 2>&1
+}
+
+first_id() {
+  local ids="${1:-}"
+  [ -n "$ids" ] || return 0
+  printf '%s\n' "${ids%%$'\n'*}"
+}
+
+running_id() {
+  local podman="$1" ids
+  ids="$("$podman" ps --filter "label=hermes-profile=$PROFILE" --filter "label=hermes-task-id=default" --format '{{.ID}}')" || true
+  first_id "$ids"
+}
+
+any_id() {
+  local podman="$1" ids
+  ids="$("$podman" ps -a --filter "label=hermes-profile=$PROFILE" --filter "label=hermes-task-id=default" --format '{{.ID}}')" || true
+  first_id "$ids"
+}
+
+cmd_status() {
+  local podman image="missing" cid="" state="absent" backend="unset" env_backend=""
+  podman="$(podman_bin)"
+  if "$podman" info >/dev/null 2>&1 && image_present "$podman"; then
+    image="present"
+  fi
+  if "$podman" info >/dev/null 2>&1; then
+    cid="$(running_id "$podman")"
+    if [ -n "$cid" ]; then
+      state="running"
+    else
+      cid="$(any_id "$podman")"
+      [ -n "$cid" ] && state="stopped"
+    fi
+  fi
+  backend="$(config_backend)"
+  env_backend="$(env_backend)"
+  [ -n "$backend" ] || backend="unset"
+  python3 -c '
+import json, sys
+print(json.dumps({
+  "profile": sys.argv[1],
+  "image": sys.argv[2],
+  "image_present": sys.argv[3],
+  "container": sys.argv[4],
+  "container_id": sys.argv[5],
+  "container_state": sys.argv[6],
+  "materialized_backend": sys.argv[7],
+  "env_terminal": sys.argv[8],
+  "mode_file": sys.argv[9],
+  "agent_home": sys.argv[10],
+}, indent=2))
+' "$PROFILE" "$IMAGE" "$image" "$CONTAINER" "$cid" "$state" "$backend" "${env_backend:-unset}" "$( [ -f "$MODE_FILE" ] && cat "$MODE_FILE" || echo unset )" "$AGENT_HOME"
+}
+
+cmd_rebuild() {
+  local podman
+  podman="$(podman_bin)"
+  ensure_podman_ready "$podman"
+  [ -x "$BUILDER" ] || die "missing builder: $BUILDER"
+  with_isolated_auth
+  trap cleanup_isolated_auth EXIT
+  log "building $IMAGE via python-node-fedora (isolated registry auth)"
+  PODMAN_BINARY="$podman" IMAGE_TAG="$IMAGE" "$BUILDER" python-node-fedora
+  cleanup_isolated_auth
+  trap - EXIT
+  image_present "$podman" || die "image still missing after rebuild: $IMAGE"
+  log "image ready: $IMAGE"
+}
+
+append_sandbox_volumes() {
+  SANDBOX_VOLUMES=(
+    "$HOME/src:/root/src"
+    "$HOME/src:/home/hermes/src"
+  )
+  if [ "$PROFILE" = "chief-of-staff-work" ] && [ -d "$OBSERVER_DIR" ]; then
+    SANDBOX_VOLUMES+=(
+      "$OBSERVER_DIR:/home/hermes/.cosw-host:ro"
+      "$OBSERVER_DIR:/root/.cosw-host:ro"
+    )
+  fi
+  [ ! -d "$HOME/.pi/agent/sessions" ] || SANDBOX_VOLUMES+=("$HOME/.pi/agent/sessions:/mnt/host-pi-agent-sessions:ro")
+  [ ! -d "$HOME/.pi/sessions" ] || SANDBOX_VOLUMES+=("$HOME/.pi/sessions:/mnt/host-pi-sessions:ro")
+  [ ! -d "$HOME/.claude/projects" ] || SANDBOX_VOLUMES+=("$HOME/.claude/projects:/mnt/host-claude-projects:ro")
+  [ ! -d "$HOME/.codex/sessions" ] || SANDBOX_VOLUMES+=("$HOME/.codex/sessions:/mnt/host-codex-sessions:ro")
+}
+
+cmd_up() {
+  local podman cid args=()
+  podman="$(podman_bin)"
+  ensure_podman_ready "$podman"
+  if ! image_present "$podman"; then
+    cmd_rebuild
+  fi
+  mkdir -p "$RUNTIME_HOME/sandboxes/docker/default/home" \
+    "$RUNTIME_HOME/sandboxes/docker/default/workspace" \
+    "$RUNTIME_HOME/skills" "$RUNTIME_HOME/image_cache" "$RUNTIME_HOME/audio_cache"
+  if [ "$PROFILE" = "chief-of-staff-work" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
+    "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$OBSERVER_DIR" >/dev/null || \
+      log "host observer failed to start; continuing"
+  fi
+  cid="$(running_id "$podman")"
+  if [ -n "$cid" ]; then
+    write_mode docker
+    log "sandbox already running: $cid"
+    printf '%s\n' "$cid"
+    return 0
+  fi
+  cid="$(any_id "$podman")"
+  if [ -n "$cid" ]; then
+    "$podman" start "$cid" >/dev/null
+    write_mode docker
+    log "started existing sandbox: $cid"
+    printf '%s\n' "$cid"
+    return 0
+  fi
+  append_sandbox_volumes
+  args=()
+  for vol in "${SANDBOX_VOLUMES[@]}"; do
+    args+=(-v "$vol")
+  done
+  with_isolated_auth
+  trap cleanup_isolated_auth EXIT
+  cid="$("$podman" run -d --init --name "$CONTAINER" \
+    --label hermes-agent=1 \
+    --label "hermes-profile=$PROFILE" \
+    --label hermes-task-id=default \
+    --label hermes-sandbox-ctl=1 \
+    -w /root \
+    --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add CHOWN --cap-add FOWNER \
+    --security-opt no-new-privileges --pids-limit 256 \
+    --tmpfs /tmp:rw,nosuid,size=512m \
+    --user "$(id -u):$(id -g)" \
+    -v "$RUNTIME_HOME/sandboxes/docker/default/home:/root" \
+    -v "$RUNTIME_HOME/sandboxes/docker/default/workspace:/workspace" \
+    "${args[@]}" \
+    -v "$RUNTIME_HOME/skills:/root/.hermes/skills:ro" \
+    "$IMAGE" sleep infinity)"
+  cleanup_isolated_auth
+  trap - EXIT
+  write_mode docker
+  log "started $CONTAINER ($cid)"
+  printf '%s\n' "$cid"
+}
+
+cmd_down() {
+  local podman cid
+  podman="$(podman_bin)"
+  cid="$(any_id "$podman")"
+  [ -n "$cid" ] || { log "no sandbox container for $PROFILE"; return 0; }
+  "$podman" rm -f "$cid" >/dev/null
+  write_mode local
+  log "removed $cid"
+}
+
+cmd_attach() {
+  local podman cid
+  podman="$(podman_bin)"
+  cid="$(running_id "$podman")"
+  [ -n "$cid" ] || cid="$(cmd_up)"
+  exec "$podman" exec -it "$cid" sh -lc 'cd /root/src 2>/dev/null || cd /workspace; exec "${SHELL:-bash}" -l'
+}
+
+cmd_exec() {
+  local podman cid
+  [ "${1:-}" = "--" ] && shift
+  [ $# -gt 0 ] || die "exec needs a command (sandbox-ctl exec -- uname -a)"
+  podman="$(podman_bin)"
+  cid="$(running_id "$podman")"
+  [ -n "$cid" ] || cid="$(cmd_up)"
+  exec "$podman" exec "$cid" "$@"
+}
+
+case "$CMD" in
+  status) cmd_status ;;
+  up) cmd_up ;;
+  down) cmd_down ;;
+  attach) cmd_attach ;;
+  exec) cmd_exec "$@" ;;
+  rebuild) cmd_rebuild ;;
+  *) die "unknown command: $CMD (try: sandbox-ctl --help)" ;;
+esac
