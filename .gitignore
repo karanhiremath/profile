@@ -11,3 +11,12 @@ ansible/.facts/
 
 # Local container/runtime scratch
 .agent-home/
+
+# Local OpenTofu/Terraform state, variables, and plans
+# Keep provider lock files committed for reproducible init/validate.
+**/.terraform/
+**/terraform.tfvars
+**/*.tfstate
+**/*.tfstate.*
+**/tfplan
+**/*.tfplan

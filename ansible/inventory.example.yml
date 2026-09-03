@@ -9,6 +9,18 @@ profile_hosts:
       # profile_op_account: my.1password.com
       # profile_ssh_authorized_keys_enabled: true
       # profile_ssh_authorized_keys_op_ref: "op://<vault>/<item>/public_keys"
+      # Optional: configure the personal CoS iMessage bridge via BlueBubbles.
+      # Keep secrets in this ignored inventory.local.yml or preferably 1Password.
+      # profile_hermes_imessage_install_bluebubbles: true
+      # profile_hermes_imessage_bluebubbles_install_method: dmg
+      # profile_hermes_imessage_configure_gateway: true
+      # profile_hermes_imessage_deployment: podman_compose
+      # profile_hermes_imessage_server_url: "http://host.containers.internal:1234"
+      # profile_hermes_imessage_password_op_ref: "op://<vault>/<item>/bluebubbles_password"
+      # profile_hermes_imessage_allowed_users:
+      #   - "+1YOURPHONE"
+      # profile_hermes_imessage_home_channel: "+1YOURPHONE"
+      # profile_hermes_imessage_launchd_enabled: false
   children:
     personal:
       hosts:

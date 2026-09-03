@@ -48,3 +48,53 @@ profile_ssh_authorized_keys_op_ref: ""
 profile_ssh_authorized_keys: []
 profile_ssh_authorized_keys_user: "{{ ansible_facts.user_id }}"
 profile_ssh_authorized_keys_exclusive: false
+
+# Hermes CoS over iMessage via BlueBubbles.
+# Secure defaults: disabled until explicitly enabled; no open access; no secrets
+# committed. Put BlueBubbles password in inventory.local.yml directly only for
+# local testing, or preferably reference it with profile_hermes_imessage_password_op_ref.
+profile_hermes_imessage_enabled: false
+profile_hermes_imessage_install_bluebubbles: false
+profile_hermes_imessage_bluebubbles_install_method: dmg  # dmg | homebrew_cask
+profile_hermes_imessage_bluebubbles_version: 1.9.9
+profile_hermes_imessage_bluebubbles_arch: "{{ 'arm64' if ansible_facts.architecture == 'arm64' else 'x64' }}"
+profile_hermes_imessage_bluebubbles_dmg_url: "https://github.com/BlueBubblesApp/bluebubbles-server/releases/download/v{{ profile_hermes_imessage_bluebubbles_version }}/BlueBubbles-{{ profile_hermes_imessage_bluebubbles_version }}{{ '-arm64' if profile_hermes_imessage_bluebubbles_arch == 'arm64' else '' }}.dmg"
+profile_hermes_imessage_bluebubbles_dmg_sha256: "{{ 'fafd650c883f52e7494a6625e45249f2144d197378a4d57143ccf6198bb2e862' if profile_hermes_imessage_bluebubbles_arch == 'arm64' else '9681e65f60214a6a95f3bd12b57bd4cc8ad6d8f58cd9c1d8811b2a4606ad7c04' }}"
+profile_hermes_imessage_bluebubbles_app_path: /Applications/BlueBubbles.app
+profile_hermes_imessage_bluebubbles_cache_dir: "{{ profile_home }}/.cache/profile/bluebubbles"
+profile_hermes_imessage_bluebubbles_mount_dir: /tmp/profile-bluebubbles-install
+profile_hermes_imessage_bluebubbles_open_after_install: true
+profile_hermes_imessage_configure_gateway: false
+profile_hermes_imessage_launchd_enabled: false
+profile_hermes_imessage_deployment: podman_compose  # podman_compose | host_launchd
+profile_hermes_imessage_agent_profile: chief-of-staff
+profile_hermes_imessage_platform: bluebubbles
+profile_hermes_imessage_agents_bin: "{{ profile_app_bin }}/hermes/agents"
+profile_hermes_imessage_config_dir: "{{ profile_home }}/.config/hermes-gateway"
+profile_hermes_imessage_log_dir: "{{ profile_home }}/Library/Logs/hermes-gateway/imessage"
+profile_hermes_imessage_compose_dir: "{{ profile_hermes_imessage_config_dir }}/imessage-compose"
+profile_hermes_imessage_state_dir: "{{ profile_home }}/.local/share/hermes-gateway/imessage"
+profile_hermes_imessage_runtime_home: "{{ profile_home }}/.local/share/hermes-agents/{{ profile_hermes_imessage_agent_profile }}/profiles/{{ profile_hermes_imessage_agent_profile }}"
+profile_hermes_imessage_container_image: localhost/hermes-cos-imessage-gateway:latest
+profile_hermes_imessage_container_name: hermes-cos-imessage-gateway
+profile_hermes_imessage_compose_launcher_path: "{{ profile_home }}/.local/bin/hermes-cos-imessage-compose"
+profile_hermes_imessage_user_uid: "{{ ansible_facts.user_uid | default(lookup('pipe', 'id -u')) }}"
+profile_hermes_imessage_env_file: "{{ profile_hermes_imessage_config_dir }}/bluebubbles.env"
+profile_hermes_imessage_launcher_path: "{{ profile_home }}/.local/bin/hermes-cos-imessage-gateway"
+profile_hermes_imessage_launchd_label: com.karan.hermes-cos-imessage-gateway
+profile_hermes_imessage_launchd_plist_path: "{{ profile_home }}/Library/LaunchAgents/{{ profile_hermes_imessage_launchd_label }}.plist"
+profile_hermes_imessage_server_url: "http://127.0.0.1:1234"
+profile_hermes_imessage_password: ""
+profile_hermes_imessage_password_op_ref: ""
+profile_hermes_imessage_webhook_host: "127.0.0.1"
+profile_hermes_imessage_webhook_port: 8645
+profile_hermes_imessage_webhook_path: /bluebubbles-webhook
+profile_hermes_imessage_home_channel: ""
+profile_hermes_imessage_allowed_users: []
+profile_hermes_imessage_allow_all_users: false
+profile_hermes_imessage_allow_all_users_explicitly_accepted: false
+profile_hermes_imessage_require_mention: true
+profile_hermes_imessage_mention_patterns:
+  - '(?<![\\w@])@?cos\\b[,:-]?'
+  - '(?<![\\w@])@?chief\\b[,:-]?'
+  - '(?<![\\w@])@?hermes\\b[,:-]?'

@@ -32,6 +32,8 @@
       tags: [dotfiles]
     - role: ssh_authorized_keys
       tags: [ssh_authorized_keys, ssh]
+    - role: hermes_imessage
+      tags: [hermes_imessage, imessage, bluebubbles, gateway]
     - role: cli_tools
       tags: [cli_tools]
     - role: mac_apps

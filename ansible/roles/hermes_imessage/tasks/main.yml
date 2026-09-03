@@ -1,0 +1,344 @@
+---
+- name: Validate Hermes iMessage role is running on macOS when enabled
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.system == 'Darwin'
+    fail_msg: "Hermes iMessage/BlueBubbles setup requires macOS because iMessage requires Messages.app."
+  when: profile_hermes_imessage_enabled | bool
+
+- name: Check whether BlueBubbles.app is installed
+  ansible.builtin.stat:
+    path: "{{ profile_hermes_imessage_bluebubbles_app_path }}"
+  register: profile_hermes_imessage_bluebubbles_app_initial
+  when: profile_hermes_imessage_enabled | bool
+
+- name: Validate BlueBubbles direct DMG install settings
+  ansible.builtin.assert:
+    that:
+      - profile_hermes_imessage_bluebubbles_dmg_url | length > 0
+      - profile_hermes_imessage_bluebubbles_dmg_sha256 | length > 0
+    fail_msg: >-
+      Direct BlueBubbles DMG install requires a pinned URL and SHA256. Set
+      profile_hermes_imessage_bluebubbles_dmg_url and
+      profile_hermes_imessage_bluebubbles_dmg_sha256.
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_install_bluebubbles | bool
+    - profile_hermes_imessage_bluebubbles_install_method == 'dmg'
+    - not profile_hermes_imessage_bluebubbles_app_initial.stat.exists | default(false)
+
+- name: Ensure BlueBubbles DMG cache directory exists
+  ansible.builtin.file:
+    path: "{{ profile_hermes_imessage_bluebubbles_cache_dir }}"
+    state: directory
+    mode: "0700"
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_install_bluebubbles | bool
+    - profile_hermes_imessage_bluebubbles_install_method == 'dmg'
+    - not profile_hermes_imessage_bluebubbles_app_initial.stat.exists | default(false)
+
+- name: Download pinned BlueBubbles Server DMG
+  ansible.builtin.get_url:
+    url: "{{ profile_hermes_imessage_bluebubbles_dmg_url }}"
+    dest: "{{ profile_hermes_imessage_bluebubbles_cache_dir }}/BlueBubbles-{{ profile_hermes_imessage_bluebubbles_version }}-{{ profile_hermes_imessage_bluebubbles_arch }}.dmg"
+    checksum: "sha256:{{ profile_hermes_imessage_bluebubbles_dmg_sha256 }}"
+    mode: "0600"
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_install_bluebubbles | bool
+    - profile_hermes_imessage_bluebubbles_install_method == 'dmg'
+    - not profile_hermes_imessage_bluebubbles_app_initial.stat.exists | default(false)
+
+- name: Install BlueBubbles Server from pinned DMG
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_install_bluebubbles | bool
+    - profile_hermes_imessage_bluebubbles_install_method == 'dmg'
+    - not profile_hermes_imessage_bluebubbles_app_initial.stat.exists | default(false)
+    - not ansible_check_mode
+  block:
+    - name: Ensure BlueBubbles install mountpoint is absent before attach
+      ansible.builtin.file:
+        path: "{{ profile_hermes_imessage_bluebubbles_mount_dir }}"
+        state: absent
+
+    - name: Create BlueBubbles install mountpoint
+      ansible.builtin.file:
+        path: "{{ profile_hermes_imessage_bluebubbles_mount_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Attach BlueBubbles DMG
+      ansible.builtin.command:
+        argv:
+          - hdiutil
+          - attach
+          - -nobrowse
+          - -quiet
+          - -mountpoint
+          - "{{ profile_hermes_imessage_bluebubbles_mount_dir }}"
+          - "{{ profile_hermes_imessage_bluebubbles_cache_dir }}/BlueBubbles-{{ profile_hermes_imessage_bluebubbles_version }}-{{ profile_hermes_imessage_bluebubbles_arch }}.dmg"
+      changed_when: true
+
+    - name: Copy BlueBubbles.app into /Applications
+      ansible.builtin.command:
+        argv:
+          - ditto
+          - "{{ profile_hermes_imessage_bluebubbles_mount_dir }}/BlueBubbles.app"
+          - "{{ profile_hermes_imessage_bluebubbles_app_path }}"
+      changed_when: true
+  always:
+    - name: Detach BlueBubbles DMG if mounted
+      ansible.builtin.command:
+        argv:
+          - hdiutil
+          - detach
+          - "{{ profile_hermes_imessage_bluebubbles_mount_dir }}"
+          - -quiet
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Remove BlueBubbles install mountpoint
+      ansible.builtin.file:
+        path: "{{ profile_hermes_imessage_bluebubbles_mount_dir }}"
+        state: absent
+
+- name: Optionally install BlueBubbles Server cask
+  community.general.homebrew_cask:
+    name: bluebubbles
+    state: present
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_install_bluebubbles | bool
+    - profile_hermes_imessage_bluebubbles_install_method == 'homebrew_cask'
+    - profile_enable_mac_apps | bool
+    - not profile_hermes_imessage_bluebubbles_app_initial.stat.exists | default(false)
+
+- name: Refresh BlueBubbles.app install status
+  ansible.builtin.stat:
+    path: "{{ profile_hermes_imessage_bluebubbles_app_path }}"
+  register: profile_hermes_imessage_bluebubbles_app
+  when: profile_hermes_imessage_enabled | bool
+
+- name: Open BlueBubbles once after scripted install when requested
+  ansible.builtin.command:
+    argv:
+      - open
+      - -a
+      - BlueBubbles
+  changed_when: true
+  failed_when: false
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_install_bluebubbles | bool
+    - profile_hermes_imessage_bluebubbles_open_after_install | bool
+    - profile_hermes_imessage_bluebubbles_app.stat.exists | default(false)
+    - not profile_hermes_imessage_bluebubbles_app_initial.stat.exists | default(false)
+    - not ansible_check_mode
+
+- name: Warn when BlueBubbles is not installed
+  ansible.builtin.debug:
+    msg: >-
+      BlueBubbles.app is not installed. Install it manually from https://bluebubbles.app/
+      or run with profile_hermes_imessage_install_bluebubbles=true and profile_enable_mac_apps=true.
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - not profile_hermes_imessage_bluebubbles_app.stat.exists | default(false)
+
+- name: Ensure Hermes iMessage private config directory exists
+  ansible.builtin.file:
+    path: "{{ profile_hermes_imessage_config_dir }}"
+    state: directory
+    mode: "0700"
+  when: profile_hermes_imessage_enabled | bool
+
+- name: Ensure Hermes iMessage log directory exists
+  ansible.builtin.file:
+    path: "{{ profile_hermes_imessage_log_dir }}"
+    state: directory
+    mode: "0700"
+  when: profile_hermes_imessage_enabled | bool
+
+- name: Ensure Hermes iMessage compose directory exists
+  ansible.builtin.file:
+    path: "{{ profile_hermes_imessage_compose_dir }}"
+    state: directory
+    mode: "0700"
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_deployment == 'podman_compose'
+
+- name: Ensure Hermes iMessage container state directory exists
+  ansible.builtin.file:
+    path: "{{ profile_hermes_imessage_state_dir }}"
+    state: directory
+    mode: "0700"
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_deployment == 'podman_compose'
+
+- name: Read BlueBubbles password from 1Password when configured
+  ansible.builtin.command:
+    argv:
+      - "{{ profile_op_cli }}"
+      - read
+      - "{{ profile_hermes_imessage_password_op_ref }}"
+  delegate_to: localhost
+  environment:
+    OP_ACCOUNT: "{{ profile_op_account | default('') }}"
+  changed_when: false
+  check_mode: false
+  register: profile_hermes_imessage_password_op_read
+  no_log: true
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_configure_gateway | bool
+    - profile_hermes_imessage_password_op_ref | length > 0
+
+- name: Resolve BlueBubbles password without logging it
+  ansible.builtin.set_fact:
+    profile_hermes_imessage_password_resolved: >-
+      {{
+        (
+          profile_hermes_imessage_password_op_read.stdout
+          | default('')
+          | trim
+        )
+        if (profile_hermes_imessage_password_op_ref | length > 0)
+        else profile_hermes_imessage_password
+      }}
+  no_log: true
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_configure_gateway | bool
+
+- name: Validate BlueBubbles gateway configuration inputs
+  ansible.builtin.assert:
+    that:
+      - profile_hermes_imessage_server_url | length > 0
+      - profile_hermes_imessage_password_resolved | default('') | length > 0
+      - not profile_hermes_imessage_allow_all_users | bool
+        or profile_hermes_imessage_allow_all_users_explicitly_accepted | bool
+    fail_msg: >-
+      Configuring the Hermes iMessage gateway requires a BlueBubbles server URL and password.
+      Set profile_hermes_imessage_server_url and either profile_hermes_imessage_password_op_ref
+      or profile_hermes_imessage_password in ansible/inventory.local.yml. Open access is refused
+      unless profile_hermes_imessage_allow_all_users_explicitly_accepted=true.
+  no_log: true
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_configure_gateway | bool
+
+- name: Render private BlueBubbles gateway environment file
+  ansible.builtin.template:
+    src: bluebubbles.env.j2
+    dest: "{{ profile_hermes_imessage_env_file }}"
+    mode: "0600"
+  no_log: true
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_configure_gateway | bool
+
+- name: Install Hermes CoS iMessage gateway launcher
+  ansible.builtin.template:
+    src: hermes-cos-imessage-gateway.j2
+    dest: "{{ profile_hermes_imessage_launcher_path }}"
+    mode: "0700"
+  when: profile_hermes_imessage_enabled | bool
+
+- name: Materialize Hermes CoS runtime home for compose mounting
+  ansible.builtin.command:
+    argv:
+      - "{{ profile_hermes_imessage_agents_bin }}"
+      - resolve
+      - "{{ profile_hermes_imessage_agent_profile }}"
+  environment:
+    PROFILE_DIR: "{{ profile_repo_dir }}"
+    APP_BIN: "{{ profile_app_bin }}"
+  changed_when: false
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_deployment == 'podman_compose'
+
+- name: Materialize Hermes CoS runtime files for compose mounting
+  ansible.builtin.command:
+    argv:
+      - "{{ profile_home }}/.local/share/hermes-toolchain/venv/bin/python"
+      - "{{ profile_app_bin }}/hermes/hermes_agents.py"
+      - materialize
+      - "{{ profile_hermes_imessage_agent_profile }}"
+  environment:
+    PROFILE_DIR: "{{ profile_repo_dir }}"
+    APP_BIN: "{{ profile_app_bin }}"
+  changed_when: false
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_deployment == 'podman_compose'
+
+- name: Render Hermes iMessage gateway Containerfile
+  ansible.builtin.template:
+    src: Containerfile.j2
+    dest: "{{ profile_hermes_imessage_compose_dir }}/Containerfile"
+    mode: "0600"
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_deployment == 'podman_compose'
+
+- name: Render Hermes iMessage gateway podman compose file
+  ansible.builtin.template:
+    src: podman-compose.yml.j2
+    dest: "{{ profile_hermes_imessage_compose_dir }}/compose.yml"
+    mode: "0600"
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_deployment == 'podman_compose'
+
+- name: Install Hermes iMessage podman compose launcher
+  ansible.builtin.template:
+    src: hermes-cos-imessage-compose.j2
+    dest: "{{ profile_hermes_imessage_compose_launcher_path }}"
+    mode: "0700"
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_deployment == 'podman_compose'
+
+- name: Render launchd service for Hermes CoS iMessage gateway
+  ansible.builtin.template:
+    src: com.karan.hermes-cos-imessage-gateway.plist.j2
+    dest: "{{ profile_hermes_imessage_launchd_plist_path }}"
+    mode: "0600"
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_launchd_enabled | bool
+
+- name: Start Hermes CoS iMessage gateway launchd service
+  ansible.builtin.command:
+    argv:
+      - launchctl
+      - bootstrap
+      - "gui/{{ profile_hermes_imessage_user_uid }}"
+      - "{{ profile_hermes_imessage_launchd_plist_path }}"
+  changed_when: true
+  failed_when: false
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_launchd_enabled | bool
+    - profile_hermes_imessage_configure_gateway | bool
+    - not ansible_check_mode
+
+- name: Kickstart Hermes CoS iMessage gateway launchd service
+  ansible.builtin.command:
+    argv:
+      - launchctl
+      - kickstart
+      - -k
+      - "gui/{{ profile_hermes_imessage_user_uid }}/{{ profile_hermes_imessage_launchd_label }}"
+  changed_when: true
+  failed_when: false
+  when:
+    - profile_hermes_imessage_enabled | bool
+    - profile_hermes_imessage_launchd_enabled | bool
+    - profile_hermes_imessage_configure_gateway | bool
+    - not ansible_check_mode

@@ -1,0 +1,27 @@
+services:
+  hermes-cos-imessage-gateway:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: {{ profile_hermes_imessage_container_image }}
+    container_name: {{ profile_hermes_imessage_container_name }}
+    restart: unless-stopped
+    env_file:
+      - {{ profile_hermes_imessage_env_file }}
+    environment:
+      HERMES_HOME: /hermes-home
+      HERMES_PROFILE: {{ profile_hermes_imessage_agent_profile }}
+      HERMES_GATEWAY_PLATFORM: {{ profile_hermes_imessage_platform }}
+      # In compose, bind the webhook listener on all container interfaces and
+      # publish it back to the Mac host on BLUEBUBBLES_WEBHOOK_PORT.
+      BLUEBUBBLES_WEBHOOK_HOST: "0.0.0.0"
+    ports:
+      - "127.0.0.1:{{ profile_hermes_imessage_webhook_port }}:{{ profile_hermes_imessage_webhook_port }}"
+    volumes:
+      - {{ profile_hermes_imessage_runtime_home }}:/hermes-home:rw
+      - {{ profile_home }}/.hermes/auth.json:/hermes-home/auth.json:ro
+      - {{ profile_home }}/src/hermes:/root/src/hermes:rw
+      - {{ profile_home }}/src/profile:/root/src/profile:rw
+      - {{ profile_home }}/src/notes:/root/src/notes:rw
+    working_dir: /root/src/profile
+    command: ["gateway", "run"]

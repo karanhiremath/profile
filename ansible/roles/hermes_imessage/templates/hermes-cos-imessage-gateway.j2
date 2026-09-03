@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Managed by ~/src/profile Ansible role: hermes_imessage
+set -euo pipefail
+
+ENV_FILE={{ profile_hermes_imessage_env_file | quote }}
+AGENTS_BIN={{ profile_hermes_imessage_agents_bin | quote }}
+AGENT_PROFILE={{ profile_hermes_imessage_agent_profile | quote }}
+PLATFORM={{ profile_hermes_imessage_platform | quote }}
+
+if [ ! -x "$AGENTS_BIN" ]; then
+  echo "ERROR: Hermes agents launcher is not executable: $AGENTS_BIN" >&2
+  exit 1
+fi
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+else
+  echo "ERROR: missing BlueBubbles env file: $ENV_FILE" >&2
+  echo "Run the hermes_imessage Ansible role with profile_hermes_imessage_configure_gateway=true." >&2
+  exit 1
+fi
+
+export HERMES_GATEWAY_PLATFORM="$PLATFORM"
+exec "$AGENTS_BIN" up "$AGENT_PROFILE" --surface gateway --platform "$PLATFORM"
