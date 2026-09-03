@@ -129,6 +129,7 @@ write_shim() {
     printf 'export HERMES_TOOLCHAIN_HOME=%q\n' "$HERMES_TOOLCHAIN_HOME"
     printf 'export PNPM_HOME=%q\n' "$PNPM_HOME"
     printf 'export PATH=%q:%q:%q:"$PATH"\n' "$BUN_HOME/bin" "$PNPM_BIN" "$VENV/bin"
+    printf '. %q\n' "$SCRIPT_DIR/fork-env.sh"
     printf 'exec'
     printf ' %q' "$@"
     printf ' "$@"\n'
@@ -139,9 +140,25 @@ write_shim() {
 # pnpm may place its own global launchers in $SHIM_DIR (~/.local/bin). Replace
 # them with env-setting shims that exec the package entrypoints directly, so the
 # Hermes Python venv and Bun runtime are always on PATH even in non-login shells.
+HERMES_AGENT_OVERLAY="${HERMES_AGENT_OVERLAY:-$HOME/src/hermes-agent-worktrees/timeout-free-cursor-sdk}"
+if [ ! -f "$HERMES_AGENT_OVERLAY/pyproject.toml" ]; then
+  HERMES_AGENT_OVERLAY="$HOME/src/hermes-agent-worktrees/timeout-free-cursor-sdk-20260831T1834"
+fi
+if [ -f "$HERMES_AGENT_OVERLAY/pyproject.toml" ]; then
+  uv pip install --python "$VENV/bin/python" -e "$HERMES_AGENT_OVERLAY"
+elif [ -f "${HERMES_AGENT_FORK:-$HOME/src/hermes-agent}/pyproject.toml" ]; then
+  uv pip install --python "$VENV/bin/python" -e "${HERMES_AGENT_FORK:-$HOME/src/hermes-agent}"
+fi
+
 write_shim hermes       node "$hermes_entry"
 write_shim hermes-agent node "$hermes_agent_entry"
-write_shim herm         "$herm_entry"
+if [ -x "$HOME/src/herm/src/index.tsx" ]; then
+  write_shim herm "$HOME/src/herm/src/index.tsx"
+elif [ -x "$HOME/src/herm-tui/src/index.tsx" ]; then
+  write_shim herm "$HOME/src/herm-tui/src/index.tsx"
+else
+  write_shim herm "$herm_entry"
+fi
 write_shim hs "$SCRIPT_DIR/hs"
 write_shim dream "$SCRIPT_DIR/dream"
 write_shim agents "$SCRIPT_DIR/agents"

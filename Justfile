@@ -528,6 +528,13 @@ hermes-doctor:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/hermes/doctor
 
+# Status / nightly refresh of karanhiremath/hermes-agent + herm forks vs upstream
+hermes-fork-sync *FLAGS:
+    ./bin/hermes/fork-sync {{FLAGS}}
+
+hermes-fork-nightly-install:
+    ./bin/hermes/fork-sync install-nightly
+
 # Install/upgrade Helm
 helm:
     #!/usr/bin/env bash

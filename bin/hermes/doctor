@@ -59,3 +59,11 @@ if [ -d "$PRIVATE_DIR/.git" ]; then
 else
   printf 'private_repo=missing\n'
 fi
+
+# shellcheck source=fork-env.sh
+. "$(dirname "$0")/fork-env.sh"
+printf 'hermes_agent_fork_root=%s\n' "${HERMES_AGENT_FORK_ROOT:-missing}"
+if [ -x "$(dirname "$0")/fork-sync" ]; then
+  printf 'hermes_fork_sync=\n'
+  "$(dirname "$0")/fork-sync" status || true
+fi
