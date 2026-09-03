@@ -1,0 +1,17 @@
+personal_capture_packet:
+  date: 2026-08-06
+  source_agent: personal-notes-steward
+  ledger_targets:
+    - daily
+  personal_summary: Tested personal note capture with a safe local fixture.
+  personal_agent_runs:
+    - notes-steward, fixture validation, no follow-up
+  decisions:
+    - Keep personal capture free of work-private detail.
+  followups:
+    - Try daily capture from the Hermes notes tab.
+  work_load_signal:
+    load: low
+    category: planning
+    impact: time
+    personal_next_action: none

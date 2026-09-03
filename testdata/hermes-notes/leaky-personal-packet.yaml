@@ -1,0 +1,13 @@
+personal_capture_packet:
+  date: 2026-08-06
+  source_agent: personal-notes-steward
+  ledger_targets:
+    - daily
+  personal_summary: Followed up on ABC-123 in /home/user/src/internal-workrepo.
+  followups:
+    - Copy internal thread details into personal notes.
+  work_load_signal:
+    load: high
+    category: security
+    impact: blocker
+    personal_next_action: rest

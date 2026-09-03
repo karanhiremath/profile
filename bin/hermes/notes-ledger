@@ -1,0 +1,848 @@
+#!/usr/bin/env python3
+"""Deterministic two-ledger note capture for Hermes Chief-of-Staff lanes.
+
+Stdout is machine-readable JSON only. Human diagnostics go to stderr.
+No network/model calls are made unless a caller explicitly enables local inference.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+WORK_ROOT_DEFAULT = Path(os.environ.get("HERMES_WORK_LEDGER_ROOT", "~/src/karan.hiremath")).expanduser()
+PERSONAL_ROOT_DEFAULT = Path(os.environ.get("HERMES_PERSONAL_LEDGER_ROOT", "~/src/notes")).expanduser()
+
+WORK_SIGNAL_ENUMS = {
+    "load": {"low", "medium", "high"},
+    "category": {"planning", "security", "infrastructure", "review", "on-call", "meetings", "other"},
+    "impact": {"time", "energy", "schedule", "context-switching", "blocker"},
+    "personal_next_action": {"rest", "defer", "schedule-focus-block", "follow-up", "none"},
+}
+WORK_SIGNAL_KEYS = set(WORK_SIGNAL_ENUMS)
+
+WORK_PACKET_KEYS = {
+    "date",
+    "source_agent",
+    "source_session",
+    "project",
+    "ledger_targets",
+    "summary",
+    "decisions",
+    "shipped_or_changed",
+    "blockers",
+    "followups",
+    "evidence",
+    "personal_signal_allowed",
+    "work_load_signal",
+}
+PERSONAL_PACKET_KEYS = {
+    "date",
+    "source_agent",
+    "ledger_targets",
+    "personal_summary",
+    "personal_agent_runs",
+    "decisions",
+    "followups",
+    "work_load_signal",
+}
+
+# Conservative personal-vault leak patterns. These are intentionally generic and
+# should catch work-private identifiers without encoding customer/project state.
+PERSONAL_FORBIDDEN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("secret-looking-token", re.compile(r"\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{12,})\b")),
+    ("linear-or-ticket-id", re.compile(r"\b[A-Z]{2,10}-\d{1,7}\b")),
+    ("absolute-or-home-src-path", re.compile(r"(?:~|/home/[^\s/]+|/Users/[^\s/]+)/src/[^\s)\]]+")),
+    ("repo-worktree-path", re.compile(r"\b(?:worktree|repo|branch|commit|pull request|PR #?\d+)\b", re.I)),
+    ("infra-or-cloud-detail", re.compile(r"\b(?:kubernetes|k8s|gke|eks|aks|terraform|helm|namespace|cluster|vpc|subnet|cloudbuild|cloud build|secret manager)\b", re.I)),
+    ("security-finding-detail", re.compile(r"\b(?:CVE-\d{4}-\d+|vulnerability|exploit|incident|finding|credential|token|api key|private key)\b", re.I)),
+    ("internal-comm-detail", re.compile(r"\b(?:slack|linear|customer|meeting transcript|internal thread)\b", re.I)),
+]
+SECRET_REDACTIONS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,})\b"), "<redacted-secret>"),
+    (re.compile(r"(?:~|/home/[^\s/]+|/Users/[^\s/]+)/src/[^\s)\]]+"), "<redacted-local-path>"),
+    (re.compile(r"\b[A-Z]{2,10}-\d{1,7}\b"), "<redacted-ticket>"),
+    (re.compile(r"https?://[^\s)\]]+"), "<redacted-url>"),
+]
+
+
+def emit(payload: dict[str, Any], code: int = 0) -> int:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return code
+
+
+def today() -> dt.date:
+    return dt.date.today()
+
+
+def parse_date(value: str | None) -> dt.date:
+    if not value:
+        return today()
+    return dt.date.fromisoformat(value)
+
+
+def iso_week_id(day: dt.date) -> str:
+    year, week, _ = day.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def week_bounds(day: dt.date) -> tuple[dt.date, dt.date]:
+    start = day - dt.timedelta(days=day.weekday())
+    return start, start + dt.timedelta(days=6)
+
+
+def month_bounds(day: dt.date) -> tuple[dt.date, dt.date]:
+    start = day.replace(day=1)
+    if start.month == 12:
+        next_month = start.replace(year=start.year + 1, month=1)
+    else:
+        next_month = start.replace(month=start.month + 1)
+    return start, next_month - dt.timedelta(days=1)
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def parse_scalar(raw: str) -> Any:
+    value = raw.strip()
+    if value in {"true", "True"}:
+        return True
+    if value in {"false", "False"}:
+        return False
+    if value in {"null", "None", "~"}:
+        return None
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [parse_scalar(part.strip()) for part in inner.split(",")]
+    return value
+
+
+def simple_yaml_load(text: str) -> Any:
+    lines: list[tuple[int, str]] = []
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        lines.append((indent, raw.strip()))
+
+    def parse_block(index: int, indent: int) -> tuple[Any, int]:
+        if index >= len(lines):
+            return {}, index
+        if lines[index][1].startswith("- "):
+            out: list[Any] = []
+            while index < len(lines) and lines[index][0] == indent and lines[index][1].startswith("- "):
+                item = lines[index][1][2:].strip()
+                if item == "":
+                    val, index = parse_block(index + 1, indent + 2)
+                    out.append(val)
+                elif ":" in item and not item.startswith(('"', "'")):
+                    key, raw_val = item.split(":", 1)
+                    entry: dict[str, Any] = {key.strip(): parse_scalar(raw_val)}
+                    index += 1
+                    if index < len(lines) and lines[index][0] > indent:
+                        nested, index = parse_block(index, indent + 2)
+                        if isinstance(nested, dict):
+                            entry.update(nested)
+                    out.append(entry)
+                else:
+                    out.append(parse_scalar(item))
+                    index += 1
+            return out, index
+        out_dict: dict[str, Any] = {}
+        while index < len(lines) and lines[index][0] == indent and not lines[index][1].startswith("- "):
+            key, sep, raw_val = lines[index][1].partition(":")
+            if not sep:
+                raise ValueError(f"cannot parse YAML line: {lines[index][1]}")
+            key = key.strip()
+            raw_val = raw_val.strip()
+            index += 1
+            if raw_val:
+                out_dict[key] = parse_scalar(raw_val)
+            else:
+                if index < len(lines) and lines[index][0] > indent:
+                    val, index = parse_block(index, lines[index][0])
+                    out_dict[key] = val
+                else:
+                    out_dict[key] = {}
+        return out_dict, index
+
+    parsed, _ = parse_block(0, lines[0][0] if lines else 0)
+    return parsed
+
+
+def load_packet(path: Path) -> dict[str, Any]:
+    text = read_text(path)
+    if path.suffix.lower() == ".json":
+        data = json.loads(text)
+    else:
+        try:
+            import yaml  # type: ignore
+
+            data = yaml.safe_load(text)
+        except Exception:
+            data = simple_yaml_load(text)
+    if not isinstance(data, dict):
+        raise ValueError("packet must parse to an object")
+    return data
+
+
+def unwrap_packet(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if "work_capture_packet" in data:
+        packet = data["work_capture_packet"]
+        if not isinstance(packet, dict):
+            raise ValueError("work_capture_packet must be an object")
+        return "work", packet
+    if "personal_capture_packet" in data:
+        packet = data["personal_capture_packet"]
+        if not isinstance(packet, dict):
+            raise ValueError("personal_capture_packet must be an object")
+        return "personal", packet
+    # Accept already-unwrapped JSON for ergonomics.
+    if "personal_summary" in data:
+        return "personal", data
+    return "work", data
+
+
+def as_list(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    return [str(value).strip()]
+
+
+def scalar_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, int, float, bool)):
+        return [str(value)]
+    if isinstance(value, dict):
+        out: list[str] = []
+        for key, val in value.items():
+            out.extend(scalar_strings(key))
+            out.extend(scalar_strings(val))
+        return out
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            out.extend(scalar_strings(item))
+        return out
+    return [str(value)]
+
+
+def validate_work_signal(signal: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(signal, dict):
+        return ["work_load_signal must be an object"]
+    keys = set(signal)
+    extra = sorted(keys - WORK_SIGNAL_KEYS)
+    missing = sorted(WORK_SIGNAL_KEYS - keys)
+    if extra:
+        errors.append(f"work_load_signal has extra keys: {', '.join(extra)}")
+    if missing:
+        errors.append(f"work_load_signal missing keys: {', '.join(missing)}")
+    for key, allowed in WORK_SIGNAL_ENUMS.items():
+        value = signal.get(key)
+        if value not in allowed:
+            errors.append(f"work_load_signal.{key} must be one of {sorted(allowed)}")
+    for text in scalar_strings(signal):
+        for name, pattern in PERSONAL_FORBIDDEN_PATTERNS:
+            if pattern.search(text):
+                errors.append(f"work_load_signal contains forbidden {name}")
+    return errors
+
+
+def lint_packet(packet_kind: str, packet: dict[str, Any], ledger: str) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if packet_kind == "work":
+        extra = sorted(set(packet) - WORK_PACKET_KEYS)
+        if extra:
+            warnings.append(f"work packet has non-canonical keys: {', '.join(extra)}")
+        if ledger == "personal":
+            errors.append("work_capture_packet cannot be ingested into personal ledger; use emit-work-signal")
+        if "work_load_signal" in packet:
+            errors.extend(validate_work_signal(packet["work_load_signal"]))
+    elif packet_kind == "personal":
+        extra = sorted(set(packet) - PERSONAL_PACKET_KEYS)
+        if extra:
+            warnings.append(f"personal packet has non-canonical keys: {', '.join(extra)}")
+        if "work_load_signal" in packet:
+            errors.extend(validate_work_signal(packet["work_load_signal"]))
+        for text in scalar_strings({k: v for k, v in packet.items() if k != "work_load_signal"}):
+            for name, pattern in PERSONAL_FORBIDDEN_PATTERNS:
+                if pattern.search(text):
+                    errors.append(f"personal packet contains forbidden {name}")
+                    break
+    else:
+        errors.append(f"unknown packet kind: {packet_kind}")
+    return {"ok": not errors, "errors": sorted(set(errors)), "warnings": warnings}
+
+
+def work_daily_path(root: Path, day: dt.date) -> Path:
+    return root / "daily" / f"{day.isoformat()}.md"
+
+
+def personal_daily_path(root: Path, day: dt.date) -> Path:
+    return root / "02_personal" / "daily" / f"{day.isoformat()} {day.strftime('%a')}.md"
+
+
+def render_template(text: str, day: dt.date) -> str:
+    replacements = {
+        "{{date:YYYY-MM-DD}}": day.isoformat(),
+        "{{date:YYYY-MM-DD dddd}}": f"{day.isoformat()} {day.strftime('%A')}",
+        "{{date}}": f"{day.isoformat()} {day.strftime('%a')}",
+        "{{week}}": iso_week_id(day),
+        "{{month}}": day.strftime("%Y-%m"),
+        "{{quarter}}": f"{day.year}-Q{((day.month - 1) // 3) + 1}",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
+
+
+def ensure_daily(ledger: str, root: Path, day: dt.date) -> tuple[Path, bool]:
+    if ledger == "work":
+        path = work_daily_path(root, day)
+        template = root / "templates" / "daily-note.md"
+        fallback = f"# {day.isoformat()} {day.strftime('%A')}\n\n## Focus\n- \n\n## Work Log\n\n## Decisions Made\n\n## Blockers\n\n## Tomorrow\n- \n"
+    else:
+        path = personal_daily_path(root, day)
+        template = root / "00_includes" / "templates" / "note_daily.md"
+        fallback = f"# Daily — {day.isoformat()} {day.strftime('%a')}\n\n## Intentions #personal\n- [ ]\n\n## Agent activity\n\n## Personal notes #personal\n\n## Projects #personal\n-\n\n## Work-load signal #work\nSanitized only. No proprietary details.\n\n## Decisions\n-\n\n## Open loops\n- [ ]\n\n## Tomorrow\n- [ ]\n"
+    if path.exists():
+        return path, False
+    source = read_text(template) if template.exists() else fallback
+    write_text(path, render_template(source, day))
+    return path, True
+
+
+def append_to_section(markdown: str, header_prefix: str, addition: str) -> str:
+    lines = markdown.splitlines()
+    target = None
+    for i, line in enumerate(lines):
+        if line.strip().lower().startswith(header_prefix.lower()):
+            target = i
+            break
+    if target is None:
+        suffix = "\n" if markdown.endswith("\n") else "\n\n"
+        return markdown + suffix + header_prefix + "\n" + addition.strip() + "\n"
+    level = len(lines[target]) - len(lines[target].lstrip("#"))
+    insert = len(lines)
+    for j in range(target + 1, len(lines)):
+        line = lines[j]
+        if line.startswith("#"):
+            next_level = len(line) - len(line.lstrip("#"))
+            if next_level <= level:
+                insert = j
+                break
+    before = lines[:insert]
+    after = lines[insert:]
+    if before and before[-1].strip():
+        before.append("")
+    before.extend(addition.strip().splitlines())
+    before.append("")
+    return "\n".join(before + after).rstrip() + "\n"
+
+
+def bullet_block(title: str, items: list[str]) -> list[str]:
+    if not items:
+        return []
+    out = [f"- {title}:"]
+    out.extend(f"  - {item}" for item in items)
+    return out
+
+
+def render_signal(signal: dict[str, Any]) -> list[str]:
+    return [
+        "- Work-load signal:",
+        f"  - Load: {signal.get('load')}",
+        f"  - Category: {signal.get('category')}",
+        f"  - Impact: {signal.get('impact')}",
+        f"  - Personal next action: {signal.get('personal_next_action')}",
+    ]
+
+
+def render_work_capture(packet: dict[str, Any]) -> str:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%H:%M UTC")
+    source = packet.get("source_agent", "unknown")
+    lines = [f"### Capture — {stamp} — {source}"]
+    if packet.get("project"):
+        lines.append(f"- Project: {packet['project']}")
+    if packet.get("summary"):
+        lines.append(f"- Summary: {packet['summary']}")
+    for title, key in [
+        ("Decisions", "decisions"),
+        ("Shipped / changed", "shipped_or_changed"),
+        ("Blockers", "blockers"),
+        ("Follow-ups", "followups"),
+        ("Evidence", "evidence"),
+    ]:
+        lines.extend(bullet_block(title, as_list(packet.get(key))))
+    if packet.get("personal_signal_allowed") is True and isinstance(packet.get("work_load_signal"), dict):
+        lines.append("- Personal signal allowed: true (only sanitized `work_load_signal` may cross ledgers)")
+    return "\n".join(lines)
+
+
+def render_personal_capture(packet: dict[str, Any]) -> tuple[str, str | None]:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%H:%M UTC")
+    source = packet.get("source_agent", "unknown")
+    lines = [f"### Capture — {stamp} — {source}"]
+    if packet.get("personal_summary"):
+        lines.append(f"- Summary: {packet['personal_summary']}")
+    lines.extend(bullet_block("Personal agent runs", as_list(packet.get("personal_agent_runs"))))
+    lines.extend(bullet_block("Decisions", as_list(packet.get("decisions"))))
+    lines.extend(bullet_block("Follow-ups", as_list(packet.get("followups"))))
+    signal_text = None
+    if isinstance(packet.get("work_load_signal"), dict):
+        signal_lines = [f"### Signal — {stamp}"] + render_signal(packet["work_load_signal"]) + ["- Boundary check: passed by notes-ledger privacy lint"]
+        signal_text = "\n".join(signal_lines)
+    return "\n".join(lines), signal_text
+
+
+def command_create_daily(args: argparse.Namespace) -> int:
+    day = parse_date(args.date)
+    root = args.work_root if args.ledger == "work" else args.personal_root
+    path, created = ensure_daily(args.ledger, root, day)
+    return emit({"ok": True, "ledger": args.ledger, "path": str(path), "created": created})
+
+
+def command_capture(args: argparse.Namespace) -> int:
+    data = load_packet(args.packet)
+    packet_kind, packet = unwrap_packet(data)
+    lint = lint_packet(packet_kind, packet, args.ledger)
+    if not lint["ok"]:
+        return emit({"ok": False, "ledger": args.ledger, "path": None, "lint": lint}, 2)
+    if args.ledger != packet_kind:
+        return emit({"ok": False, "ledger": args.ledger, "path": None, "lint": {"ok": False, "errors": [f"{packet_kind}_capture_packet cannot be ingested into {args.ledger} ledger"], "warnings": []}}, 2)
+    day = parse_date(args.date or str(packet.get("date") or ""))
+    root = args.work_root if args.ledger == "work" else args.personal_root
+    path, created = ensure_daily(args.ledger, root, day)
+    before = read_text(path)
+    if args.ledger == "work":
+        after = append_to_section(before, "## Work Log", render_work_capture(packet))
+    else:
+        capture_text, signal_text = render_personal_capture(packet)
+        after = append_to_section(before, "## Personal notes #personal", capture_text)
+        if signal_text:
+            after = append_to_section(after, "## Work-load signal #work", signal_text)
+    if not args.dry_run:
+        write_text(path, after)
+    return emit({"ok": True, "ledger": args.ledger, "path": str(path), "created_daily": created, "changed": before != after, "dry_run": args.dry_run, "warnings": lint["warnings"]})
+
+
+def strip_frontmatter(text: str) -> str:
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[end + 5 :]
+    return text
+
+
+def section_text(text: str, names: list[str]) -> str:
+    body = strip_frontmatter(text)
+    lines = body.splitlines()
+    chunks: list[str] = []
+    collecting = False
+    current_level = 0
+    lowered = [name.lower() for name in names]
+    for line in lines:
+        if line.startswith("#"):
+            title = line.lstrip("#").strip().lower()
+            level = len(line) - len(line.lstrip("#"))
+            if any(title.startswith(name) for name in lowered):
+                collecting = True
+                current_level = level
+                continue
+            if collecting and level <= current_level:
+                collecting = False
+        elif collecting:
+            chunks.append(line)
+    return "\n".join(chunks).strip()
+
+
+def bullets_from(text: str, limit: int = 20) -> list[str]:
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith(("- ", "* ")):
+            item = re.sub(r"\s+", " ", line[2:].strip())
+            if item and item not in {"-", "[ ]"}:
+                out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def note_date_from_path(path: Path) -> dt.date | None:
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", path.name)
+    if not match:
+        return None
+    try:
+        return dt.date.fromisoformat(match.group(1))
+    except ValueError:
+        return None
+
+
+def iter_daily_paths(ledger: str, root: Path) -> list[Path]:
+    if ledger == "work":
+        base = root / "daily"
+    else:
+        base = root / "02_personal" / "daily"
+    return sorted(p for p in base.glob("*.md") if note_date_from_path(p))
+
+
+def collect_daily_rows(ledger: str, root: Path, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in iter_daily_paths(ledger, root):
+        day = note_date_from_path(path)
+        if not day or day < start or day > end:
+            continue
+        text = read_text(path)
+        if ledger == "work":
+            rows.append(
+                {
+                    "date": day.isoformat(),
+                    "path": str(path.relative_to(root)),
+                    "focus": bullets_from(section_text(text, ["Focus", "🎯 Today's Focus"]), 8),
+                    "work_log": bullets_from(section_text(text, ["Work Log"]), 16),
+                    "decisions": bullets_from(section_text(text, ["Decisions Made", "Decisions"]), 8),
+                    "blockers": bullets_from(section_text(text, ["Blockers"]), 8),
+                    "next": bullets_from(section_text(text, ["Tomorrow", "Next"]), 8),
+                }
+            )
+        else:
+            signal = section_text(text, ["Work-load signal"])
+            rows.append(
+                {
+                    "date": day.isoformat(),
+                    "path": str(path.relative_to(root)),
+                    "intentions": bullets_from(section_text(text, ["Intentions"]), 8),
+                    "personal": bullets_from(section_text(text, ["Personal notes"]), 16),
+                    "projects": bullets_from(section_text(text, ["Projects"]), 12),
+                    "agent_activity": bullets_from(section_text(text, ["Agent activity"]), 12),
+                    "decisions": bullets_from(section_text(text, ["Decisions"]), 8),
+                    "open_loops": bullets_from(section_text(text, ["Open loops"]), 12),
+                    "next": bullets_from(section_text(text, ["Tomorrow"]), 8),
+                    "work_signal": summarize_work_signal_text(signal),
+                }
+            )
+    return rows
+
+
+def summarize_work_signal_text(text: str) -> dict[str, str]:
+    # Extract only enum-like signal values; ignore freeform work notes.
+    result: dict[str, str] = {}
+    label_to_key = {
+        "load": "load",
+        "category": "category",
+        "impact": "impact",
+        "personal next action": "personal_next_action",
+    }
+    for raw in text.splitlines():
+        cleaned = raw.strip().lstrip("- ").strip()
+        if ":" not in cleaned:
+            continue
+        label, value = cleaned.split(":", 1)
+        key = label_to_key.get(label.strip().lower())
+        if key:
+            val = value.strip().replace(" ", "-")
+            if val in WORK_SIGNAL_ENUMS[key]:
+                result[key] = val
+    return result
+
+
+def redact_text(text: str) -> str:
+    out = text
+    for pattern, replacement in SECRET_REDACTIONS:
+        out = pattern.sub(replacement, out)
+    return out
+
+
+def detect_providers() -> dict[str, Any]:
+    providers = {
+        "ollama": {"available": shutil.which("ollama") is not None, "models": []},
+        "llm": {"available": shutil.which("llm") is not None},
+        "aichat": {"available": shutil.which("aichat") is not None},
+        "mods": {"available": shutil.which("mods") is not None},
+    }
+    if providers["ollama"]["available"]:
+        try:
+            proc = subprocess.run(["ollama", "list"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, check=False)
+            if proc.returncode == 0:
+                names = []
+                for line in proc.stdout.splitlines()[1:]:
+                    parts = line.split()
+                    if parts:
+                        names.append(parts[0])
+                providers["ollama"]["models"] = names[:50]
+        except Exception:
+            pass
+    return providers
+
+
+def optional_inference_summary(text: str, args: argparse.Namespace) -> tuple[str | None, str]:
+    if args.use_inference == "never":
+        return None, "disabled"
+    providers = detect_providers()
+    model = getattr(args, "ollama_model", None)
+    if not model or not providers["ollama"]["available"] or model not in providers["ollama"].get("models", []):
+        return None, "unavailable"
+    prompt = "Summarize these redacted local note bullets into 5 concise, privacy-safe review bullets. Do not invent details.\n\n" + redact_text(text)[:12000]
+    try:
+        proc = subprocess.run(["ollama", "run", model], input=prompt, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=False)
+    except Exception:
+        return None, "failed"
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None, "failed"
+    return redact_text(proc.stdout.strip())[:3000], "ollama"
+
+
+def rollup_path(ledger: str, root: Path, cadence: str, day: dt.date) -> Path:
+    if ledger == "work":
+        base = root / "agentic" / "memory" / "reviews" / cadence
+    else:
+        base = root / "02_personal" / "reviews" / cadence
+    if cadence == "weekly":
+        return base / f"{iso_week_id(day)}.md"
+    return base / f"{day.strftime('%Y-%m')}.md"
+
+
+def render_rollup(ledger: str, cadence: str, day: dt.date, start: dt.date, end: dt.date, rows: list[dict[str, Any]], inference_text: str | None, inference_source: str) -> str:
+    title = iso_week_id(day) if cadence == "weekly" else day.strftime("%Y-%m")
+    tags = f"[{ledger}, review, {cadence}, generated]"
+    lines = ["---", f"type: {ledger}-{cadence}-review", f"cadence: {cadence}", f"period_start: {start.isoformat()}", f"period_end: {end.isoformat()}", f"generated: {dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')}", f"tags: {tags}", "---", f"# {ledger.title()} {cadence.title()} Review — {title}", "", f"Generated deterministically from {len(rows)} local daily note(s).", ""]
+    if inference_text:
+        lines.extend(["## Optional local inference summary", "", f"Source: `{inference_source}` over redacted local text.", "", inference_text, ""])
+    else:
+        lines.extend(["## Summary", "", f"- Daily notes covered: {len(rows)}", f"- Optional inference: {inference_source}", ""])
+    if ledger == "work":
+        sections = [("Focus", "focus"), ("Work log", "work_log"), ("Decisions", "decisions"), ("Blockers", "blockers"), ("Next", "next")]
+    else:
+        sections = [("Personal notes", "personal"), ("Projects", "projects"), ("Agent activity", "agent_activity"), ("Decisions", "decisions"), ("Open loops", "open_loops"), ("Next", "next")]
+    for section, key in sections:
+        lines.extend([f"## {section}", ""])
+        any_item = False
+        for row in rows:
+            items = row.get(key) or []
+            if not items:
+                continue
+            any_item = True
+            lines.append(f"### {row['date']}")
+            for item in items[:8]:
+                lines.append(f"- {item}")
+            lines.append("")
+        if not any_item:
+            lines.extend(["- n/a", ""])
+    if ledger == "personal":
+        lines.extend(["## Work-load signal trend #work", "", "Sanitized only; generated from allowed signal enums, not raw work text.", ""])
+        counts: dict[str, dict[str, int]] = {key: {} for key in WORK_SIGNAL_KEYS}
+        for row in rows:
+            signal = row.get("work_signal") or {}
+            for key, value in signal.items():
+                counts[key][value] = counts[key].get(value, 0) + 1
+        for key in ["load", "category", "impact", "personal_next_action"]:
+            if counts[key]:
+                summary = ", ".join(f"{value}: {count}" for value, count in sorted(counts[key].items()))
+                lines.append(f"- {key}: {summary}")
+            else:
+                lines.append(f"- {key}: n/a")
+        lines.extend(["", "## Boundary check", "", "- [x] No raw work sections included", "- [x] Work signal limited to allowed enums", ""])
+    lines.extend(["## Source notes", ""])
+    for row in rows:
+        lines.append(f"- `{row['path']}`")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def command_rollup(args: argparse.Namespace) -> int:
+    day = parse_date(args.date)
+    start, end = week_bounds(day) if args.cadence == "weekly" else month_bounds(day)
+    root = args.work_root if args.ledger == "work" else args.personal_root
+    rows = collect_daily_rows(args.ledger, root, start, end)
+    source_text = json.dumps(rows, ensure_ascii=False)
+    inference_text, inference_source = optional_inference_summary(source_text, args)
+    rendered = render_rollup(args.ledger, args.cadence, day, start, end, rows, inference_text, inference_source)
+    path = rollup_path(args.ledger, root, args.cadence, day)
+    before = read_text(path) if path.exists() else None
+    if args.ledger == "personal":
+        # The generated personal rollup should be safe by construction; lint the
+        # work signal trend specifically rather than raw source notes.
+        forbidden_hits = []
+        for name, pattern in PERSONAL_FORBIDDEN_PATTERNS:
+            check_text = re.sub(r"`[^`]+`", "<source-note-path>", rendered)
+            if pattern.search(check_text):
+                forbidden_hits.append(name)
+        if forbidden_hits:
+            return emit({"ok": False, "ledger": args.ledger, "cadence": args.cadence, "path": str(path), "errors": [f"generated rollup tripped privacy lint: {', '.join(sorted(set(forbidden_hits)))}"]}, 2)
+    if args.write:
+        write_text(path, rendered)
+    return emit({"ok": True, "ledger": args.ledger, "cadence": args.cadence, "period_start": start.isoformat(), "period_end": end.isoformat(), "source_notes": len(rows), "path": str(path), "write": args.write, "changed": before != rendered, "inference": inference_source})
+
+
+def command_privacy_lint(args: argparse.Namespace) -> int:
+    data = load_packet(args.packet)
+    packet_kind, packet = unwrap_packet(data)
+    lint = lint_packet(packet_kind, packet, args.ledger)
+    return emit({"ok": lint["ok"], "ledger": args.ledger, "packet_kind": packet_kind, "lint": lint}, 0 if lint["ok"] else 2)
+
+
+def command_emit_work_signal(args: argparse.Namespace) -> int:
+    data = load_packet(args.packet)
+    packet_kind, packet = unwrap_packet(data)
+    if packet_kind != "work":
+        return emit({"ok": False, "errors": ["emit-work-signal requires a work_capture_packet"]}, 2)
+    if packet.get("personal_signal_allowed") is not True:
+        return emit({"ok": False, "errors": ["personal_signal_allowed is not true"]}, 2)
+    signal = packet.get("work_load_signal")
+    errors = validate_work_signal(signal)
+    if errors:
+        return emit({"ok": False, "errors": errors}, 2)
+    return emit({"ok": True, "work_load_signal": signal})
+
+
+def command_providers(args: argparse.Namespace) -> int:
+    del args
+    return emit({"ok": True, "providers": detect_providers()})
+
+
+def note_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
+def command_index(args: argparse.Namespace) -> int:
+    root = args.work_root if args.ledger == "work" else args.personal_root
+    if args.ledger == "work":
+        work_index = root / "agentic" / "hermes" / "workflows" / "work_notes_librarian_index.py"
+        if work_index.exists() and args.kind in {"native", "all"}:
+            proc = subprocess.run([sys.executable, str(work_index), "--write"], cwd=str(root), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=False)
+            if proc.returncode == 0:
+                try:
+                    native = json.loads(proc.stdout)
+                except json.JSONDecodeError:
+                    native = {"raw_stdout_json": False}
+                return emit({"ok": True, "ledger": args.ledger, "indexer": "work_notes_librarian_index.py", "native": native})
+            return emit({"ok": False, "ledger": args.ledger, "indexer": "work_notes_librarian_index.py", "error": "native indexer failed"}, 1)
+        out = root / "agentic" / "memory" / "brain" / "notes-ledger-index.jsonl"
+    else:
+        out = root / "02_personal" / "reviews" / "notes-ledger-index.jsonl"
+    records: list[dict[str, Any]] = []
+    paths = iter_daily_paths(args.ledger, root)
+    if args.include_reviews:
+        if args.ledger == "work":
+            review_base = root / "agentic" / "memory" / "reviews"
+        else:
+            review_base = root / "02_personal" / "reviews"
+        paths.extend(sorted(review_base.rglob("*.md")) if review_base.exists() else [])
+    for path in sorted(set(paths)):
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        records.append({"path": str(rel), "date": note_date_from_path(path).isoformat() if note_date_from_path(path) else "", "bytes": path.stat().st_size, "sha256_12": note_digest(path)})
+    if args.write:
+        write_text(out, "".join(json.dumps(record, sort_keys=True) + "\n" for record in records))
+    return emit({"ok": True, "ledger": args.ledger, "indexer": "notes-ledger", "records": len(records), "path": str(out), "write": args.write})
+
+
+def command_schema(args: argparse.Namespace) -> int:
+    del args
+    return emit(
+        {
+            "ok": True,
+            "schemas": {
+                "work_capture_packet": {key: "required" if key in {"date", "source_agent", "ledger_targets", "summary"} else "optional" for key in sorted(WORK_PACKET_KEYS)},
+                "personal_capture_packet": {key: "required" if key in {"date", "source_agent", "ledger_targets", "personal_summary"} else "optional" for key in sorted(PERSONAL_PACKET_KEYS)},
+                "daily_rollup": {"date": "YYYY-MM-DD", "ledger": "work|personal", "sections": "bounded append-only markdown sections", "source_packet_sha256_12": "optional"},
+                "weekly_review": {"period": "ISO week YYYY-Www", "source_notes": "local daily notes in range", "output": "ledger-local review markdown"},
+                "monthly_review": {"period": "YYYY-MM", "source_notes": "local daily notes in range", "output": "ledger-local review markdown"},
+                "notes_index": {"path": "ledger-relative note path", "date": "YYYY-MM-DD when derivable", "bytes": "file size", "sha256_12": "content digest prefix"},
+                "work_load_signal": {key: sorted(values) for key, values in WORK_SIGNAL_ENUMS.items()},
+            },
+        }
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Hermes deterministic two-ledger notes CLI")
+    parser.add_argument("--work-root", type=Path, default=WORK_ROOT_DEFAULT)
+    parser.add_argument("--personal-root", type=Path, default=PERSONAL_ROOT_DEFAULT)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    create = sub.add_parser("create-daily")
+    create.add_argument("--ledger", choices=["work", "personal"], required=True)
+    create.add_argument("--date")
+    create.set_defaults(func=command_create_daily)
+
+    capture = sub.add_parser("capture")
+    capture.add_argument("--ledger", choices=["work", "personal"], required=True)
+    capture.add_argument("--packet", type=Path, required=True)
+    capture.add_argument("--date")
+    capture.add_argument("--dry-run", action="store_true")
+    capture.set_defaults(func=command_capture)
+
+    rollup = sub.add_parser("rollup")
+    rollup.add_argument("--ledger", choices=["work", "personal"], required=True)
+    rollup.add_argument("--cadence", choices=["weekly", "monthly"], required=True)
+    rollup.add_argument("--date")
+    rollup.add_argument("--write", action="store_true")
+    rollup.add_argument("--use-inference", choices=["never", "auto"], default="never")
+    rollup.add_argument("--ollama-model")
+    rollup.set_defaults(func=command_rollup)
+
+    lint = sub.add_parser("privacy-lint")
+    lint.add_argument("--ledger", choices=["work", "personal"], required=True)
+    lint.add_argument("--packet", type=Path, required=True)
+    lint.set_defaults(func=command_privacy_lint)
+
+    signal = sub.add_parser("emit-work-signal")
+    signal.add_argument("--packet", type=Path, required=True)
+    signal.set_defaults(func=command_emit_work_signal)
+
+    providers = sub.add_parser("providers")
+    providers.set_defaults(func=command_providers)
+
+    index = sub.add_parser("index")
+    index.add_argument("--ledger", choices=["work", "personal"], required=True)
+    index.add_argument("--write", action="store_true")
+    index.add_argument("--include-reviews", action="store_true")
+    index.add_argument("--kind", choices=["native", "all", "simple"], default="all")
+    index.set_defaults(func=command_index)
+
+    schema = sub.add_parser("schema")
+    schema.set_defaults(func=command_schema)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.work_root = args.work_root.expanduser().resolve()
+    args.personal_root = args.personal_root.expanduser().resolve()
+    try:
+        return args.func(args)
+    except Exception as exc:  # Keep stdout structured; no tracebacks by default.
+        print(f"notes-ledger error: {exc}", file=sys.stderr)
+        return emit({"ok": False, "error": exc.__class__.__name__}, 1)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
