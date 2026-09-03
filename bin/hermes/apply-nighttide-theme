@@ -125,6 +125,15 @@ CYAN = "#64bb9b"
 RED = "#cd5244"
 EMBER = "#fc7a37"
 PRODUCT_GROWTH_LIGHT = "#ceecbf"
+TRANSPARENT = "transparent"
+COS_IDENTITY = {
+    "eikon": "nous",
+    "identity": {
+        "label": "CoS",
+        "badge": "PERSONAL",
+        "detail": "Personal operating system, reviews, and machine rollout",
+    },
+}
 
 
 def ghostty_background() -> str:
@@ -141,19 +150,20 @@ def ghostty_background() -> str:
 
 GHOSTTY_BG = ghostty_background()
 
-# (accent, primary, line_color)
+# (accent, primary, line_color). Dark surfaces stay transparent so Ghostty
+# shows through — Cos chrome is accent-only, not a painted panel.
 THEME_VARIANTS: dict[str, tuple[str, str, str]] = {
-    "nighttide": (EMBER, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
+    "nighttide": (EMBER, NIGHTTIDE_PRIMARY, TRANSPARENT),
     "nighttide-ember": (EMBER, GHOSTTY_COLOR12, PRODUCT_GROWTH_LIGHT),
     "nighttide-work": (EMBER, GHOSTTY_COLOR12, PRODUCT_GROWTH_LIGHT),
-    "nighttide-violet": (VIOLET, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-teal": (TEAL, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-blue": (BLUE, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-amber": (AMBER, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-green": (GREEN, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-cyan": (CYAN, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-red": (RED, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-personal": (RED, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
+    "nighttide-violet": (VIOLET, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-teal": (TEAL, BLUE, TRANSPARENT),
+    "nighttide-blue": (BLUE, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-amber": (AMBER, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-green": (GREEN, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-cyan": (CYAN, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-red": (RED, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-personal": (RED, NIGHTTIDE_PRIMARY, TRANSPARENT),
 }
 
 # hostname -s / HERMES_MACHINE_PROFILE prefixes → Cos personal theme.
@@ -197,10 +207,10 @@ def nighttide_theme(
     return {
         "$schema": "https://opencode.ai/theme.json",
         "defs": {
-            "ntBg0": GHOSTTY_BG,
-            "ntBg1": GHOSTTY_BG,
-            "ntBg2": GHOSTTY_BG,
-            "ntLine": line_color,
+            "ntBg0": TRANSPARENT,
+            "ntBg1": TRANSPARENT,
+            "ntBg2": TRANSPARENT,
+            "ntLine": line_color if line_color != GHOSTTY_BG else TRANSPARENT,
             "ntText": "#eceff0",
             "ntTextSoft": "#bec2c5",
             "ntMuted": primary,
@@ -322,7 +332,10 @@ def herm_fork_dirs() -> list[Path]:
 
 def _preview_entry(name: str) -> str:
     accent, primary, _line = THEME_VARIANTS[name]
-    return f'  "{name}": {{ primary: "{primary}", accent: "{accent}", background: "{GHOSTTY_BG}" }},'
+    return (
+        f'  "{name}": {{ primary: "{primary}", accent: "{accent}", '
+        f'background: "{TRANSPARENT}" }},'
+    )
 
 
 def ensure_fork_manifest(manifest: Path) -> None:
@@ -333,7 +346,7 @@ def ensure_fork_manifest(manifest: Path) -> None:
         token = f'"{name}":'
         pattern = (
             rf'  "{re.escape(name)}": \{{ primary: "#[0-9A-Fa-f]{{6}}", '
-            rf'accent: "#[0-9A-Fa-f]{{6}}", background: "#[0-9A-Fa-f]{{6}}" \}},'
+            rf'accent: "#[0-9A-Fa-f]{{6}}", background: "(?:#[0-9A-Fa-f]{{6}}|transparent)" \}},'
         )
         if token in text:
             text, n = re.subn(pattern, entry, text, count=1)
@@ -379,7 +392,7 @@ def ensure_registry() -> None:
     text = INDEX.read_text(errors="ignore")
     entries = {
         name: f'{name if "-" not in name else json.dumps(name)}:'
-        f'{{primary:"{primary}",accent:"{accent}",background:"{GHOSTTY_BG}"}},'
+        f'{{primary:"{primary}",accent:"{accent}",background:"{TRANSPARENT}"}},'
         for name, (accent, primary, _line_color) in THEME_VARIANTS.items()
     }
 
@@ -389,7 +402,7 @@ def ensure_registry() -> None:
         if token in text:
             text, n = re.subn(
                 re.escape(token)
-                + r'primary:"#[0-9A-Fa-f]{6}",accent:"#[0-9A-Fa-f]{6}",background:"#[0-9A-Fa-f]{6}"\},',
+                + r'primary:"#[0-9A-Fa-f]{6}",accent:"#[0-9A-Fa-f]{6}",background:"(?:#[0-9A-Fa-f]{6}|transparent)"\},',
                 entry,
                 text,
                 count=1,
@@ -464,6 +477,11 @@ def merge_pref(home: Path, *, force: bool = False) -> str:
         data = {}
     theme = theme_for_home(home, force=force)
     data.update({"theme": theme, "themeMode": "dark"})
+    if is_cos_home(home):
+        if not data.get("eikon"):
+            data["eikon"] = COS_IDENTITY["eikon"]
+        if not isinstance(data.get("identity"), dict):
+            data["identity"] = dict(COS_IDENTITY["identity"])
     path.write_text(json.dumps(data, indent=2) + "\n")
     return theme
 
