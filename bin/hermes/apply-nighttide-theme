@@ -9,8 +9,14 @@ the host/profile identity cue:
   home-mac-mini Cos     nighttide-teal
   mac-mbp-13 Cos        nighttide-blue
   omarchy-mbp-13 Cos    nighttide-amber
-  qemu omarchy Cos      nighttide-green
-  work / cosw           nighttide-ember
+  qemu / omarchy Cos    nighttide-green
+  work / cosw           nighttide-ember  (mac + tc2 share this profile)
+  dream / dreamw        nighttide-cyan
+
+`--theme NAME` is one-shot for this run. `--set-default` persists that
+theme on targeted homes as `nighttideDefault` so later applies keep it.
+`--profile` / `--home` limit which homes are rewritten. `--eikon` sets
+the default eikon on those homes.
 
 Safe to rerun after `herm-tui` upgrades. Writes theme JSON into:
   1. the active herm-tui package `themes/` dir (published installs)
@@ -22,7 +28,8 @@ lastSessionId). Existing nighttide-* selections on non-Cos homes are kept.
 Cos personal homes are remapped to the host accent so a prior installer
 stomp (personal/ares) can be repaired.
 
-Usage: apply-nighttide-theme [--dry-run] [--force]
+Usage: apply-nighttide-theme [--dry-run] [--force] [--theme NAME]
+       [--set-default] [--profile NAME] [--home PATH] [--eikon NAME]
 """
 from __future__ import annotations
 
@@ -167,16 +174,45 @@ THEME_VARIANTS: dict[str, tuple[str, str, str]] = {
 }
 
 # hostname -s / HERMES_MACHINE_PROFILE prefixes → Cos personal theme.
+# More-specific prefixes first. Work/cosw stays ember via is_work_home —
+# tc2 and work-mbp share that profile; they are listed so personal Cos
+# on those hosts is explicit instead of falling through to the default.
 COS_HOST_PREFIXES: tuple[tuple[str, str], ...] = (
     ("khire-mac-mini", "nighttide-teal"),
     ("home-mac-mini", "nighttide-teal"),
+    ("personal-mini", "nighttide-teal"),
     ("mac-mbp-13", "nighttide-blue"),
     ("omarchy-mbp-13", "nighttide-amber"),
     ("omarchy-qemu", "nighttide-green"),
     ("qemu-omarchy", "nighttide-green"),
     ("omarchy-desktop", "nighttide-green"),
+    ("omarchy", "nighttide-green"),
     ("karans-macbook-pro", "nighttide-violet"),
+    ("work-mbp", "nighttide-violet"),
+    ("work-devbox", "nighttide-violet"),
+    ("tc2", "nighttide-violet"),
 )
+
+# Launcher / home aliases → profile class used for default theme + targeting.
+PROFILE_ALIASES: dict[str, str] = {
+    "cosw": "work",
+    "chief-of-staff-work": "work",
+    "hwork": "work",
+    "dreamw": "dream",
+    "dream": "dream",
+    "hdream": "dream",
+    "hdream-sandbox": "dream",
+    "cos": "cos",
+    "chief-of-staff": "cos",
+    "hpersonal": "cos",
+}
+
+PROFILE_DEFAULT_THEME: dict[str, str] = {
+    "work": "nighttide-ember",
+    "dream": "nighttide-cyan",
+}
+
+PIN_KEY = "nighttideDefault"
 
 
 def machine_id() -> str:
@@ -429,18 +465,65 @@ def is_work_home(home: Path) -> bool:
     return (
         "chief-of-staff-work" in parts
         or name == "hwork"
+        or name == "cosw"
         or name.startswith("work-")
         or name.endswith("-work")
         or (name == "work" and "profiles" in parts)
     )
 
 
-def is_cos_home(home: Path) -> bool:
+def is_dream_home(home: Path) -> bool:
     if is_work_home(home):
         return False
     parts = {part.lower() for part in home.parts}
     name = home.name.lower()
+    return (
+        name in {"hdream", "hdream-sandbox", "dream", "dreamw"}
+        or name.startswith("dreamw")
+        or "hdream" in parts
+        or "dreamw" in parts
+    )
+
+
+def is_cos_home(home: Path) -> bool:
+    if is_work_home(home) or is_dream_home(home):
+        return False
+    parts = {part.lower() for part in home.parts}
+    name = home.name.lower()
     return "chief-of-staff" in parts or name in {"hpersonal", "cos"}
+
+
+def profile_class(home: Path) -> str:
+    if is_work_home(home):
+        return "work"
+    if is_dream_home(home):
+        return "dream"
+    if is_cos_home(home):
+        return "cos"
+    return "other"
+
+
+def resolve_profile_class(name: str) -> str | None:
+    key = name.strip().lower()
+    if key in PROFILE_ALIASES:
+        return PROFILE_ALIASES[key]
+    if key in PROFILE_DEFAULT_THEME or key in {"cos", "other"}:
+        return key
+    return None
+
+
+def pinned_theme(home: Path) -> str | None:
+    path = home / "herm" / "tui.json"
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    pinned = data.get(PIN_KEY)
+    if isinstance(pinned, str) and pinned in THEME_VARIANTS:
+        return pinned
+    return None
 
 
 def existing_theme(home: Path) -> str | None:
@@ -455,10 +538,26 @@ def existing_theme(home: Path) -> str | None:
     return theme if isinstance(theme, str) and theme else None
 
 
-def theme_for_home(home: Path, *, force: bool = False) -> str:
-    if is_work_home(home):
-        return "nighttide-ember"
-    if is_cos_home(home):
+def theme_for_home(
+    home: Path,
+    *,
+    force: bool = False,
+    theme_override: str | None = None,
+) -> str:
+    if theme_override:
+        if theme_override not in THEME_VARIANTS:
+            raise SystemExit(f"unknown nighttide theme: {theme_override}")
+        return theme_override
+    if not force:
+        pinned = pinned_theme(home)
+        if pinned:
+            return pinned
+    kind = profile_class(home)
+    if kind == "work":
+        return PROFILE_DEFAULT_THEME["work"]
+    if kind == "dream":
+        return PROFILE_DEFAULT_THEME["dream"]
+    if kind == "cos":
         return host_cos_theme()
     current = existing_theme(home)
     if not force and current and current in THEME_VARIANTS:
@@ -466,7 +565,14 @@ def theme_for_home(home: Path, *, force: bool = False) -> str:
     return "nighttide-personal"
 
 
-def merge_pref(home: Path, *, force: bool = False) -> str:
+def merge_pref(
+    home: Path,
+    *,
+    force: bool = False,
+    theme_override: str | None = None,
+    set_default: bool = False,
+    eikon: str | None = None,
+) -> str:
     path = home / "herm" / "tui.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -475,8 +581,12 @@ def merge_pref(home: Path, *, force: bool = False) -> str:
             data = {}
     except Exception:
         data = {}
-    theme = theme_for_home(home, force=force)
+    theme = theme_for_home(home, force=force, theme_override=theme_override)
     data.update({"theme": theme, "themeMode": "dark"})
+    if set_default:
+        data[PIN_KEY] = theme
+    if eikon:
+        data["eikon"] = eikon
     if is_cos_home(home):
         if not data.get("eikon"):
             data["eikon"] = COS_IDENTITY["eikon"]
@@ -523,24 +633,82 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--force",
         action="store_true",
-        help="remap non-Cos homes even when they already have a nighttide-* theme",
+        help="ignore pinned nighttideDefault and remap non-Cos homes",
     )
+    p.add_argument(
+        "--theme",
+        metavar="NAME",
+        help="one-shot nighttide-* theme for targeted homes this run",
+    )
+    p.add_argument(
+        "--set-default",
+        action="store_true",
+        help="persist --theme (or the computed theme) as nighttideDefault",
+    )
+    p.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="limit to homes for this launcher/profile (cosw, dreamw, cos, …)",
+    )
+    p.add_argument(
+        "--home",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="limit to this Hermes home (repeatable)",
+    )
+    p.add_argument("--eikon", metavar="NAME", help="set default eikon on targeted homes")
     p.add_argument("--quiet", action="store_true", help="suppress per-home listing")
     return p.parse_args(argv)
 
 
+def selected_homes(args: argparse.Namespace) -> list[Path]:
+    homes = candidate_homes()
+    if args.home:
+        explicit: list[Path] = []
+        seen: set[Path] = set()
+        for raw in args.home:
+            home = Path(raw).expanduser()
+            try:
+                key = home.resolve()
+            except FileNotFoundError:
+                key = home
+            if key in seen:
+                continue
+            seen.add(key)
+            explicit.append(home)
+        homes = explicit
+    if args.profile:
+        kind = resolve_profile_class(args.profile)
+        if kind is None:
+            needle = args.profile.strip().lower()
+            homes = [h for h in homes if needle in {p.lower() for p in h.parts}]
+        elif kind != "other":
+            homes = [h for h in homes if profile_class(h) == kind]
+    return homes
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    theme_override = args.theme
+    if theme_override and theme_override not in THEME_VARIANTS:
+        raise SystemExit(
+            f"unknown theme {theme_override!r}; choose from: "
+            + ", ".join(sorted(THEME_VARIANTS))
+        )
+    homes = selected_homes(args)
     if args.dry_run:
         print(f"herm-tui={HERM_TUI}")
         print(f"machine={machine_id()} cos={host_cos_theme()}")
         print(f"package_themes={'skip-fork' if (HERM_TUI / 'src/theme/themes').is_dir() else THEMES}")
         print(f"forks={[str(p) for p in herm_fork_dirs()]}")
-        for home in candidate_homes():
-            print(f"  {home}: {theme_for_home(home, force=args.force)}")
+        for home in homes:
+            theme = theme_for_home(home, force=args.force, theme_override=theme_override)
+            pin = " persist" if args.set_default else ""
+            print(f"  {home}: {theme}{pin}")
         return 0
 
-    if not HERM_TUI.exists() and not candidate_homes() and not herm_fork_dirs():
+    if not HERM_TUI.exists() and not homes and not herm_fork_dirs():
         raise SystemExit(f"herm-tui install not found: {HERM_TUI}")
 
     package_dir = write_package_themes()
@@ -549,9 +717,15 @@ def main(argv: list[str] | None = None) -> int:
     forks = write_fork_themes()
 
     applied = []
-    for home in candidate_homes():
+    for home in homes:
         write_theme_dir(home / "herm" / "themes")
-        theme = merge_pref(home, force=args.force)
+        theme = merge_pref(
+            home,
+            force=args.force,
+            theme_override=theme_override,
+            set_default=args.set_default,
+            eikon=args.eikon,
+        )
         applied.append(f"{home}: {theme}")
 
     if not args.quiet:
