@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Launch the work Chief of Staff Hermes profile.
+# Default: host-native local tools (not the Docker sandbox).
 set -euo pipefail
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -13,6 +14,54 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 log() { printf 'cosw: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+usage() {
+  cat <<'EOF'
+Launch the work Chief of Staff (chief-of-staff-work).
+
+Default: host-native local terminal (not the Docker sandbox). Profile seat is
+cursor/grok-4.6:fast on the timeout-free Cursor SDK worktree (no 180s bomb).
+
+Usage:
+  cosw [options] [-- agents-or-herm-args]
+
+Backend:
+  --host, --host-tools, --no-sandbox   host-native tools (default)
+  --sandbox                            opt in to the work-devboxes compose sandbox
+  --terminal-backend local|docker      explicit backend
+  --sandbox-stack [args]               run work-devbox (list|up|down|status|ensure)
+
+Seats:
+  --codex, --gpt-5.5                   start on openai-codex/gpt-5.5
+  --grok, --cursor-grok                Cursor grok-4.6:fast + timeout-free PYTHONPATH
+  --xai-grok, --grok-xai               xAI grok-4.6 (not the Cursor SDK)
+  --seat provider/model                explicit seat
+
+Lane isolation:
+  --lane NAME                          run as isolated profile
+                                        chief-of-staff-work-NAME instead of the
+                                        singular chief-of-staff-work profile.
+                                        Own HERMES_HOME/session/dispatch state;
+                                        does not collide with the main cosw
+                                        seat or other lanes. Clones
+                                        chief-of-staff-work.yaml on first use if
+                                        chief-of-staff-work-NAME.yaml is missing.
+
+Other:
+  --print-plan                         print resolved launch plan and exit
+  --dispatch-doctor                    probe host-control only
+  --refresh-gh-auth                    restage sandbox GitHub auth
+  -h, --help                           this help
+
+Env:
+  COSW_SANDBOX=1                       default to Docker sandbox
+  COSW_COMPOSE=0                       ad-hoc podman run instead of compose
+  COSW_TIMEOUT_FREE_PYTHONPATH         override timeout-free worktree
+  COSW_TERMINAL_CWD                    host/sandbox cwd
+  COSW_PRINT_PLAN=1                    same as --print-plan
+  COSW_WORK_DEVBOX                     override work-devbox helper
+EOF
+}
+
 resolve_link() {
   local target="$1" dir next
   while [ -L "$target" ]; do
@@ -23,38 +72,138 @@ resolve_link() {
   printf '%s\n' "$target"
 }
 
-forced_host_tools() {
-  local arg next
-  while [ "$#" -gt 0 ]; do
-    arg="$1"; shift
-    case "$arg" in
-      --host-tools) return 0 ;;
-      --terminal-backend)
-        next="${1:-}"
-        [ "$next" = "local" ] && return 0
-        [ "$#" -gt 0 ] && shift
-        ;;
-      --terminal-backend=local) return 0 ;;
-      --) break ;;
-    esac
-  done
-  [ "${HERMES_AGENT_TERMINAL_BACKEND:-}" = "local" ] || [ "${TERMINAL_ENV:-}" = "local" ]
+set_host_backend() {
+  COSW_FORCE_SANDBOX=0
+  export HERMES_AGENT_TERMINAL_BACKEND=local
+  export TERMINAL_ENV=local
+}
+
+set_sandbox_backend() {
+  COSW_FORCE_SANDBOX=1
+  export HERMES_AGENT_TERMINAL_BACKEND=docker
+  export TERMINAL_ENV=docker
+}
+
+set_seat() {
+  local next="$1"
+  if [ -n "${COSW_SEAT:-}" ] && [ "$COSW_SEAT" != "$next" ]; then
+    die "conflicting seats: $COSW_SEAT vs $next"
+  fi
+  COSW_SEAT="$next"
+}
+
+parse_seat_value() {
+  local value="$1"
+  case "$value" in
+    openai-codex/gpt-5.5|codex|gpt-5.5)
+      set_seat codex
+      ;;
+    cursor/grok-4.6:fast|cursor-grok|grok-4.6:fast)
+      set_seat cursor-grok
+      ;;
+    xai/grok-4.6|xai-oauth/grok-4.6|xai-grok|grok-xai)
+      set_seat xai-grok
+      case "$value" in
+        xai-oauth/*) COSW_XAI_PROVIDER=xai-oauth ;;
+      esac
+      ;;
+    */*)
+      set_seat custom
+      COSW_PROVIDER="${value%%/*}"
+      COSW_MODEL="${value#*/}"
+      ;;
+    *)
+      die "unknown --seat $value (try openai-codex/gpt-5.5, cursor/grok-4.6:fast, xai/grok-4.6)"
+      ;;
+  esac
 }
 
 strip_cosw_args() {
   COSW_ARGS=()
+  COSW_DISPATCH_DOCTOR="${COSW_DISPATCH_DOCTOR:-0}"
+  COSW_PRINT_PLAN="${COSW_PRINT_PLAN:-0}"
+  COSW_SANDBOX_STACK="${COSW_SANDBOX_STACK:-0}"
+  COSW_SANDBOX_STACK_ARGS=()
+  COSW_COMPOSE="${COSW_COMPOSE:-1}"
+  COSW_SEAT="${COSW_SEAT:-}"
+  COSW_PROVIDER="${COSW_PROVIDER:-}"
+  COSW_MODEL="${COSW_MODEL:-}"
+  COSW_XAI_PROVIDER="${COSW_XAI_PROVIDER:-xai}"
+  COSW_LANE="${COSW_LANE:-}"
+  COSW_PROFILE="${COSW_PROFILE:-chief-of-staff-work}"
+  if [ "${COSW_SANDBOX:-0}" = "1" ] || [ "${HERMES_AGENT_TERMINAL_BACKEND:-}" = "docker" ]; then
+    COSW_FORCE_SANDBOX=1
+  else
+    COSW_FORCE_SANDBOX=0
+  fi
   local arg next
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
-      --host-tools)
-        export TERMINAL_ENV="${TERMINAL_ENV:-local}"
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --print-plan|--dry-run)
+        COSW_PRINT_PLAN=1
+        ;;
+      --refresh-gh-auth|--refresh-sandbox-auth)
+        COSW_REFRESH_GH_AUTH_ONLY=1
+        ;;
+      --dispatch-doctor|--bootstrap-only)
+        COSW_DISPATCH_DOCTOR=1
+        ;;
+      --host|--host-tools|--no-sandbox)
+        set_host_backend
+        ;;
+      --sandbox|--docker)
+        set_sandbox_backend
+        ;;
+      --lane)
+        next="${1:-}"
+        [ -n "$next" ] || die "--lane needs a name (e.g. --lane o1)"
+        COSW_LANE="$next"
+        COSW_PROFILE="chief-of-staff-work-$next"
+        shift
+        ;;
+      --lane=*)
+        next="${arg#--lane=}"
+        [ -n "$next" ] || die "--lane needs a name (e.g. --lane o1)"
+        COSW_LANE="$next"
+        COSW_PROFILE="chief-of-staff-work-$next"
+        ;;
+      --sandbox-stack)
+        COSW_SANDBOX_STACK=1
+        COSW_SANDBOX_STACK_ARGS=("$@")
+        break
+        ;;
+      --codex|--gpt-5.5)
+        set_seat codex
+        ;;
+      --grok|--cursor-grok)
+        set_seat cursor-grok
+        ;;
+      --xai-grok|--grok-xai)
+        set_seat xai-grok
+        ;;
+      --seat)
+        next="${1:-}"
+        [ -n "$next" ] || die "--seat needs provider/model"
+        parse_seat_value "$next"
+        shift
+        ;;
+      --seat=*)
+        parse_seat_value "${arg#--seat=}"
         ;;
       --terminal-backend)
         next="${1:-}"
         case "$next" in
-          local|docker)
-            export TERMINAL_ENV="$next"
+          local|host)
+            set_host_backend
+            [ "$#" -gt 0 ] && shift
+            ;;
+          docker)
+            set_sandbox_backend
             [ "$#" -gt 0 ] && shift
             ;;
           *)
@@ -63,11 +212,11 @@ strip_cosw_args() {
             ;;
         esac
         ;;
-      --terminal-backend=local)
-        export TERMINAL_ENV=local
+      --terminal-backend=local|--terminal-backend=host)
+        set_host_backend
         ;;
       --terminal-backend=docker)
-        export TERMINAL_ENV=docker
+        set_sandbox_backend
         ;;
       --)
         COSW_ARGS+=("--" "$@")
@@ -76,6 +225,174 @@ strip_cosw_args() {
       *) COSW_ARGS+=("$arg") ;;
     esac
   done
+}
+
+timeout_free_worktree() {
+  local candidate file
+  if [ -n "${COSW_TIMEOUT_FREE_PYTHONPATH:-}" ]; then
+    candidate="$COSW_TIMEOUT_FREE_PYTHONPATH"
+    file="$candidate/agent/cursor_sdk_client.py"
+    if [ -f "$file" ] && grep -q '_operator_run_timeout_seconds' "$file"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    return 1
+  fi
+  candidate="${HOME}/src/hermes-agent-worktrees/timeout-free-cursor-sdk-20260831T1834"
+  file="$candidate/agent/cursor_sdk_client.py"
+  if [ -f "$file" ] && grep -q '_operator_run_timeout_seconds' "$file"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+xai_auth_available() {
+  if [ -n "${XAI_API_KEY:-}" ]; then
+    return 0
+  fi
+  local auth="${HOME}/.hermes/auth.json"
+  if [ ! -f "$auth" ]; then
+    return 1
+  fi
+  python3 -c '
+import json, sys
+from pathlib import Path
+path = Path.home() / ".hermes" / "auth.json"
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(1)
+providers = data.get("providers") or {}
+pool = data.get("credential_pool") or {}
+raise SystemExit(0 if any(name in providers or name in pool for name in ("xai", "xai-oauth")) else 1)
+'
+}
+
+apply_cosw_seat() {
+  COSW_THINKING="${COSW_THINKING:-xhigh}"
+  COSW_SEAT_OVERRIDE=0
+  COSW_CURSOR_SDK=0
+  case "${COSW_SEAT:-}" in
+    ""|cursor-grok)
+      COSW_PROVIDER="${COSW_PROVIDER:-cursor}"
+      COSW_MODEL="${COSW_MODEL:-grok-4.6:fast}"
+      COSW_CURSOR_SDK=1
+      if [ "${COSW_SEAT:-}" = "cursor-grok" ]; then
+        COSW_SEAT_OVERRIDE=1
+      fi
+      ;;
+    codex)
+      COSW_PROVIDER=openai-codex
+      COSW_MODEL=gpt-5.5
+      COSW_CURSOR_SDK=0
+      COSW_SEAT_OVERRIDE=1
+      ;;
+    xai-grok)
+      COSW_PROVIDER="${COSW_XAI_PROVIDER:-xai}"
+      COSW_MODEL=grok-4.6
+      COSW_CURSOR_SDK=0
+      COSW_SEAT_OVERRIDE=1
+      ;;
+    custom)
+      [ -n "$COSW_PROVIDER" ] && [ -n "$COSW_MODEL" ] || die "--seat custom is missing provider/model"
+      if [ "$COSW_PROVIDER" = "cursor" ]; then
+        COSW_CURSOR_SDK=1
+      fi
+      COSW_SEAT_OVERRIDE=1
+      ;;
+    *)
+      die "unknown seat ${COSW_SEAT}"
+      ;;
+  esac
+}
+
+export_seat_env() {
+  if [ "$COSW_SEAT_OVERRIDE" = "1" ]; then
+    export HERMES_AGENT_LLM_PROVIDER="$COSW_PROVIDER"
+    export HERMES_AGENT_LLM_MODEL="$COSW_MODEL"
+    export HERMES_AGENT_LLM_THINKING="$COSW_THINKING"
+    export HERMES_INFERENCE_PROVIDER="$COSW_PROVIDER"
+    export HERMES_TUI_PROVIDER="$COSW_PROVIDER"
+    export HERMES_INFERENCE_MODEL="$COSW_MODEL"
+    export HERMES_MODEL="$COSW_MODEL"
+  fi
+}
+
+pin_timeout_free_pythonpath() {
+  local worktree
+  worktree="$(timeout_free_worktree)" || die "timeout-free Cursor SDK worktree missing; set COSW_TIMEOUT_FREE_PYTHONPATH or keep $HOME/src/hermes-agent-worktrees/timeout-free-cursor-sdk-20260831T1834"
+  export PYTHONPATH="${worktree}${PYTHONPATH:+:$PYTHONPATH}"
+  unset HERMES_CURSOR_SDK_RUN_TIMEOUT || true
+  COSW_TIMEOUT_FREE_ROOT="$worktree"
+}
+
+work_devbox_cmd() {
+  local candidate="${COSW_WORK_DEVBOX:-$HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox}"
+  if [ -e "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+emit_catalog_plan_fields() {
+  local sandbox="$1" bin line key value
+  if ! bin="$(work_devbox_cmd)"; then
+    printf 'stack=\ncompose=0\ncompose_file=\ncompose_service=\ncontainer=\npersist=0\nhostctl=0\nimage=\n'
+    return 0
+  fi
+  if [ "$sandbox" = "1" ]; then
+    set -- print-plan "$COSW_PROFILE" --sandbox
+  else
+    set -- print-plan "$COSW_PROFILE" --host
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      stack|compose|compose_file|compose_service|container|persist|hostctl|image)
+        printf '%s=%s\n' "$key" "$value"
+        ;;
+    esac
+  done < <("$bin" "$@")
+}
+
+print_cosw_plan() {
+  local sandbox=0 pythonpath="" timeout_free=0 xai_auth=0 persona
+  if [ "$COSW_FORCE_SANDBOX" = "1" ]; then
+    sandbox=1
+  fi
+  if [ "$COSW_CURSOR_SDK" = "1" ] && [ "$sandbox" = "0" ]; then
+    if pythonpath="$(timeout_free_worktree)"; then
+      timeout_free=1
+    fi
+  fi
+  if xai_auth_available; then
+    xai_auth=1
+  fi
+  if [ "$sandbox" = "1" ]; then
+    persona="$SCRIPT_DIR/bootstrap/cosw-dispatch.md"
+  else
+    persona="$SCRIPT_DIR/bootstrap/cosw-host-dispatch.md"
+  fi
+  if [ "$sandbox" = "1" ]; then
+    printf 'backend=docker\n'
+  else
+    printf 'backend=local\n'
+  fi
+  printf 'sandbox=%s\n' "$sandbox"
+  printf 'seat=%s\n' "${COSW_SEAT:-cursor-grok}"
+  printf 'provider=%s\n' "$COSW_PROVIDER"
+  printf 'model=%s\n' "$COSW_MODEL"
+  printf 'thinking=%s\n' "$COSW_THINKING"
+  printf 'cursor_sdk=%s\n' "$COSW_CURSOR_SDK"
+  printf 'timeout_free=%s\n' "$timeout_free"
+  printf 'pythonpath=%s\n' "$pythonpath"
+  printf 'xai_auth=%s\n' "$xai_auth"
+  printf 'persona=%s\n' "$persona"
+  emit_catalog_plan_fields "$sandbox"
 }
 
 json_array() {
@@ -88,6 +405,294 @@ json_array() {
   done
   out+="]"
   printf '%s\n' "$out"
+}
+
+stage_gh_auth_for_sandbox() {
+  local profile_home="$1" src="$HOME/.config/gh" dst tmp
+  [ "${COSW_GH_AUTH:-1}" = "1" ] || return 0
+  [ -f "$src/hosts.yml" ] || return 0
+  dst="$profile_home/sandbox-auth/gh"
+  tmp="$profile_home/sandbox-auth/gh.tmp.$$"
+  mkdir -p "$tmp"
+  [ ! -f "$src/config.yml" ] || cp "$src/config.yml" "$tmp/config.yml"
+  cp "$src/hosts.yml" "$tmp/hosts.yml"
+  # The container runs as uid 1000 and bind-mounted host files appear as root.
+  # Keep the host parent private (profile_home is 0700) but make these staged
+  # copies world-readable inside the read-only mount so gh can read them.
+  chmod 0444 "$tmp"/*.yml
+  chmod 0555 "$tmp"
+  if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+    # Preserve the directory inode so already-running containers with this
+    # directory bind-mounted read-only see refreshed files after host auth
+    # rotation. Replacing the directory would leave those mounts pinned to the
+    # old/deleted inode until the sandbox is restarted.
+    chmod u+w "$dst" 2>/dev/null || true
+    chmod u+w "$dst"/*.yml 2>/dev/null || true
+    rm -f "$dst/hosts.yml" "$dst/config.yml"
+    cp "$tmp"/*.yml "$dst/"
+    chmod 0444 "$dst"/*.yml
+    chmod 0555 "$dst"
+    chmod -R u+w "$tmp" 2>/dev/null || true
+    rm -rf "$tmp"
+  else
+    if [ -e "$dst" ]; then
+      chmod -R u+w "$dst" 2>/dev/null || true
+      rm -rf "$dst"
+    fi
+    mv "$tmp" "$dst"
+  fi
+  printf '%s\n' "$dst"
+}
+
+stage_gh_gitconfig_for_sandbox() {
+  local profile_home="$1" dst
+  [ "${COSW_GH_AUTH:-1}" = "1" ] || return 0
+  dst="$profile_home/sandbox-auth/gitconfig"
+  mkdir -p "$(dirname "$dst")"
+  [ ! -e "$dst" ] || chmod u+w "$dst" 2>/dev/null || true
+  cat >"$dst" <<'EOF'
+[user]
+	name = Karan Hiremath
+	email = karan.hiremath@cartesia.ai
+[safe]
+	directory = *
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+[credential "https://github.com"]
+	helper =
+	helper = !gh auth git-credential
+[credential "https://gist.github.com"]
+	helper =
+	helper = !gh auth git-credential
+EOF
+  chmod 0444 "$dst"
+  printf '%s\n' "$dst"
+}
+
+stage_readable_skills_for_sandbox() {
+  local profile_home="$1" src="$profile_home/skills" dst tmp
+  [ -d "$src" ] || return 0
+  dst="$profile_home/sandbox-readable/skills"
+  tmp="$profile_home/sandbox-readable/skills.tmp.$$"
+  mkdir -p "$tmp"
+  cp -R "$src/." "$tmp/"
+  chmod -R a+rX "$tmp" 2>/dev/null || true
+  chmod 0555 "$tmp" 2>/dev/null || true
+  if [ -e "$dst" ]; then
+    chmod -R u+w "$dst" 2>/dev/null || true
+    rm -rf "$dst"
+  fi
+  mv "$tmp" "$dst"
+  printf '%s\n' "$dst"
+}
+
+stage_auth_dir_for_sandbox() {
+  local profile_home="$1" name="$2" src="$3" dst tmp
+  [ -d "$src" ] || return 0
+  dst="$profile_home/sandbox-auth/$name"
+  tmp="$profile_home/sandbox-auth/$name.tmp.$$"
+  mkdir -p "$tmp"
+  cp -R "$src/." "$tmp/"
+  find "$tmp" -type d -exec chmod 0555 {} + 2>/dev/null || true
+  find "$tmp" -type f -exec chmod 0444 {} + 2>/dev/null || true
+  if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+    # Preserve the directory inode so existing read-only bind mounts keep seeing
+    # refreshed auth. Copy over current files without an empty-window delete;
+    # stale cache files are safer than transiently missing auth during a plan.
+    chmod -R u+w "$dst" 2>/dev/null || true
+    cp -R "$tmp/." "$dst/"
+    find "$dst" -type d -exec chmod 0555 {} + 2>/dev/null || true
+    find "$dst" -type f -exec chmod 0444 {} + 2>/dev/null || true
+    chmod -R u+w "$tmp" 2>/dev/null || true
+    rm -rf "$tmp"
+  else
+    if [ -e "$dst" ]; then
+      chmod -R u+w "$dst" 2>/dev/null || true
+      rm -rf "$dst"
+    fi
+    mv "$tmp" "$dst"
+  fi
+  printf '%s\n' "$dst"
+}
+
+stage_aws_auth_for_sandbox() {
+  local profile_home="$1" src="$HOME/.aws"
+  [ "${COSW_AWS_AUTH:-1}" = "1" ] || return 0
+  [ -d "$src" ] || return 0
+  # Stage readable copies under the private profile home instead of mounting the
+  # host ~/.aws directly: bind-mounted 0600 files are unreadable to the sandbox
+  # uid. Never print these files; they may contain SSO/session auth material.
+  stage_auth_dir_for_sandbox "$profile_home" aws "$src"
+}
+
+stage_op_auth_for_sandbox() {
+  local profile_home="$1" src="$HOME/.config/op"
+  [ "${COSW_OP_AUTH:-1}" = "1" ] || return 0
+  [ -d "$src" ] || return 0
+  # 1Password CLI account metadata/session state; never print contents.
+  stage_auth_dir_for_sandbox "$profile_home" op "$src"
+}
+
+refresh_running_gh_auth() {
+  local podman="$1" gh_auth_dir="$2" gh_gitconfig="${3:-}" skills_ro_dir="${4:-}" aws_auth_dir="${5:-}" op_auth_dir="${6:-}" cid name ok=0 failed=0
+  [ -n "$gh_auth_dir" ] || return 0
+  [ -f "$gh_auth_dir/hosts.yml" ] || return 0
+  while read -r cid; do
+    [ -n "$cid" ] || continue
+    name="$($podman inspect "$cid" --format '{{.Name}}' 2>/dev/null || printf '%s' "$cid")"
+    [ "${COSW_AUTH_SYNC_QUIET:-0}" = "1" ] || log "refreshing sandbox auth in running sandbox $name"
+    "$podman" exec -u 0 "$cid" sh -lc 'mkdir -p /home/hermes/.config/gh /root/.config/gh; chmod 0755 /home/hermes/.config /root/.config 2>/dev/null || true; chmod u+w /home/hermes/.config/gh /root/.config/gh 2>/dev/null || true' >/dev/null 2>&1 || true
+    if "$podman" cp "$gh_auth_dir/." "$cid:/home/hermes/.config/gh/" >/dev/null 2>&1; then
+      "$podman" exec -u 0 "$cid" sh -lc 'cp -f /home/hermes/.config/gh/*.yml /root/.config/gh/ 2>/dev/null || true; chmod 0555 /home/hermes/.config/gh /root/.config/gh 2>/dev/null || true; chmod 0444 /home/hermes/.config/gh/*.yml /root/.config/gh/*.yml 2>/dev/null || true' >/dev/null 2>&1 || true
+    fi
+    if [ -n "$gh_gitconfig" ] && [ -f "$gh_gitconfig" ]; then
+      "$podman" cp "$gh_gitconfig" "$cid:/home/hermes/.gitconfig" >/dev/null 2>&1 || true
+      "$podman" cp "$gh_gitconfig" "$cid:/root/.gitconfig" >/dev/null 2>&1 || true
+      "$podman" exec -u 0 "$cid" sh -lc 'chmod 0444 /home/hermes/.gitconfig /root/.gitconfig 2>/dev/null || true' >/dev/null 2>&1 || true
+    fi
+    if [ -n "$skills_ro_dir" ] && [ -d "$skills_ro_dir" ]; then
+      if ! "$podman" exec "$cid" test -f /home/hermes/.hermes/skills/workflows/handoff-bootstrap/SKILL.md 2>/dev/null; then
+        "$podman" exec -u 0 "$cid" sh -lc 'mkdir -p /home/hermes/.hermes/skills; chmod -R u+w /home/hermes/.hermes/skills 2>/dev/null || true' >/dev/null 2>&1 || true
+        "$podman" cp "$skills_ro_dir/." "$cid:/home/hermes/.hermes/skills/" >/dev/null 2>&1 || true
+        "$podman" exec -u 0 "$cid" sh -lc 'chmod -R a+rX /home/hermes/.hermes 2>/dev/null || true' >/dev/null 2>&1 || true
+      fi
+    fi
+    if [ -n "$aws_auth_dir" ] && [ -d "$aws_auth_dir" ]; then
+      "$podman" exec -u 0 "$cid" sh -lc 'mkdir -p /home/hermes/.aws /root/.aws; chmod -R u+w /home/hermes/.aws /root/.aws 2>/dev/null || true' >/dev/null 2>&1 || true
+      "$podman" cp "$aws_auth_dir/." "$cid:/home/hermes/.aws/" >/dev/null 2>&1 || true
+      "$podman" cp "$aws_auth_dir/." "$cid:/root/.aws/" >/dev/null 2>&1 || true
+      "$podman" exec -u 0 "$cid" sh -lc 'chmod -R a+rX /home/hermes/.aws /root/.aws 2>/dev/null || true' >/dev/null 2>&1 || true
+    fi
+    if [ -n "$op_auth_dir" ] && [ -d "$op_auth_dir" ]; then
+      "$podman" exec -u 0 "$cid" sh -lc 'mkdir -p /home/hermes/.config/op /root/.config/op; chmod -R u+w /home/hermes/.config/op /root/.config/op 2>/dev/null || true' >/dev/null 2>&1 || true
+      "$podman" cp "$op_auth_dir/." "$cid:/home/hermes/.config/op/" >/dev/null 2>&1 || true
+      "$podman" cp "$op_auth_dir/." "$cid:/root/.config/op/" >/dev/null 2>&1 || true
+      "$podman" exec -u 0 "$cid" sh -lc 'chmod -R a+rX /home/hermes/.config/op /root/.config/op 2>/dev/null || true' >/dev/null 2>&1 || true
+    fi
+    if "$podman" exec "$cid" sh -lc 'HOME=/home/hermes gh auth status -h github.com >/dev/null 2>&1 && HOME=/home/hermes git config --global credential.https://github.com.helper >/dev/null 2>&1' >/dev/null 2>&1; then
+      ok=$((ok + 1))
+    else
+      [ "${COSW_AUTH_SYNC_QUIET:-0}" = "1" ] || log "sandbox auth refresh did not validate in running sandbox $name"
+      failed=$((failed + 1))
+    fi
+  done < <("$podman" ps --filter "label=hermes-profile=$COSW_PROFILE" --format '{{.ID}}' 2>/dev/null || true)
+  [ "$ok$failed" = "00" ] || [ "${COSW_AUTH_SYNC_QUIET:-0}" = "1" ] || log "running sandbox auth refresh: ok=$ok failed=$failed"
+  [ "$failed" -eq 0 ]
+}
+
+sync_sandbox_auth_once() {
+  local profile_home="$1" podman="${2:-}" gh_auth_dir gh_gitconfig skills_ro_dir aws_auth_dir op_auth_dir
+  mkdir -p "$profile_home"
+  gh_auth_dir="$(stage_gh_auth_for_sandbox "$profile_home" || true)"
+  gh_gitconfig="$(stage_gh_gitconfig_for_sandbox "$profile_home" || true)"
+  skills_ro_dir="$(stage_readable_skills_for_sandbox "$profile_home" || true)"
+  aws_auth_dir="$(stage_aws_auth_for_sandbox "$profile_home" || true)"
+  op_auth_dir="$(stage_op_auth_for_sandbox "$profile_home" || true)"
+  if [ -n "$podman" ] && [ -x "$podman" ] && [ -n "$gh_auth_dir" ]; then
+    refresh_running_gh_auth "$podman" "$gh_auth_dir" "$gh_gitconfig" "$skills_ro_dir" "$aws_auth_dir" "$op_auth_dir" || true
+  fi
+}
+
+start_sandbox_auth_sync() {
+  local profile_home="$1" podman="$2" pidfile logdir logfile pid script
+  [ "${COSW_AUTH_SYNC:-1}" = "1" ] || return 0
+  logdir="$profile_home/logs"
+  mkdir -p "$profile_home/sandbox-auth" "$logdir"
+  pidfile="$profile_home/sandbox-auth/auth-sync.pid"
+  logfile="$logdir/sandbox-auth-sync.log"
+  if [ -f "$pidfile" ]; then
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  script="$SCRIPT_DIR/$(basename "$SOURCE")"
+  nohup env COSW_AUTH_SYNC_QUIET=1 COSW_SKIP_PREFLIGHT=1 "$script" --sandbox-auth-sync-daemon "$profile_home" "$podman" >>"$logfile" 2>&1 &
+  printf '%s\n' "$!" >"$pidfile"
+}
+
+run_sandbox_auth_sync_daemon() {
+  local profile_home="$1" podman="$2" interval
+  interval="${COSW_AUTH_SYNC_INTERVAL:-30}"
+  while :; do
+    sync_sandbox_auth_once "$profile_home" "$podman" || true
+    sleep "$interval"
+  done
+}
+
+ensure_dispatch_bootstrap() {
+  local toolchain py agents_data_home profile_home state runtime bin result
+  toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+  py="$toolchain/venv/bin/python"
+  [ -x "$py" ] || die "Hermes Python is unavailable: $py (run bin/hermes/install)"
+  if ! result="$("$py" "$SCRIPT_DIR/project_sessions.py" doctor 2>&1)"; then
+    printf '%s\n' "$result" >&2
+    die "COSW project dispatch bootstrap failed; apply the remediation above"
+  fi
+  agents_data_home="${HERMES_AGENTS_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents}"
+  profile_home="$agents_data_home/$COSW_PROFILE/profiles/$COSW_PROFILE"
+  state="$profile_home/host-control"
+  runtime="${COSW_HOST_CONTROL_SOCKET_DIR:-${XDG_RUNTIME_DIR:-/tmp/hermes-$(id -u)}/hermes-sandbox-manager/$COSW_PROFILE}"
+  bin="$state/bin"
+  mkdir -p "$bin" "$runtime"
+  chmod 0700 "$profile_home" "$state" "$runtime" 2>/dev/null || true
+  install -m 0755 "$SCRIPT_DIR/cosw-hostctl" "$bin/cosw-hostctl"
+  if [ -f "$state/pid" ]; then
+    local pid cmdline
+    pid="$(cat "$state/pid" 2>/dev/null || true)"
+    cmdline=""
+    [ -z "$pid" ] || cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$cmdline" in
+      *"$SCRIPT_DIR/cosw-host-control"*) ;;
+      "") ;;
+      *)
+        log "restarting stale COSW host manager from a different profile checkout"
+        "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          [ ! -e "$state/pid" ] && break
+          sleep 0.1
+        done
+        ;;
+    esac
+  fi
+  if ! "$SCRIPT_DIR/cosw-host-control" start \
+      --state-dir "$state" --socket-dir "$runtime" --sandbox-id "$COSW_PROFILE" >/dev/null; then
+    die "COSW host manager failed to start; inspect $state/broker.log"
+  fi
+  # A manager may survive a profile pull. Probe the current protocol and replace
+  # only that dedicated helper when its socket/action set is stale.
+  if [ ! -S "$runtime/manager.sock" ] || ! "$bin/cosw-hostctl" bootstrap \
+      --socket "$runtime/manager.sock" --timeout 10 >/dev/null 2>&1; then
+    log "restarting stale COSW host manager after dispatch protocol upgrade"
+    "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ ! -e "$state/pid" ] && break
+      sleep 0.1
+    done
+    "$SCRIPT_DIR/cosw-host-control" start \
+      --state-dir "$state" --socket-dir "$runtime" --sandbox-id "$COSW_PROFILE" >/dev/null || \
+      die "COSW host manager failed to restart; inspect $state/broker.log"
+  fi
+  [ -S "$runtime/manager.sock" ] || die "COSW host manager did not create $runtime/manager.sock"
+  "$bin/cosw-hostctl" bootstrap --socket "$runtime/manager.sock" --timeout 10 >/dev/null || \
+    die "COSW host manager bootstrap probe failed; inspect $state/broker.log"
+  export PATH="$bin:$PATH"
+  export COSW_HOST_CONTROL_SOCKET="$runtime/manager.sock"
+  export COSW_HOST_CONTROL_MOUNT="$state"
+  COSW_DISPATCH_STATE="$state"
+  COSW_DISPATCH_RUNTIME="$runtime"
+  COSW_DISPATCH_CLIENT="$bin/cosw-hostctl"
+}
+
+ensure_lane_profile() {
+  [ -n "$COSW_LANE" ] || return 0
+  local base_dir="$HOME/src/karan.hiremath/agentic/hermes/profiles"
+  local base="$base_dir/chief-of-staff-work.yaml"
+  local dst="$base_dir/$COSW_PROFILE.yaml"
+  [ -f "$dst" ] && return 0
+  [ -f "$base" ] || die "cannot clone lane profile: base $base missing"
+  sed "s/^name: chief-of-staff-work$/name: $COSW_PROFILE/" "$base" > "$dst"
+  log "cloned lane profile $COSW_PROFILE from chief-of-staff-work.yaml -> $dst (edit persona/toolsets as needed)"
 }
 
 ensure_toolchain() {
@@ -122,8 +727,12 @@ ensure_podman() {
   [ -n "$podman" ] || die "podman not executable: ${HERMES_DOCKER_BINARY:-podman}"
 
   export HERMES_DOCKER_BINARY="$podman"
+  export HERMES_AGENT_TERMINAL_BACKEND="${HERMES_AGENT_TERMINAL_BACKEND:-docker}"
   export TERMINAL_ENV="${TERMINAL_ENV:-docker}"
-  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/root}"
+  # Keep the agent context cwd host-readable.  The Docker sandbox has /workspace
+  # mounted separately; using /root here makes the host-side prompt builder stat
+  # /root/.git and crash with EACCES before the container turn can start.
+  export TERMINAL_CWD="${COSW_TERMINAL_CWD:-/workspace}"
 
   if ! "$podman" info >/dev/null 2>&1; then
     log "Podman machine unavailable; starting default machine"
@@ -142,12 +751,26 @@ ensure_podman() {
   image="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
   export TERMINAL_DOCKER_IMAGE="${TERMINAL_DOCKER_IMAGE:-$image}"
 
-  local observer_dir volumes
-  observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
-  mkdir -p "$observer_dir"
+  local observer_dir profile_home agents_data_home gh_auth_dir gh_gitconfig skills_ro_dir aws_auth_dir op_auth_dir volumes
+  [ -n "${COSW_DISPATCH_RUNTIME:-}" ] || die "internal error: dispatch manager was not bootstrapped"
+  [ -x "${COSW_DISPATCH_CLIENT:-}" ] || die "internal error: sandbox dispatch client is unavailable"
+  agents_data_home="${HERMES_AGENTS_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents}"
+  observer_dir="${COSW_HOST_OBSERVER_DIR:-$agents_data_home/$COSW_PROFILE/host-observer}"
+  profile_home="$agents_data_home/$COSW_PROFILE/profiles/$COSW_PROFILE"
+  mkdir -p "$observer_dir" "$profile_home"
+  chmod 0700 "$profile_home" 2>/dev/null || true
+  gh_auth_dir="$(stage_gh_auth_for_sandbox "$profile_home" || true)"
+  gh_gitconfig="$(stage_gh_gitconfig_for_sandbox "$profile_home" || true)"
+  skills_ro_dir="$(stage_readable_skills_for_sandbox "$profile_home" || true)"
+  aws_auth_dir="$(stage_aws_auth_for_sandbox "$profile_home" || true)"
+  op_auth_dir="$(stage_op_auth_for_sandbox "$profile_home" || true)"
   if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
+    if [ ! -f "$observer_dir/current/SUMMARY.md" ]; then
+      "$SCRIPT_DIR/cosw-host-observer" once --state-dir "$observer_dir" >/dev/null || \
+        die "host observer could not publish initial snapshot: $observer_dir"
+    fi
     "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$observer_dir" >/dev/null || \
-      log "host observer failed to start; continuing without live host snapshot"
+      die "host observer failed to start: $observer_dir"
   fi
 
   volumes=(
@@ -155,7 +778,17 @@ ensure_podman() {
     "$HOME/src:/home/hermes/src"
     "$observer_dir:/home/hermes/.cosw-host:ro"
     "$observer_dir:/root/.cosw-host:ro"
+    "$COSW_DISPATCH_RUNTIME:/run/hermes-manager:ro"
+    "$COSW_DISPATCH_CLIENT:/usr/local/bin/cosw-hostctl:ro"
   )
+  if [ -n "$gh_auth_dir" ]; then
+    volumes+=("$gh_auth_dir:/home/hermes/.config/gh:ro" "$gh_auth_dir:/root/.config/gh:ro")
+    refresh_running_gh_auth "$podman" "$gh_auth_dir" "$gh_gitconfig" "$skills_ro_dir" "$aws_auth_dir" "$op_auth_dir" || true
+  fi
+  [ -z "$gh_gitconfig" ] || volumes+=("$gh_gitconfig:/home/hermes/.gitconfig:ro" "$gh_gitconfig:/root/.gitconfig:ro")
+  [ -z "$skills_ro_dir" ] || volumes+=("$skills_ro_dir:/home/hermes/.hermes/skills:ro")
+  [ -z "$aws_auth_dir" ] || volumes+=("$aws_auth_dir:/home/hermes/.aws:ro" "$aws_auth_dir:/root/.aws:ro")
+  [ -z "$op_auth_dir" ] || volumes+=("$op_auth_dir:/home/hermes/.config/op:ro" "$op_auth_dir:/root/.config/op:ro")
   [ ! -d "$HOME/.pi/agent/sessions" ] || volumes+=("$HOME/.pi/agent/sessions:/mnt/host-pi-agent-sessions:ro")
   [ ! -d "$HOME/.pi/sessions" ] || volumes+=("$HOME/.pi/sessions:/mnt/host-pi-sessions:ro")
   [ ! -d "$HOME/.claude/projects" ] || volumes+=("$HOME/.claude/projects:/mnt/host-claude-projects:ro")
@@ -163,52 +796,95 @@ ensure_podman() {
   [ ! -d "$HOME/.codex/sessions" ] || volumes+=("$HOME/.codex/sessions:/mnt/host-codex-sessions:ro")
   [ ! -d "$HOME/.codex/process_manager" ] || volumes+=("$HOME/.codex/process_manager:/mnt/host-codex-process-manager:ro")
   export TERMINAL_DOCKER_VOLUMES="${TERMINAL_DOCKER_VOLUMES:-$(json_array "${volumes[@]}")}"
-  export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-false}"
+  export TERMINAL_DOCKER_EXTRA_ARGS="${TERMINAL_DOCKER_EXTRA_ARGS:-[\"--userns=keep-id:uid=1000,gid=1000\"]}"
+  export TERMINAL_DOCKER_ENV="${TERMINAL_DOCKER_ENV:-{\"COSW_HOST_CONTROL_SOCKET\":\"/run/hermes-manager/manager.sock\",\"HERMES_SANDBOX_ID\":\"$COSW_PROFILE\",\"HERMES_UID\":\"$(id -u)\",\"HERMES_GID\":\"$(id -g)\"}}"
+  if [ "${COSW_COMPOSE:-1}" = "1" ]; then
+    export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-true}"
+  else
+    export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-false}"
+  fi
   if ! "$podman" image inspect "$image" >/dev/null 2>&1; then
+    local variant
+    variant="${COSW_SANDBOX_VARIANT:-${HERMES_SANDBOX_VARIANT:-python-node-fedora}}"
     builder="${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh"
     if [ "${COSW_AUTO_BUILD_IMAGE:-1}" = "1" ] && [ -x "$builder" ]; then
-      log "sandbox image missing; building $image"
-      "$builder" python-node-fedora
+      log "sandbox image missing; building $image via $variant"
+      IMAGE_TAG="$image" "$builder" "$variant"
     fi
   fi
   "$podman" image inspect "$image" >/dev/null 2>&1 || \
-    die "sandbox image missing: $image (run: ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh python-node-fedora)"
+    die "sandbox image missing: $image (run: IMAGE_TAG=$image ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh ${COSW_SANDBOX_VARIANT:-${HERMES_SANDBOX_VARIANT:-python-node-fedora}})"
 
   local home name smoke volume_args=() vol
-  home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  home="$profile_home"
   mkdir -p "$home/sandboxes/docker/default/home" "$home/sandboxes/docker/default/workspace" \
     "$home/skills" "$home/image_cache" "$home/audio_cache"
+  # The sandbox process drops to the image's hermes user before executing
+  # commands.  Until HERMES_UID/HERMES_GID remapping takes effect in a fresh
+  # container, keep the scratch workspace writable so file/patch temp files do
+  # not fail with /workspace/.hermes-tmp.* EACCES.
+  chmod 0777 "$home/sandboxes/docker/default/workspace" 2>/dev/null || true
+  # Hermes mounts profile skills read-only into Docker sandboxes at
+  # /root/.hermes/skills. The sandbox process runs as uid 1000; if the host
+  # skill tree is 0700/0600, skill references are mounted but unreadable.
+  # Keep the profile home private, but make the intentionally mounted skill
+  # tree world-readable/executable inside the read-only sandbox mount.
+  chmod 0755 "$home/skills" 2>/dev/null || true
+  chmod -R a+rX "$home/skills" 2>/dev/null || true
   for vol in "${volumes[@]}"; do
     volume_args+=("-v" "$vol")
   done
   name="cosw-smoke-$$"
   smoke="${TMPDIR:-/tmp}/cosw-podman-smoke-$$.log"
-  if ! "$podman" run --rm --init --name "$name" \
-    -w "$TERMINAL_CWD" \
-    --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add CHOWN --cap-add FOWNER \
-    --security-opt no-new-privileges --pids-limit 256 \
-    --tmpfs /tmp:rw,nosuid,size=512m --tmpfs /var/tmp:rw,noexec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=64m \
-    --user "$(id -u):$(id -g)" \
-    -v "$home/sandboxes/docker/default/home:/root" \
-    -v "$home/sandboxes/docker/default/workspace:/workspace" \
-    "${volume_args[@]}" \
-    --cpus 1.0 --memory 5120m \
-    -v "$home/skills:/root/.hermes/skills:ro" \
-    -v "$home/image_cache:/root/.hermes/cache/images:ro" \
-    -v "$home/audio_cache:/root/.hermes/cache/audio:ro" \
-    "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md' >"$smoke" 2>&1; then
-    cat "$smoke" >&2 || true
-    "$podman" rm -f "$name" >/dev/null 2>&1 || true
-    die "podman sandbox smoke test failed"
+  if [ "${COSW_COMPOSE:-1}" = "1" ]; then
+    local devbox container
+    devbox="$(work_devbox_cmd)" || die "work-devbox helper missing; keep $HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox"
+    export WORK_REPO_ROOT="${WORK_REPO_ROOT:-$HOME/src/karan.hiremath}"
+    export WORK_AGENTS_DATA_HOME="${WORK_AGENTS_DATA_HOME:-$agents_data_home}"
+    export COSW_HOST_CONTROL_RUNTIME="${COSW_HOST_CONTROL_RUNTIME:-$COSW_DISPATCH_RUNTIME}"
+    export COSW_HOST_OBSERVER_DIR="${COSW_HOST_OBSERVER_DIR:-$observer_dir}"
+    export COSW_HOSTCTL_BIN="${COSW_HOSTCTL_BIN:-$COSW_DISPATCH_CLIENT}"
+    export HERMES_SANDBOX_IMAGE="${HERMES_SANDBOX_IMAGE:-$image}"
+    log "ensuring work-devboxes compose service cosw-sandbox-default"
+    "$devbox" ensure "$COSW_PROFILE"
+    container="cosw-sandbox-default"
+    if ! "$podman" exec "$container" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md && test -w /workspace && test -S /run/hermes-manager/manager.sock && test -x /usr/local/bin/cosw-hostctl && cosw-hostctl bootstrap >/dev/null && python --version >/dev/null && terraform version >/dev/null && aws --version >/dev/null && op --version >/dev/null && HOME=/home/hermes gh auth status -h github.com >/dev/null && HOME=/home/hermes git config --global credential.https://github.com.helper >/dev/null && test -f /home/hermes/.hermes/skills/workflows/handoff-bootstrap/SKILL.md' >"$smoke" 2>&1; then
+      cat "$smoke" >&2 || true
+      die "compose sandbox smoke test failed: $container"
+    fi
+  else
+    if ! "$podman" run --rm --init --name "$name" \
+      -w "$TERMINAL_CWD" \
+      --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add CHOWN --cap-add FOWNER \
+      --security-opt no-new-privileges --pids-limit 256 \
+      --tmpfs /tmp:rw,nosuid,size=512m --tmpfs /var/tmp:rw,noexec,nosuid,size=256m --tmpfs /run:rw,noexec,nosuid,size=64m \
+      --userns=keep-id:uid=1000,gid=1000 \
+      -v "$home/sandboxes/docker/default/home:/root" \
+      -v "$home/sandboxes/docker/default/workspace:/workspace" \
+      "${volume_args[@]}" \
+      --cpus 1.0 --memory 5120m \
+      -v "$home/skills:/root/.hermes/skills:ro" \
+      -v "$home/image_cache:/root/.hermes/cache/images:ro" \
+      -v "$home/audio_cache:/root/.hermes/cache/audio:ro" \
+      "$image" sh -lc 'test -d /root/src/karan.hiremath && test -f /root/.cosw-host/current/SUMMARY.md && test -w /workspace && test -S /run/hermes-manager/manager.sock && test -x /usr/local/bin/cosw-hostctl && cosw-hostctl bootstrap >/dev/null && python --version >/dev/null && terraform version >/dev/null && aws --version >/dev/null && op --version >/dev/null && HOME=/home/hermes gh auth status -h github.com >/dev/null && HOME=/home/hermes git config --global credential.https://github.com.helper >/dev/null && test -f /home/hermes/.hermes/skills/workflows/handoff-bootstrap/SKILL.md' >"$smoke" 2>&1; then
+      cat "$smoke" >&2 || true
+      "$podman" rm -f "$name" >/dev/null 2>&1 || true
+      die "podman sandbox smoke test failed"
+    fi
   fi
   rm -f "$smoke"
+  start_sandbox_auth_sync "$profile_home" "$podman"
 
-  local cid details running
+  local cid details running compose_label
   while read -r cid; do
     [ -n "$cid" ] || continue
+    compose_label="$("$podman" inspect "$cid" --format '{{index .Config.Labels "work-devbox"}}{{index .Config.Labels "hermes-compose"}}' 2>/dev/null || true)"
+    case "$compose_label" in
+      1*|true*) continue ;;
+    esac
     details="$("$podman" inspect "$cid" --format '{{.ImageName}} {{json .Mounts}}' 2>/dev/null || true)"
     case "$details" in
-      *"$image"*"/root/src"*"/home/hermes/src"*"/root/.cosw-host"*) ;;
+      *"$image"*"/root/src"*"/home/hermes/src"*"/run/hermes-manager"*"/root/.cosw-host"*) ;;
       *)
         running="$("$podman" inspect "$cid" --format '{{.State.Running}}' 2>/dev/null || true)"
         if [ "$running" = "true" ]; then
@@ -219,15 +895,86 @@ ensure_podman() {
         fi
         ;;
     esac
-  done < <("$podman" ps -a --filter label=hermes-profile=chief-of-staff-work --format '{{.ID}}' 2>/dev/null || true)
+  done < <("$podman" ps -a --filter "label=hermes-profile=$COSW_PROFILE" --format '{{.ID}}' 2>/dev/null || true)
 }
 
-if [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
-  ensure_toolchain
-  if ! forced_host_tools "$@"; then
-    ensure_podman
-  fi
+if [ "${1:-}" = "--sandbox-auth-sync-daemon" ]; then
+  shift
+  run_sandbox_auth_sync_daemon "${1:?profile_home required}" "${2:-}"
 fi
 
+COSW_REFRESH_GH_AUTH_ONLY=0
+for arg in "$@"; do
+  { [ "$arg" = "--refresh-gh-auth" ] || [ "$arg" = "--refresh-sandbox-auth" ]; } && COSW_REFRESH_GH_AUTH_ONLY=1
+done
+
 strip_cosw_args "$@"
-exec "$SCRIPT_DIR/agents" up chief-of-staff-work "${COSW_ARGS[@]}"
+apply_cosw_seat
+ensure_lane_profile
+
+if [ "${COSW_SANDBOX_STACK:-0}" = "1" ]; then
+  work_devbox="$(work_devbox_cmd)" || die "work-devbox helper missing; keep $HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox"
+  if [ "${#COSW_SANDBOX_STACK_ARGS[@]}" -eq 0 ]; then
+    exec "$work_devbox" list
+  fi
+  exec "$work_devbox" "${COSW_SANDBOX_STACK_ARGS[@]}"
+fi
+
+if [ "$COSW_PRINT_PLAN" = "1" ]; then
+  print_cosw_plan
+  exit 0
+fi
+
+if [ "$COSW_FORCE_SANDBOX" != "1" ]; then
+  set_host_backend
+  if [ -z "${TERMINAL_CWD:-}" ]; then
+    if [ -n "${COSW_TERMINAL_CWD:-}" ]; then
+      export TERMINAL_CWD="$COSW_TERMINAL_CWD"
+    elif [ -d "${HOME}/src/karan.hiremath" ]; then
+      export TERMINAL_CWD="${HOME}/src/karan.hiremath"
+    fi
+  fi
+  export HERMES_PERSONA_APPEND_FILE="$SCRIPT_DIR/bootstrap/cosw-host-dispatch.md"
+else
+  set_sandbox_backend
+  export HERMES_PERSONA_APPEND_FILE="$SCRIPT_DIR/bootstrap/cosw-dispatch.md"
+fi
+
+if [ "$COSW_SEAT" = "xai-grok" ] && ! xai_auth_available; then
+  die "xAI grok seat needs XAI_API_KEY or hermes auth add xai-oauth (openai-codex/gpt-5.5 is --codex; Cursor grok-4.6:fast is --cursor-grok)"
+fi
+
+if [ "$COSW_CURSOR_SDK" = "1" ] && [ "$COSW_FORCE_SANDBOX" != "1" ]; then
+  pin_timeout_free_pythonpath
+fi
+
+export_seat_env
+
+if [ "$COSW_REFRESH_GH_AUTH_ONLY" = "1" ] || [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
+  ensure_toolchain
+fi
+
+if [ "$COSW_REFRESH_GH_AUTH_ONLY" = "1" ]; then
+  ensure_dispatch_bootstrap
+  ensure_podman
+  log "sandbox auth staged and refreshed for running CoS-W sandboxes"
+  exit 0
+fi
+
+# Dispatch bootstrap is mandatory even when expensive Podman checks are skipped:
+# a COSW session without its registry/host bridge cannot safely coordinate work.
+ensure_dispatch_bootstrap
+
+if [ "$COSW_DISPATCH_DOCTOR" = "1" ]; then
+  exec "$COSW_DISPATCH_CLIENT" bootstrap --socket "$COSW_HOST_CONTROL_SOCKET"
+fi
+
+if [ "$COSW_FORCE_SANDBOX" = "1" ]; then
+  [ "${COSW_SKIP_PREFLIGHT:-0}" = "1" ] || ensure_podman
+else
+  log "host-native launch provider=$COSW_PROVIDER model=$COSW_MODEL sandbox=0"
+  if [ "$COSW_CURSOR_SDK" = "1" ]; then
+    log "timeout-free PYTHONPATH=$PYTHONPATH"
+  fi
+fi
+exec "$SCRIPT_DIR/agents" up "$COSW_PROFILE" "${COSW_ARGS[@]}"
