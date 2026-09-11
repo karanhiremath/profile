@@ -1,6 +1,6 @@
 # Generic Hermes project registry examples
 
-This directory is the last-resort, tool-owned registry search path for `pm <project>` and `pl <project>`.
+This directory is the last-resort, tool-owned registry search path for `pm <project>` (in-pane PM TUI) and `pl <project>`.
 
 Do not put real work/private project state here. Prefer:
 

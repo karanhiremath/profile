@@ -6,6 +6,11 @@ The dark background is intentionally the exact Ghostty background (#2e3d4e)
 for both personal and work profiles, while preserving a small identity cue:
   - personal/default profiles use the purple accent
   - work profiles use the orange accent
+  - work PM profiles use nighttide-work-pm (same Ember accent, slightly
+    different primary so the PM seat is distinct from CoS-W)
+  - work dreamer profiles use nighttide-work-dreamer (same Ember accent
+    and Growth line; Cartesia Memory primary so the scratch seat is
+    distinct from CoS-W and PM)
 
 Safe to rerun after `herm-tui` upgrades; preserves unrelated Herm preferences
 such as eikon, kanban state, never-prompts, and lastSessionId.
@@ -40,17 +45,34 @@ def _under_root(root: Path) -> Path | None:
     return None
 
 
-def _herm_tui_dir() -> Path:
-    """Locate the pnpm-global herm-tui install directory.
+def _is_fork_checkout(path: Path) -> bool:
+    return (path / "src" / "index.tsx").is_file()
 
-    Resolution order (robust across pnpm's internal global layout):
-      1. HERMES_PNPM_GLOBAL_ROOT (exported by install-tui after `pnpm root -g`)
-      2. `pnpm root -g` at runtime
-      3. glob under the toolchain-local PNPM_HOME
+
+def _themes_dir(root: Path) -> Path:
+    source = root / "src" / "theme" / "themes"
+    if source.is_dir():
+        return source
+    return root / "themes"
+
+
+def _herm_tui_dir() -> Path:
+    """Locate the herm-tui tree used for nighttide theme files.
+
+    Resolution order:
+      1. HERMES_HERM_TUI_DIR / HERM_TUI_FORK (local fork preferred)
+      2. ~/src/herm-tui then ~/src/herm
+      3. HERMES_PNPM_GLOBAL_ROOT (legacy published install)
+      4. `pnpm root -g` at runtime
+      5. glob under the toolchain-local PNPM_HOME
     """
-    direct_env = os.environ.get("HERMES_HERM_TUI_DIR")
-    if direct_env and Path(direct_env).exists():
-        return Path(direct_env)
+    for key in ("HERMES_HERM_TUI_DIR", "HERM_TUI_FORK"):
+        raw = os.environ.get(key, "").strip()
+        if raw and Path(raw).exists():
+            return Path(raw)
+    for candidate in (HOME / "src" / "herm-tui", HOME / "src" / "herm"):
+        if _is_fork_checkout(candidate):
+            return candidate
 
     root_env = os.environ.get("HERMES_PNPM_GLOBAL_ROOT")
     if root_env:
@@ -77,11 +99,11 @@ def _herm_tui_dir() -> Path:
     )
     if matches:
         return matches[-1]
-    return pnpm_home / "global/v11/node_modules/herm-tui"
+    return HOME / "src" / "herm-tui"
 
 
 HERM_TUI = _herm_tui_dir()
-THEMES = HERM_TUI / "themes"
+THEMES = _themes_dir(HERM_TUI)
 INDEX = HERM_TUI / "index.js"
 
 GHOSTTY_CONFIG = HOME / "src/profile/bin/ghostty/config"
@@ -117,6 +139,12 @@ GHOSTTY_BG = ghostty_background()
 PERSONAL_ACCENT = RED_ACCENT
 WORK_ACCENT = PRODUCT_EMBER
 WORK_LINE_COLOR = PRODUCT_GROWTH_LIGHT
+# Ghostty palette 4 — slightly deeper than work color12 (#5b8fd4) so PM
+# TUIs stay in the nighttide-work family but read as a distinct seat.
+PM_PRIMARY_TEXT = "#4d7ab5"
+# Cartesia Memory / cartesia-blue-500. Same Ember+Growth-line family as
+# CoS-W/PM; softer primary so dreamw is visually distinct.
+DREAMER_PRIMARY_TEXT = "#99b0c8"
 
 
 def nighttide_theme(
@@ -228,6 +256,8 @@ THEME_VARIANTS = {
     "nighttide": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
     "nighttide-personal": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
     "nighttide-work": (WORK_ACCENT, WORK_PRIMARY_TEXT, WORK_LINE_COLOR),
+    "nighttide-work-pm": (WORK_ACCENT, PM_PRIMARY_TEXT, WORK_LINE_COLOR),
+    "nighttide-work-dreamer": (WORK_ACCENT, DREAMER_PRIMARY_TEXT, WORK_LINE_COLOR),
 }
 
 
@@ -270,10 +300,29 @@ def ensure_registry() -> None:
 def is_work_home(home: Path) -> bool:
     parts = set(home.parts)
     name = home.name.lower()
-    return "work" in parts or "chief-of-staff-work" in parts or name.endswith("-work")
+    return (
+        "work" in parts
+        or "chief-of-staff-work" in parts
+        or name.endswith("-work")
+        or name.startswith("chief-of-staff-work")
+    )
+
+
+def is_pm_home(home: Path) -> bool:
+    name = home.name.lower()
+    return "project-manager" in name or name.endswith("-pm")
+
+
+def is_dreamer_home(home: Path) -> bool:
+    name = home.name.lower()
+    return "dreamer" in name or name.endswith("-dreamw")
 
 
 def theme_for_home(home: Path) -> str:
+    if is_pm_home(home):
+        return "nighttide-work-pm"
+    if is_dreamer_home(home):
+        return "nighttide-work-dreamer"
     return "nighttide-work" if is_work_home(home) else "nighttide-personal"
 
 

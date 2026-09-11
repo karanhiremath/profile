@@ -80,6 +80,16 @@ else
 fi
 echo ""
 
+# oh-my-pi (omp)
+echo "==> Installing/upgrading omp..."
+if "${APP_BIN}/omp/install"; then
+    echo "✓ omp completed successfully"
+else
+    echo "✗ omp failed"
+    failed_installs+=("omp")
+fi
+echo ""
+
 # Codex CLI
 echo "==> Installing/upgrading Codex CLI..."
 if "${APP_BIN}/codex/install"; then
@@ -150,13 +160,16 @@ else
 fi
 echo ""
 
-# herdr
-echo "==> Installing/upgrading herdr..."
-if "${APP_BIN}/herdr/install"; then
-    echo "✓ herdr completed successfully"
+# herdr is optional and not part of the default toolkit. It hogs CPU when
+# started; COSW/PM/PL/atop steer herm-tui M2M instead. Install with `just herdr`.
+
+# atop (private fleet-operator TUI)
+echo "==> Installing/upgrading atop..."
+if "${APP_BIN}/atop/install"; then
+    echo "✓ atop completed successfully"
 else
-    echo "✗ herdr failed"
-    failed_installs+=("herdr")
+    echo "✗ atop failed"
+    failed_installs+=("atop")
 fi
 echo ""
 

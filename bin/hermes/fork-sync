@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+# Keep local Hermes harness forks in sync with upstream on this host.
+# Candidate → sandbox validate → origin/validated/main → ff-only origin/main.
+# Nightly refresh is fetch + ff-only pull. Never force-push trunks.
+# Usage: fork-sync [status|fetch|ensure|rebase|validate|promote|refresh|stale|nightly|install-nightly]
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: fork-sync <command> [flags]
+
+  status            remotes, branch, ahead/behind vs upstream (default)
+  fetch             fetch origin + upstream for each registered fork
+  ensure            clone missing checkouts and add upstream remotes
+  rebase            rebase overlay onto fork trunk (≤200 commits behind)
+  validate [--ref REF] [--skip-sandbox]
+                    run Cursor-adapter pytest in the cosw sandbox, then
+                    merge REF into origin/validated/main (not origin/main)
+  promote [--dry-run]
+                    ff-only origin/validated/main → origin/main +
+                    origin/downstream/main. Refuses non-fast-forward.
+  refresh           ff-only pull origin/main (and herm overlay) on this host
+  stale             JSON: live overlay SHA vs origin/main (TUI toast input)
+  nightly           fetch + refresh + write state stamp (no promote)
+  install-nightly   LaunchAgent 03:15 local for nightly refresh
+
+Does not force-push. Does not merge 10k+ catch-up windows.
+See karan.hiremath playbook harness-fork-sync.md.
+USAGE
+}
+
+log() { printf 'hermes-fork-sync: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+CMD="${1:-status}"
+shift || true
+SKIP_SANDBOX=0
+DRY_RUN=0
+VALIDATE_REF=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --skip-sandbox) SKIP_SANDBOX=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --ref) VALIDATE_REF="${2:?--ref needs a commitish}"; shift 2 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+
+case "$CMD" in
+  -h|--help|help) usage; exit 0 ;;
+  status|fetch|ensure|rebase|validate|promote|refresh|stale|nightly|install-nightly) ;;
+  *) die "unknown command: $CMD" ;;
+esac
+
+HERMES_AGENT_FORK="${HERMES_AGENT_FORK:-$HOME/src/hermes-agent}"
+HERMES_AGENT_OVERLAY="${HERMES_AGENT_OVERLAY:-$HOME/src/hermes-agent-worktrees/timeout-free-cursor-sdk}"
+HERM_TUI_FORK="${HERM_TUI_FORK:-$HOME/src/herm-tui}"
+STATE_DIR="${HERMES_HARNESS_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-harness}"
+
+resolve_existing_git() {
+  local c file
+  for c in "$@"; do
+    [ -n "$c" ] || continue
+    if git -C "$c" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+    file="$c/agent/cursor_sdk_client.py"
+    if [ -f "$file" ] && grep -q '_operator_run_timeout_seconds' "$file"; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Host-compat: Mac uses ~/src/herm + undated overlay; tc2 uses ~/src/herm-tui
+# and the dated timeout-free worktree.
+if found="$(resolve_existing_git \
+  "$HERMES_AGENT_OVERLAY" \
+  "$HOME/src/hermes-agent-worktrees/timeout-free-cursor-sdk" \
+  "$HOME/src/hermes-agent-worktrees/timeout-free-cursor-sdk-20260831T1834")"; then
+  HERMES_AGENT_OVERLAY="$found"
+fi
+if found="$(resolve_existing_git \
+  "$HERM_TUI_FORK" \
+  "$HOME/src/herm" \
+  "$HOME/src/herm-tui")"; then
+  HERM_TUI_FORK="$found"
+fi
+STATE_FILE="$STATE_DIR/state.json"
+LAUNCHD_LABEL="com.karanhiremath.hermes-fork-nightly"
+SANDBOX_CTL="${SANDBOX_CTL:-$HOME/src/profile/bin/hermes/sandbox-ctl}"
+SANDBOX_PROFILE="${HERMES_FORK_VALIDATE_SANDBOX_PROFILE:-chief-of-staff-work}"
+VALIDATED_REF="origin/validated/main"
+TRUNK_MAIN="origin/main"
+TRUNK_DOWNSTREAM="origin/downstream/main"
+
+ensure_repo() {
+  local dest="$1" origin="$2" upstream="$3" trunk="$4"
+  if ! git -C "$dest" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "clone $origin -> $dest"
+    git clone --origin origin "$origin" "$dest"
+  fi
+  git -C "$dest" remote add upstream "$upstream" 2>/dev/null || true
+  git -C "$dest" remote set-url upstream "$upstream"
+  git -C "$dest" fetch origin --prune
+  git -C "$dest" fetch upstream --prune
+  if ! git -C "$dest" rev-parse --verify "$trunk" >/dev/null 2>&1; then
+    git -C "$dest" checkout -B "${trunk#origin/}" --track "$trunk" 2>/dev/null || true
+  fi
+}
+
+print_status() {
+  local dest="$1" label="$2" upstream_ref="$3"
+  printf 'fork=%s\n' "$label"
+  printf 'path=%s\n' "$dest"
+  if ! git -C "$dest" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ -f "$dest/agent/cursor_sdk_client.py" ]; then
+      printf 'present=1\n'
+      printf 'branch=detached-or-prunable\n'
+      printf 'ahead_behind_upstream=unfetched\n'
+      printf '\n'
+      return 0
+    fi
+    printf 'present=0\n'
+    printf '\n'
+    return 0
+  fi
+  printf 'present=1\n'
+  printf 'branch=%s\n' "$(git -C "$dest" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  printf 'head=%s\n' "$(git -C "$dest" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  if git -C "$dest" rev-parse --verify "$upstream_ref" >/dev/null 2>&1; then
+    local counts
+    counts="$(git -C "$dest" rev-list --left-right --count HEAD..."$upstream_ref" 2>/dev/null || echo '?	?')"
+    printf 'ahead_behind_upstream=%s\n' "$(printf '%s' "$counts" | tr '\t' '/')"
+  else
+    printf 'ahead_behind_upstream=unfetched\n'
+  fi
+  printf '\n'
+}
+
+ensure_overlay() {
+  local main="$HERMES_AGENT_FORK"
+  local overlay="$HERMES_AGENT_OVERLAY"
+  [ -d "$main/.git" ] || die "hermes-agent fork missing: $main"
+  if [ -d "$overlay/.git" ] || [ -f "$overlay/.git" ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$overlay")"
+  if git -C "$main" show-ref --verify --quiet refs/heads/kh/timeout-free-cursor-sdk; then
+    git -C "$main" worktree add "$overlay" kh/timeout-free-cursor-sdk
+  else
+    git -C "$main" worktree add -b kh/timeout-free-cursor-sdk "$overlay" origin/downstream/main
+  fi
+}
+
+do_fetch() {
+  git -C "$HERMES_AGENT_FORK" rev-parse --is-inside-work-tree >/dev/null 2>&1 && {
+    git -C "$HERMES_AGENT_FORK" fetch origin --prune
+    git -C "$HERMES_AGENT_FORK" fetch upstream --prune
+  }
+  if git -C "$HERMES_AGENT_OVERLAY" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$HERMES_AGENT_OVERLAY" fetch origin --prune
+    git -C "$HERMES_AGENT_OVERLAY" fetch upstream --prune
+  fi
+  git -C "$HERM_TUI_FORK" rev-parse --is-inside-work-tree >/dev/null 2>&1 && {
+    git -C "$HERM_TUI_FORK" fetch origin --prune
+    git -C "$HERM_TUI_FORK" fetch upstream --prune || true
+  }
+}
+
+sha_of() {
+  git -C "$1" rev-parse "$2" 2>/dev/null || true
+}
+
+write_state() {
+  mkdir -p "$STATE_DIR"
+  local overlay_head desired stale
+  overlay_head="$(sha_of "$HERMES_AGENT_OVERLAY" HEAD)"
+  desired="$(sha_of "$HERMES_AGENT_FORK" "$TRUNK_MAIN")"
+  [ -n "$desired" ] || desired="$(sha_of "$HERMES_AGENT_FORK" "$TRUNK_DOWNSTREAM")"
+  stale=0
+  if [ -n "$overlay_head" ] && [ -n "$desired" ] && [ "$overlay_head" != "$desired" ]; then
+    stale=1
+  fi
+  python3 - "$STATE_FILE" "$overlay_head" "$desired" "$stale" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path, live, desired, stale = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+payload = {
+    "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "live_overlay": live,
+    "desired_origin_main": desired,
+    "stale": bool(stale),
+    "toast": "harness overlay is behind origin/main — nightly refresh landed; relaunch Cos to pick it up" if stale else "",
+}
+path_obj = __import__("pathlib").Path(path)
+path_obj.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+}
+
+print_stale_json() {
+  [ -f "$STATE_FILE" ] || write_state
+  python3 - "$STATE_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+print(Path(sys.argv[1]).read_text(), end="")
+PY
+}
+
+ff_pull() {
+  local dest="$1" remote_ref="$2"
+  git -C "$dest" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$dest" rev-parse --verify "$remote_ref" >/dev/null 2>&1 || return 0
+  if git -C "$dest" merge-base --is-ancestor HEAD "$remote_ref"; then
+    git -C "$dest" merge --ff-only "$remote_ref"
+  else
+    log "skip ff $dest: HEAD is not ancestor of $remote_ref"
+  fi
+}
+
+run_host_tests() {
+  local dest="$1"
+  (cd "$dest" && uv run --with pytest pytest tests/agent/test_cursor_sdk_client.py tests/hermes_cli/test_cursor_provider.py -q)
+}
+
+run_sandbox_tests() {
+  local dest="$1"
+  [ -x "$SANDBOX_CTL" ] || die "sandbox-ctl missing: $SANDBOX_CTL"
+  local rel="${dest#"$HOME/src/"}"
+  [ "$rel" != "$dest" ] || die "validate dest must live under \$HOME/src for sandbox bind-mount: $dest"
+  "$SANDBOX_CTL" --profile "$SANDBOX_PROFILE" exec -- \
+    bash -lc "cd /root/src/${rel} && uv run --with pytest pytest tests/agent/test_cursor_sdk_client.py tests/hermes_cli/test_cursor_provider.py -q"
+}
+
+cmd_validate() {
+  git -C "$HERMES_AGENT_FORK" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "hermes-agent fork missing: $HERMES_AGENT_FORK"
+  do_fetch
+  local ref="${VALIDATE_REF:-HEAD}"
+  if git -C "$HERMES_AGENT_OVERLAY" rev-parse --verify "$ref" >/dev/null 2>&1; then
+    ref="$(git -C "$HERMES_AGENT_OVERLAY" rev-parse "$ref")"
+  else
+    ref="$(git -C "$HERMES_AGENT_FORK" rev-parse "$ref")"
+  fi
+  log "validate ref=$ref skip_sandbox=$SKIP_SANDBOX"
+  run_host_tests "$HERMES_AGENT_OVERLAY"
+  if [ "$SKIP_SANDBOX" -eq 0 ]; then
+    run_sandbox_tests "$HERMES_AGENT_OVERLAY"
+  else
+    log "sandbox skipped (--skip-sandbox)"
+  fi
+  if ! git -C "$HERMES_AGENT_FORK" rev-parse --verify "$VALIDATED_REF" >/dev/null 2>&1; then
+    local base
+    base="$(sha_of "$HERMES_AGENT_FORK" "$TRUNK_MAIN")"
+    [ -n "$base" ] || base="$(sha_of "$HERMES_AGENT_FORK" "$TRUNK_DOWNSTREAM")"
+    [ -n "$base" ] || die "no origin/main or origin/downstream/main to seed validated/main"
+    git -C "$HERMES_AGENT_FORK" branch validated/main "$base"
+    git -C "$HERMES_AGENT_FORK" push -u origin validated/main
+  fi
+  git -C "$HERMES_AGENT_FORK" fetch origin validated/main
+  if git -C "$HERMES_AGENT_FORK" merge-base --is-ancestor "$VALIDATED_REF" "$ref"; then
+    git -C "$HERMES_AGENT_FORK" push origin "$ref":validated/main
+  else
+    die "ref $ref is not a descendant of $VALIDATED_REF; rebase the candidate onto validated/main first"
+  fi
+  log "validated $ref -> origin/validated/main"
+}
+
+cmd_promote() {
+  do_fetch
+  git -C "$HERMES_AGENT_FORK" rev-parse --verify "$VALIDATED_REF" >/dev/null 2>&1 \
+    || die "missing $VALIDATED_REF — run fork-sync validate first"
+  if ! git -C "$HERMES_AGENT_FORK" merge-base --is-ancestor "$TRUNK_MAIN" "$VALIDATED_REF" 2>/dev/null; then
+    if git -C "$HERMES_AGENT_FORK" rev-parse --verify "$TRUNK_MAIN" >/dev/null 2>&1; then
+      die "origin/main is not an ancestor of validated/main; refuse non-ff promote"
+    fi
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "dry-run promote $(git -C "$HERMES_AGENT_FORK" rev-parse --short "$VALIDATED_REF") -> main + downstream/main"
+    return 0
+  fi
+  git -C "$HERMES_AGENT_FORK" push origin "$VALIDATED_REF":main
+  git -C "$HERMES_AGENT_FORK" push origin "$VALIDATED_REF":downstream/main
+  log "promoted $(git -C "$HERMES_AGENT_FORK" rev-parse --short "$VALIDATED_REF") to origin/main"
+}
+
+cmd_refresh() {
+  do_fetch
+  if git -C "$HERMES_AGENT_FORK" rev-parse --verify "$TRUNK_MAIN" >/dev/null 2>&1; then
+    ff_pull "$HERMES_AGENT_FORK" "$TRUNK_MAIN"
+    ff_pull "$HERMES_AGENT_OVERLAY" "$TRUNK_MAIN"
+  else
+    ff_pull "$HERMES_AGENT_FORK" "$TRUNK_DOWNSTREAM"
+    ff_pull "$HERMES_AGENT_OVERLAY" "$TRUNK_DOWNSTREAM"
+  fi
+  if git -C "$HERM_TUI_FORK" rev-parse --verify origin/downstream/dev >/dev/null 2>&1; then
+    ff_pull "$HERM_TUI_FORK" origin/downstream/dev
+  fi
+  write_state
+}
+
+cmd_install_nightly() {
+  local dest="${HOME}/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
+  local script="$STATE_DIR/nightly.sh"
+  mkdir -p "$STATE_DIR"
+  cat > "$script" <<EOF
+#!/bin/bash
+set -euo pipefail
+exec "$HOME/src/profile/bin/hermes/fork-sync" nightly
+EOF
+  chmod +x "$script"
+  if [ "$(uname -s)" != "Darwin" ]; then
+    log "non-Darwin: wrote $script — install cron: 15 3 * * * $script"
+    return 0
+  fi
+  mkdir -p "${HOME}/Library/LaunchAgents"
+  cat > "$dest" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${script}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${HOME}/src/profile</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>${STATE_DIR}/nightly.log</string>
+  <key>StandardErrorPath</key>
+  <string>${STATE_DIR}/nightly.err</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$(id -u)/${LAUNCHD_LABEL}" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$dest"
+  launchctl enable "gui/$(id -u)/${LAUNCHD_LABEL}"
+  log "installed ${LAUNCHD_LABEL} (03:15 local)"
+}
+
+case "$CMD" in
+  ensure)
+    ensure_repo "$HERMES_AGENT_FORK" \
+      git@github.com:karanhiremath/hermes-agent.git \
+      git@github.com:NousResearch/hermes-agent.git \
+      origin/downstream/main
+    ensure_overlay
+    ensure_repo "$HERM_TUI_FORK" \
+      git@github.com:karanhiremath/herm.git \
+      git@github.com:liftaris/herm.git \
+      origin/downstream/dev
+    ;;
+  fetch) do_fetch ;;
+  rebase)
+    git -C "$HERMES_AGENT_OVERLAY" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || die "overlay missing: $HERMES_AGENT_OVERLAY"
+    do_fetch
+    ahead_behind="$(git -C "$HERMES_AGENT_FORK" rev-list --left-right --count origin/downstream/main...upstream/main)"
+    behind="${ahead_behind##*$'\t'}"
+    if [ "${behind:-0}" -gt 200 ]; then
+      die "downstream/main is $behind commits behind upstream/main; do a dedicated catch-up, not this hourly rebase"
+    fi
+    git -C "$HERMES_AGENT_OVERLAY" rebase origin/downstream/main
+    if git -C "$HERM_TUI_FORK" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      if [ -n "$(git -C "$HERM_TUI_FORK" status --porcelain)" ]; then
+        log "skip herm-tui rebase: dirty working tree at $HERM_TUI_FORK"
+      else
+        git -C "$HERM_TUI_FORK" rebase upstream/main
+      fi
+    fi
+    ;;
+  validate) cmd_validate ;;
+  promote) cmd_promote ;;
+  refresh) cmd_refresh ;;
+  stale)
+    do_fetch
+    write_state
+    print_stale_json
+    exit 0
+    ;;
+  nightly)
+    cmd_refresh
+    print_stale_json
+    exit 0
+    ;;
+  install-nightly) cmd_install_nightly; exit 0 ;;
+esac
+
+print_status "$HERMES_AGENT_FORK" "hermes-agent" upstream/main
+print_status "$HERMES_AGENT_OVERLAY" "hermes-agent-overlay" upstream/main
+print_status "$HERM_TUI_FORK" "herm-tui" upstream/main
+if [ -f "$STATE_FILE" ]; then
+  printf 'state=%s\n' "$STATE_FILE"
+fi

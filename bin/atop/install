@@ -1,0 +1,86 @@
+#!/bin/bash
+# Install/upgrade atop — private fleet-operator TUI + Python steer client.
+# Clones git@ / https://github.com/karanhiremath/atop.git into ~/src/atop,
+# builds the Rust binary, and installs ~/.local/bin/atop.
+#
+# Usage: install [--help]
+
+set -euo pipefail
+
+shopt -s failglob
+
+usage() {
+    sed -n '2,6p' "$0" | sed 's/^# //'
+}
+
+case "${1:-}" in
+    -h|--help|help) usage; exit 0 ;;
+esac
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="atop"
+REPO="${ATOP_REPO:-https://github.com/karanhiremath/atop.git}"
+DIR="${ATOP_DIR:-$HOME/src/atop}"
+INSTALL_DIR="${ATOP_INSTALL_DIR:-$HOME/.local/bin}"
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git is required to install atop" >&2
+    exit 127
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "ERROR: cargo/rustc are required. Run 'just cargo', then re-run just atop." >&2
+    exit 127
+fi
+
+install_messages "start" "$app_name"
+
+if [ -d "$DIR/.git" ]; then
+    echo "Updating $DIR"
+    git -C "$DIR" pull --ff-only
+else
+    mkdir -p "$(dirname "$DIR")"
+    echo "Cloning $REPO -> $DIR"
+    git clone "$REPO" "$DIR"
+fi
+
+export ATOP_HOME="$DIR"
+cargo build --release --manifest-path "$DIR/Cargo.toml"
+
+mkdir -p "$INSTALL_DIR"
+install -m 0755 "$DIR/target/release/atop" "$INSTALL_DIR/atop"
+
+# Thin wrapper so `python3 -m fleet_comms.steer` / herm-tui-nudge can find the package.
+cat > "$INSTALL_DIR/atop-python-env" <<EOF
+# sourced by work wrappers; do not exec
+export ATOP_HOME=$(printf '%q' "$DIR")
+export PYTHONPATH="\$ATOP_HOME\${PYTHONPATH:+:\$PYTHONPATH}"
+EOF
+
+case ":${PATH}:" in
+    *":${INSTALL_DIR}:"*) ;;
+    *)
+        echo ""
+        echo "WARN: ${INSTALL_DIR} not in PATH — add to shell config:"
+        echo "      export PATH=\"${INSTALL_DIR}:\$PATH\""
+        echo ""
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "atop installed at ${INSTALL_DIR}/atop"
+echo "source tree: ${DIR}"
+echo "steer: atop steer --harness herm-tui --sid tmux:SESSION:WIN.PANE --mode nudge --text '...'"
+echo "Python: PYTHONPATH=${DIR}  (or source ${INSTALL_DIR}/atop-python-env)"
+echo ""

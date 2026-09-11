@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Short aliases for personal Hermes sandboxes.
+#   cos-s ls              list sandbox names
+#   cos-s <name> [args]   start that sandbox and launch its profile
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+log() { printf 'cos-s: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  cos-s ls
+  cos-s <sandbox-name> [cos-or-herm args]
+
+Examples:
+  cos-s ls
+  cos-s cos
+  cos-s herm
+  cos-s dream
+EOF
+}
+
+personal_devbox_cmd() {
+  local candidate="${COS_PERSONAL_DEVBOX:-$HOME/src/hermes/sandboxes/personal-devbox}"
+  [ -e "$candidate" ] || die "personal-devbox helper missing: $candidate"
+  printf '%s\n' "$candidate"
+}
+
+cmd="${1:-ls}"
+case "$cmd" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  ls|list)
+    exec "$(personal_devbox_cmd)" ls
+    ;;
+esac
+
+devbox="$(personal_devbox_cmd)"
+profile="$("$devbox" resolve-sandbox "$cmd" --field profile)" || exit 1
+launch="$("$devbox" resolve-sandbox "$cmd" --field launch)" || exit 1
+hermes_home="$("$devbox" resolve-sandbox "$cmd" --field hermes_home)" || exit 1
+shift
+
+"$devbox" ensure "$profile"
+
+export HERMES_AGENT_TERMINAL_BACKEND=docker
+export TERMINAL_ENV=docker
+export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-true}"
+
+case "$launch" in
+  cos)
+    exec "$SCRIPT_DIR/cos" --sandbox "$@"
+    ;;
+  agents)
+    exec "$SCRIPT_DIR/agents" up "$profile" --sandbox "$@"
+    ;;
+  dream)
+    exec "$SCRIPT_DIR/dream" "$@"
+    ;;
+  herm)
+    command -v herm >/dev/null 2>&1 || die "herm (TUI) not installed; run bin/hermes/install-tui"
+    export HERMES_HOME="$hermes_home"
+    export HERMES_PROFILE="$profile"
+    exec herm "$@"
+    ;;
+  *)
+    die "unknown launch kind: $launch"
+    ;;
+esac

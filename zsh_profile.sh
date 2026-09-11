@@ -77,6 +77,11 @@ export PATH
 # Activate mise after PATH setup so its shims (node, pnpm, neovim) take precedence.
 command -v mise >/dev/null 2>&1 && eval "$(mise activate zsh)"
 
+# omp (oh-my-pi) completions from the live CLI metadata.
+if command -v omp >/dev/null 2>&1; then
+    eval "$(omp completions zsh)"
+fi
+
 # pnpm global bin: `pnpm add -g` installs CLIs here AND requires this dir on PATH
 # (otherwise pnpm errors "The configured global bin directory is not in PATH").
 export PNPM_HOME="${HOME}/.local/share/pnpm"

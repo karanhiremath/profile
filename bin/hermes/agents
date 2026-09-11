@@ -14,10 +14,14 @@
 # Convenience wrappers:
 #   cos                        agents up chief-of-staff
 #   cosw                       agents up chief-of-staff-work
-#   pm <project>               attach/start registered Hermes PM tmux/TUI
+#   pm <project>               launch registered Hermes PM TUI in the current pane
 #   pl <project>               attach registered project-lead tmux session
 #       --surface cli|tui|gateway   Override the profile's default surface
 #       --platform <name>           Messaging platform for surface=gateway
+#       --model <name>              Launch-scoped model (writes HERMES_AGENT_LLM_MODEL)
+#       --provider <name>           Launch-scoped provider (openai-codex, cursor, xai, ...)
+#       --host, --no-sandbox        Host-native local terminal
+#       --sandbox                   Compose sandbox (work-devboxes or personal hermes-sandboxes)
 #       --check                     Run an endpoint health check before launching
 #       -- <args>                   Pass remaining args through to hermes/herm
 #
@@ -54,6 +58,21 @@ export PATH="$SHIM_DIR:$VENV/bin:$PATH"
 usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+ensure_profile_sandbox() {
+  local profile="$1"
+  local work="${COSW_WORK_DEVBOX:-$HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox}"
+  local personal="${COS_PERSONAL_DEVBOX:-$HOME/src/hermes/sandboxes/personal-devbox}"
+  if [ -e "$work" ] && "$work" has "$profile"; then
+    "$work" ensure "$profile"
+    return 0
+  fi
+  if [ -e "$personal" ] && "$personal" has "$profile"; then
+    "$personal" ensure "$profile"
+    return 0
+  fi
+  die "no sandbox stack for profile: $profile (try: cosw-s ls or cos-s ls)"
+}
 
 [ -x "$PY" ] || die "Hermes venv python missing ($PY); run bin/hermes/install first"
 
@@ -103,16 +122,39 @@ case "$cmd" in
   up)
     [ "$#" -ge 1 ] || die "up needs a profile name"
     profile="$1"; shift
-    surface=""; platform=""; do_check=0; passthrough=()
+    surface=""; platform=""; do_check=0; model=""; provider=""; sandbox=""; passthrough=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --surface) surface="${2:?}"; shift 2 ;;
         --platform) platform="${2:?}"; shift 2 ;;
+        --model) model="${2:?}"; shift 2 ;;
+        --provider) provider="${2:?}"; shift 2 ;;
+        --host|--host-tools|--no-sandbox) sandbox="host"; shift ;;
+        --sandbox|--docker) sandbox="sandbox"; shift ;;
         --check) do_check=1; shift ;;
         --) shift; passthrough=("$@"); break ;;
         *) die "unknown option: $1" ;;
       esac
     done
+    if [ "$sandbox" = "host" ]; then
+      export HERMES_AGENT_TERMINAL_BACKEND=local
+      export TERMINAL_ENV=local
+    elif [ "$sandbox" = "sandbox" ]; then
+      export HERMES_AGENT_TERMINAL_BACKEND=docker
+      export TERMINAL_ENV=docker
+      export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-true}"
+      ensure_profile_sandbox "$profile"
+    fi
+    if [ -n "$provider" ]; then
+      export HERMES_AGENT_LLM_PROVIDER="$provider"
+      export HERMES_INFERENCE_PROVIDER="$provider"
+      export HERMES_TUI_PROVIDER="$provider"
+    fi
+    if [ -n "$model" ]; then
+      export HERMES_AGENT_LLM_MODEL="$model"
+      export HERMES_INFERENCE_MODEL="$model"
+      export HERMES_MODEL="$model"
+    fi
 
     # Default surface from the profile if not overridden.
     [ -n "$surface" ] || surface="$("$PY" "$PY_BACKEND" resolve "$profile" | sed -n 's/.*"surface": *"\([^"]*\)".*/\1/p')"

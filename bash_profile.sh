@@ -126,6 +126,11 @@ source ~/profile/iterm2_shell_integration.bash
 # Activate mise after PATH setup so its shims (node, pnpm, neovim) take precedence.
 command -v mise >/dev/null 2>&1 && eval "$(mise activate bash)"
 
+# omp (oh-my-pi) completions. Primary shell is zsh; this is for bash fallback.
+if command -v omp >/dev/null 2>&1; then
+    eval "$(omp completions bash)"
+fi
+
 # pnpm global bin: `pnpm add -g` installs CLIs here AND requires this dir on PATH
 # (otherwise pnpm errors "The configured global bin directory is not in PATH").
 export PNPM_HOME="${HOME}/.local/share/pnpm"

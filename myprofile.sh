@@ -168,6 +168,15 @@ alias vi="nvim"
 # update pi coding agent
 alias pi-update="${PROFILE_DIR}/bin/pi/install"
 
+# update oh-my-pi (omp) — same installer as `just omp`
+alias omp-update="${PROFILE_DIR}/bin/omp/install"
+
+# Isolated named work profile. Default `omp` already uses ~/.omp/agent
+# configured by bin/omp/install from ~/.omp/default-profile (mirrors pi).
+function omp-work() {
+    command omp --profile=work "$@"
+}
+
 # pi-code session manager (tmux + nvim + pi)
 # Binary built from profile/bin/pc (Rust). Install: just pc
 function pc() { "$HOME/.local/bin/pc" "$@"; }
@@ -289,10 +298,19 @@ if [ -x "${_hermes_toolchain_home}/venv/bin/python" ]; then
 fi
 unset _hermes_toolchain_home
 
+# `herm` always launches the local herm-tui fork, never published npm 1.10.0.
+if [ -f "$HOME/src/profile/bin/hermes/herm-fork-env.sh" ]; then
+    # shellcheck disable=SC1090
+    . "$HOME/src/profile/bin/hermes/herm-fork-env.sh"
+    export_herm_fork_env >/dev/null 2>&1 || true
+    herm_fork_ensure_shim >/dev/null 2>&1 || true
+fi
+
 # Hermes voice/agent launcher (profiles -> isolated agents; CLI/TUI/gateway)
 alias agents="$HOME/src/profile/bin/hermes/agents"
 alias cos="$HOME/src/profile/bin/hermes/cos"
 alias cosw="$HOME/src/profile/bin/hermes/cosw"
+alias dreamw="$HOME/src/profile/bin/hermes/dreamw"
 alias pm="$HOME/src/profile/bin/hermes/pm"
 alias pl="$HOME/src/profile/bin/hermes/pl"
 

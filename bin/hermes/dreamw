@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Launch the work dreamer Hermes profile (host-native).
+# Prefers the work-repo script. Does not launch personal hdream / dream-sandbox.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+WORK_DREAMW="${WORK_DREAMW:-$HOME/src/karan.hiremath/agentic/scripts/dreamw}"
+if [ -x "$WORK_DREAMW" ]; then
+  exec "$WORK_DREAMW" "$@"
+fi
+
+exec "$SCRIPT_DIR/agents" up work-dreamer --host "$@"

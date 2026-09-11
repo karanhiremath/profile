@@ -111,6 +111,10 @@ configure_pi_agent() {
     if [ -d "$extensions_src" ] && compgen -G "${extensions_src}/*.ts" >/dev/null; then
         cp "${extensions_src}"/*.ts "$extensions_dir"/
     fi
+    if [ -d "$extensions_src/lib" ] && compgen -G "${extensions_src}/lib/*.ts" >/dev/null; then
+        mkdir -p "$extensions_dir/lib"
+        cp "${extensions_src}/lib/"*.ts "$extensions_dir/lib"/
+    fi
 
     if [ "$profile_selector" = "personal" ]; then
         TRUST_FILE="$trust_file" HOME_DIR="$HOME" node <<'NODE'
@@ -121,7 +125,7 @@ let trust = {};
 if (fs.existsSync(path)) {
   try { trust = JSON.parse(fs.readFileSync(path, 'utf8')); } catch { trust = {}; }
 }
-for (const rel of ['src/profile', 'src/hermes', 'src/notes']) {
+for (const rel of ['src/profile', 'src/hermes', 'src/notes', 'src/atop']) {
   trust[`${home}/${rel}`] = true;
 }
 fs.writeFileSync(path, JSON.stringify(trust, null, 2) + '\n');

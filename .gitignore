@@ -11,3 +11,7 @@ ansible/.facts/
 
 # Local container/runtime scratch
 .agent-home/
+
+# Session layouts name real hosts, repos and customer programs; this repo is public.
+# Work-host configs belong in karan.hiremath, personal ones in notes.
+bin/sesh/sesh.toml

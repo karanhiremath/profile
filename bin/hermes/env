@@ -7,8 +7,15 @@ PNPM_HOME="${HERMES_PNPM_HOME:-$HERMES_TOOLCHAIN_HOME/pnpm}"
 VENV="${HERMES_PYTHON_VENV:-$HERMES_TOOLCHAIN_HOME/venv}"
 BUN_HOME="${HERMES_BUN_HOME:-$HERMES_TOOLCHAIN_HOME/bun}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/herm-fork-env.sh"
+export_herm_fork_env || true
+
 cat <<EOF
 export HERMES_TOOLCHAIN_HOME="$HERMES_TOOLCHAIN_HOME"
 export PNPM_HOME="$PNPM_HOME"
+export HERM_TUI_FORK="${HERM_TUI_FORK:-}"
+export HERMES_HERM_TUI_DIR="${HERMES_HERM_TUI_DIR:-}"
 export PATH="$BUN_HOME/bin:$PNPM_HOME/bin:$VENV/bin:\$PATH"
 EOF

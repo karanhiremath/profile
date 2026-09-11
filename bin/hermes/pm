@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Attach/start the Hermes project-manager TUI session for a registered project.
+# Launch the Hermes project-manager TUI in the current pane for a registered project.
+# Does not create or switch tmux sessions; use ensure-pm for the registered session.
 set -euo pipefail
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do

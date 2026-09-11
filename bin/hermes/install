@@ -57,7 +57,7 @@ uv pip install --python "$VENV/bin/python" pip setuptools wheel PyYAML
 # error string instead of a path).
 export PATH="$VENV/bin:$PNPM_HOME/bin:$PATH"
 
-pnpm add -g --allow-build=hermes-agent --allow-build=herm-tui hermes-agent herm-tui
+pnpm add -g --allow-build=hermes-agent hermes-agent
 
 # Resolve the pnpm global locations robustly rather than hardcoding pnpm's
 # internal layout. pnpm v11 may keep package dirs below hashed project dirs
@@ -95,20 +95,25 @@ process.stdout.write(path.resolve(pkgDir, rel));
 }
 
 HERMES_AGENT_DIR="$(resolve_global_pkg_dir hermes-agent)"
-HERM_TUI_DIR="$(resolve_global_pkg_dir herm-tui)"
 
 chmod +x \
   "$HERMES_AGENT_DIR/bin/hermes.js" \
   "$HERMES_AGENT_DIR/bin/hermes-agent.js" \
-  "$HERM_TUI_DIR/src/index.tsx" \
   2>/dev/null || true
 
 hermes_entry="$(resolve_pkg_bin "$HERMES_AGENT_DIR" hermes 2>/dev/null || true)"
 [ -n "$hermes_entry" ] || hermes_entry="$HERMES_AGENT_DIR/bin/hermes.js"
 hermes_agent_entry="$(resolve_pkg_bin "$HERMES_AGENT_DIR" hermes-agent 2>/dev/null || true)"
 [ -n "$hermes_agent_entry" ] || hermes_agent_entry="$HERMES_AGENT_DIR/bin/hermes-agent.js"
-herm_entry="$(resolve_pkg_bin "$HERM_TUI_DIR" herm 2>/dev/null || true)"
-[ -n "$herm_entry" ] || herm_entry="$HERM_TUI_DIR/bin/herm.cjs"
+
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/herm-fork-env.sh"
+export_herm_fork_env || {
+  echo "ERROR: herm-tui fork missing; clone to ~/src/herm-tui (or ~/src/herm)" >&2
+  exit 1
+}
+herm_entry="$(herm_fork_entry)"
+chmod +x "$herm_entry" 2>/dev/null || true
 
 # write_shim <name> <exec-token>...
 # Emits $SHIM_DIR/<name>: exports the toolchain env, then exec's the given
@@ -144,12 +149,17 @@ write_shim() {
 # Hermes Python venv and Bun runtime are always on PATH even in non-login shells.
 write_shim hermes       node "$hermes_entry"
 write_shim hermes-agent node "$hermes_agent_entry"
-write_shim herm         "$herm_entry"
+write_herm_fork_shim
 write_shim hs "$SCRIPT_DIR/hs"
 write_shim dream "$SCRIPT_DIR/dream"
 write_shim agents "$SCRIPT_DIR/agents"
 write_shim cos "$SCRIPT_DIR/cos"
+write_shim cos-s "$SCRIPT_DIR/cos-s"
 write_shim cosw "$SCRIPT_DIR/cosw"
+write_shim dreamw "$SCRIPT_DIR/dreamw"
+write_shim cosw-s "$SCRIPT_DIR/cosw-s"
+write_shim cosw-host-control "$SCRIPT_DIR/cosw-host-control"
+write_shim cosw-hostctl "$SCRIPT_DIR/cosw-hostctl"
 write_shim pm "$SCRIPT_DIR/pm"
 write_shim pl "$SCRIPT_DIR/pl"
 
@@ -168,12 +178,17 @@ User-local shims:
   $SHIM_DIR/dream
   $SHIM_DIR/agents
   $SHIM_DIR/cos
+  $SHIM_DIR/cos-s
   $SHIM_DIR/cosw
+  $SHIM_DIR/dreamw
+  $SHIM_DIR/cosw-s
+  $SHIM_DIR/cosw-host-control
+  $SHIM_DIR/cosw-hostctl
   $SHIM_DIR/pm
   $SHIM_DIR/pl
 
 Package entrypoints (exec'd by the shims above):
   hermes       -> node $hermes_entry
   hermes-agent -> node $hermes_agent_entry
-  herm         -> $herm_entry
+  herm         -> bun $herm_entry  (local herm-tui fork)
 EOF

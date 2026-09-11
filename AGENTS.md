@@ -2,6 +2,9 @@
 
 Tool-only repo. No Cartesia project context, customer data, or work notes.
 
+Fleet operator TUI lives in the private sibling repo `~/src/atop`
+(`karanhiremath/atop`). Install with `just atop`; do not vendor it here.
+
 ## Cursor Agent CLI
 
 | Item | Path |
@@ -33,6 +36,8 @@ Override per session: `cursor-agent --model <slug>`.
 - `sandbox.mode`: `disabled` on dev Macs; use cdev/cagent sandboxes for risky remote work
 - Secrets: never commit; fleet secrets at `~/.local/share/fleet/` only
 - No Cartesia proprietary paths in committed profile artifacts
+- **Granola is librarian/notetaker-only:** `just cursor-setup` links `cursor/rules/*.mdc` and `cursor/skills/*`. Do not query Granola MCP unless a librarian or notetaker profile is loaded and the user names a meeting/decision/schedule. Plugin `alwaysApply` means consider, not preload. Implementor profiles never query Granola.
+- **No unbounded filesystem walks:** never `find /` or recurse network/dataset mounts. PATH / known prefixes only. Repo-scoped find: shallow + `timeout 20s`.
 
 ### Hermes CoS/PM command layer
 
@@ -40,6 +45,7 @@ Profile owns only generic command wrappers; project/work details live in `~/src/
 
 - `cos` → `agents up chief-of-staff`
 - `cosw` → `agents up chief-of-staff-work`
+- `dreamw` → work-repo `agentic/scripts/dreamw` (host-native `work-dreamer`; not personal `dream`)
 - `pm <project>` → attach/start the registered Hermes project-manager TUI tmux session
 - `pl <project>` → attach the registered project-lead implementation-agent tmux session
 

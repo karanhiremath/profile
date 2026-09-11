@@ -8,4 +8,25 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-exec "$SCRIPT_DIR/agents" up chief-of-staff "$@"
+
+flags=()
+passthrough=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --sandbox|--docker|--host|--host-tools|--no-sandbox)
+      flags+=("$1")
+      shift
+      ;;
+    --)
+      shift
+      passthrough+=("$@")
+      break
+      ;;
+    *)
+      passthrough+=("$1")
+      shift
+      ;;
+  esac
+done
+
+exec "$SCRIPT_DIR/agents" up chief-of-staff "${flags[@]+"${flags[@]}"}" "${passthrough[@]+"${passthrough[@]}"}"

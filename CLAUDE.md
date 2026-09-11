@@ -40,6 +40,13 @@ tool-name:
 ## Related Repos
 - Personal notes & dailies: `~/src/notes`
 - Work context & agent fleet: `~/src/karan.hiremath` (Cartesia only)
+- Fleet operator TUI: `~/src/atop` (private `karanhiremath/atop`; `just atop`)
 
 ## No Project Context Here
 This repo is purely tooling. Project-specific memory, notes, and decisions live in `notes` (personal) or `karan.hiremath` (work).
+
+## Granola is optional
+`cursor/rules/granola-optional.mdc` is the synced Cursor user rule. Granola MCP belongs to librarian/notetaker profiles only. `just cursor-setup` links it into `~/.cursor/rules`. Implementor agents do not query Granola.
+
+## No unbounded filesystem walks
+Never `find /` or recurse network/dataset mounts from an agent shell. Locate binaries via PATH and known prefixes. Repo-scoped find only, shallow, timed (`timeout 20s`). Work-host policy: `~/src/karan.hiremath/agentic/memory/playbooks/no-unbounded-fs-walks.md`.

@@ -50,6 +50,8 @@ Run `just --list` for descriptions. Individual tools can be installed/upgraded i
 | `just nvim` | Neovim install |
 | `just git` | Git config |
 | `just tmux` | Tmux install + config |
+| `just sesh` | sesh (smart tmux session manager, popup picker on `prefix + T`) |
+| `just tmux-goto` | Register `tmux-goto://` deep links to a `session:window.pane` (see `bin/tmux-goto/README.md`) |
 | `just gh` | GitHub CLI |
 | `just ghostty` | Ghostty terminal |
 | `just zsh` | Zsh setup |
@@ -74,6 +76,7 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 |--------|-------------|
 | `just claude` | Claude Code |
 | `just pi` | pi coding agent + profile-managed theme |
+| `just omp` | oh-my-pi (checksummed GitHub pin + personal/work agent, like pi) |
 | `just pi-skills` | Link profile-managed Pi skills |
 | `just codex` | Codex CLI via pnpm (`@openai/codex`; node/pnpm from mise) |
 | `just cmux` | cmux (Claude multiplexer) |
@@ -82,7 +85,8 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 | `just cursor-setup` | Cursor agents/skills + CLI config |
 | `just devin` | Devin for Terminal |
 | `just gemini-cli` | Gemini CLI |
-| `just herdr` | herdr (agent multiplexer; runs inside tmux) |
+| `just atop` | atop (private fleet-operator TUI; clones `karanhiremath/atop`) |
+| `just herdr` | optional herdr install — not required for COSW/PM/PL (CPU hog if started) |
 | `just hermes` | Hermes Agent + herm TUI wrappers |
 | `just hermes-doctor` | Hermes/herm/profile wrapper diagnostics |
 | `just ollama` | Ollama |

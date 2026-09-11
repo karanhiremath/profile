@@ -1,0 +1,24 @@
+---
+description: Granola is librarian/notetaker-only — never a session preload
+alwaysApply: true
+---
+
+# Granola is a profile class, not a preload
+
+The Granola plugin rule is `alwaysApply: true`. That means **consider**, not **query**. This user rule wins: do not call Granola MCP (`query_granola_meetings`, `list_meetings`, `get_meetings`, `get_meeting_transcript`) or granola skills unless a **librarian** or **notetaker** profile is loaded **and** the user points at a meeting or decision.
+
+Implementor, reviewer, planner, orchestrator, and context profiles never query Granola. Pi class manifests live in `~/.pi/agent/local-packages/pi-profile-management/manifests/profiles.json`.
+
+## Do not query
+
+- Implementor / assembler / cbuild / job-bus work
+- Routine edits, small fixes, local code questions
+- Feature/bug/spec work with no meeting pointer
+- Preloading granola-context / granola-prep / granola-review / granola-engineer
+
+## Query only when
+
+1. The active profile class is `librarian` (`work-notes-librarian`) or `notetaker` (`granola-notetaker`), and
+2. The user names a meeting, "what we discussed", a past decision, schedule, or asks a PR/commit to cite the meeting.
+
+Then load the explicit `granola-lookup` skill and keep the answer short (meeting title, date, decision, who).
