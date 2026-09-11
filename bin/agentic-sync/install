@@ -1,0 +1,84 @@
+#!/bin/bash
+#
+# install — set up personal agent-config sync (agentic-sync).
+#
+# Previews what would change, applies the manifest symlinks, and installs the
+# pull-only cron job so personal agent config self-updates from this repo.
+# Safe on the work Mac: detection yields profile=minimal there, so no agent
+# config is touched (the work sync keeps ownership).
+
+set -euo pipefail
+shopt -s failglob
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+SYNC="${APP_BIN}/agentic-sync/agentic-sync"
+
+INSTALL_CRON=1
+ASSUME_YES=0
+
+usage() {
+    cat <<EOF
+install — set up personal agent-config sync.
+
+USAGE
+    ./bin/agentic-sync/install [--no-cron] [-y|--yes] [--help]
+
+OPTIONS
+    --no-cron     Apply symlinks but do not install the cron job.
+    -y, --yes     Replace existing config files (timestamped backup) without prompting.
+    --help        Show this help.
+
+WHAT IT DOES
+    1. Prints current status (repo, detected profile, manifest).
+    2. Dry-run preview of the symlink actions.
+    3. Applies the manifest symlinks.
+    4. Installs the pull-only cron job (unless --no-cron).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-cron) INSTALL_CRON=0; shift ;;
+        -y|--yes)  ASSUME_YES=1; shift ;;
+        --help|-h) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+chmod +x "$SYNC"
+
+echo "=== status ==="
+"$SYNC" status
+
+echo
+echo "=== dry-run preview ==="
+"$SYNC" --dry-run link
+
+echo
+echo "=== applying symlinks ==="
+if [[ "$ASSUME_YES" -eq 1 ]]; then
+    "$SYNC" --yes link
+else
+    "$SYNC" link
+fi
+
+if [[ "$INSTALL_CRON" -eq 1 ]]; then
+    echo
+    echo "=== installing cron (pull-only, every 20 min) ==="
+    "$SYNC" install-cron
+    "$SYNC" cron-status
+else
+    echo
+    echo "Skipped cron install (--no-cron). Enable later with:"
+    echo "  ${SYNC} install-cron"
+fi
+
+echo
+echo "Done. Inspect anytime with: ${SYNC} status"
