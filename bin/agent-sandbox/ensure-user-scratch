@@ -5,6 +5,7 @@ set -euo pipefail
 USER_NAME="${USER:?USER is required}"
 DEFAULT_ROOT="/scratch/people/${USER_NAME}"
 ROOT="${AGENT_SANDBOX_ROOT:-$DEFAULT_ROOT}"
+MIN_SCRATCH_BYTES="${AGENT_SANDBOX_MIN_SCRATCH_BYTES:-1099511627776}"
 
 case "$ROOT" in
   "/scratch/people/${USER_NAME}"|"/scratch/people/${USER_NAME}/"*) ;;
@@ -14,7 +15,47 @@ case "$ROOT" in
     ;;
 esac
 
-install -d -m 700 "$ROOT"
+if [[ "$EUID" -eq 0 ]]; then
+  echo "ERROR: agent scratch must be provisioned by the non-root host user" >&2
+  exit 1
+fi
+
+[[ "$MIN_SCRATCH_BYTES" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: AGENT_SANDBOX_MIN_SCRATCH_BYTES must be an integer" >&2
+  exit 2
+}
+
+command -v findmnt >/dev/null 2>&1 || {
+  echo "ERROR: findmnt is required to verify scratch backing" >&2
+  exit 1
+}
+
+# The host provisioner must bind/mount scratch before this helper runs. Merely
+# creating /scratch inside a container silently consumes the container root disk.
+if [[ ! -d "$ROOT" ]]; then
+  echo "ERROR: scratch root is not provisioned: $ROOT" >&2
+  exit 1
+fi
+
+ROOT_MOUNT="$(findmnt --target / --noheadings --output TARGET | head -n1)"
+SCRATCH_MOUNT="$(findmnt --target "$ROOT" --noheadings --output TARGET | head -n1)"
+if [[ -z "$SCRATCH_MOUNT" || "$SCRATCH_MOUNT" == "$ROOT_MOUNT" ]]; then
+  echo "ERROR: $ROOT is backed by the root filesystem; mount host scratch first" >&2
+  exit 1
+fi
+
+SCRATCH_BYTES="$(df --block-size=1 --output=size "$ROOT" | awk 'NR == 2 {print $1}')"
+if [[ ! "$SCRATCH_BYTES" =~ ^[0-9]+$ || "$SCRATCH_BYTES" -lt "$MIN_SCRATCH_BYTES" ]]; then
+  echo "ERROR: $ROOT is not backed by the required scratch capacity (need >= $MIN_SCRATCH_BYTES bytes, got ${SCRATCH_BYTES:-unknown})" >&2
+  exit 1
+fi
+
+if [[ ! -O "$ROOT" ]]; then
+  echo "ERROR: scratch root must be owned by uid $(id -u): $ROOT" >&2
+  exit 1
+fi
+
+chmod 700 "$ROOT"
 for dir in \
   cache cache/enroot cache/npm cache/uv cache/pip cache/xdg \
   containers containers/enroot containers/podman \
