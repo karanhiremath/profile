@@ -1,9 +1,37 @@
 --- agent_registry.lua: Shared agent type definitions for fleet management.
 local M = {}
 
-M.VERSION = "1.1.0"
+M.VERSION = "1.2.0"
 
 M.agents = {
+  chief_of_staff = {
+    type  = "chief_of_staff",
+    label = "Hermes Chief of Staff",
+    icon  = "◈",
+    color = "red",
+    detect = {
+      cmds       = { "node", "herm", "hermes" },
+      title_pats = { "chief%-of%-staff", "Herm", "Hermes", "cos" },
+      path_hints = { "cos", "herm", "hermes" },
+    },
+    spawn = {
+      cmd           = "cos",
+      default_args  = { "open" },
+      continue_flag = "--continue",
+      project_flag  = nil,
+    },
+    session = {
+      dir          = "~/.local/share/hermes-agents/chief-of-staff",
+      file_pattern = "**/*session*",
+    },
+    status = {
+      strategy     = "tui_capture",
+      working_pats = { "thinking", "deliberating", "computing", "Generating", "Working" },
+      waiting_pats = { "chief%-of%-staff ❯", "Type to queue", "Ready" },
+    },
+    project_mgmt = { tracks_branch = false, worktree_iso = false, session_file = true },
+  },
+
   pi = {
     type  = "pi",
     label = "Pi Coding Agent",
@@ -109,7 +137,7 @@ M.agents = {
   },
 }
 
-M.order = { "pi", "cursor", "claude", "codex", "omnigent" }
+M.order = { "chief_of_staff", "pi", "cursor", "claude", "codex", "omnigent" }
 
 function M.get(agent_type) return M.agents[agent_type] end
 

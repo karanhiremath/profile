@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# Launch the personal Chief of Staff Hermes profile.
+# Personal Chief of Staff cockpit wrapper.
+#
+# This is the boring CLI/tmux entrypoint over the declarative Hermes profile:
+#   agents up chief-of-staff --surface tui
+# It intentionally keeps chief-of-staff as the center while reporting on tmux,
+# Neovim, CLI worker tools, and Omnigent as optional workflow surfaces.
 set -euo pipefail
+
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -8,4 +14,207 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-exec "$SCRIPT_DIR/agents" up chief-of-staff "$@"
+PROFILE_DIR="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
+AGENTS="$SCRIPT_DIR/agents"
+WINDOW_NAME="${COS_TMUX_WINDOW:-cos}"
+SESSION_NAME="${COS_TMUX_SESSION:-}"
+
+usage() {
+  cat <<'USAGE'
+Usage: cos [command] [options] [-- args passed to Herm]
+
+Personal chief-of-staff cockpit for tmux + Herm TUI + nvim/CLI tooling.
+
+Commands:
+  open [--no-switch] [--window NAME] [--session SESSION] [--dry-run] [-- ...]
+      Open/switch to a tmux window running `agents up chief-of-staff --surface tui`.
+      Outside tmux, launches the chief-of-staff TUI directly.
+      This is the default command when no command is given.
+
+  status
+      Print read-only status for the personal workflow cockpit: tmux, core
+      repos, chief-of-staff profile, Neovim agent registry, CLI tools, Omnigent.
+
+  help
+      Show this help.
+
+Environment:
+  COS_TMUX_WINDOW   tmux window name for `open` (default: cos)
+  COS_TMUX_SESSION  tmux session target for `open` (default: current session)
+  COS_NO_SWITCH=1   create window detached instead of switching to it
+USAGE
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+repo_status() {
+  local repo="$1" label="$2"
+  if [ -d "$repo/.git" ]; then
+    printf '## %s (%s)\n' "$label" "$repo"
+    git -C "$repo" status --short --branch || true
+  else
+    printf '## %s (%s missing)\n' "$label" "$repo"
+  fi
+}
+
+print_tool() {
+  local tool="$1"
+  if [ "$tool" = "gh-dash" ]; then
+    if have gh && gh extension list 2>/dev/null | grep -q '^gh dash[[:space:]]'; then
+      local version
+      version="$(gh extension list 2>/dev/null | awk '$1=="gh" && $2=="dash" {print $3; exit}')"
+      printf '  %-10s %s\n' "$tool" "gh extension installed ${version:-}"
+    else
+      printf '  %-10s %s\n' "$tool" "missing"
+    fi
+    return 0
+  fi
+  if have "$tool"; then
+    printf '  %-10s %s\n' "$tool" "$(command -v "$tool")"
+  else
+    printf '  %-10s %s\n' "$tool" "missing"
+  fi
+}
+
+status_cmd() {
+  printf '# Chief-of-staff cockpit status\n\n'
+  printf 'Date: '; date '+%Y-%m-%d %a %H:%M:%S %Z'
+  printf 'Host: %s\n' "$(hostname 2>/dev/null || printf unknown)"
+  printf 'Profile repo: %s\n\n' "$PROFILE_DIR"
+
+  printf '## CLI tools\n'
+  for tool in tmux herm hermes nvim gh gh-dash pi claude codex omni polly just pc; do
+    print_tool "$tool"
+  done
+  printf '\n'
+
+  printf '## Chief-of-staff profile\n'
+  if [ -x "$AGENTS" ]; then
+    "$AGENTS" list 2>/dev/null | awk 'NR==1 || $1=="chief-of-staff" || $1=="personal-notes-steward" || $1=="personal-rollout-coordinator" {print}' || true
+  else
+    printf 'agents helper missing: %s\n' "$AGENTS"
+  fi
+  printf '\n'
+
+  printf '## tmux\n'
+  if have tmux && tmux list-sessions >/dev/null 2>&1; then
+    tmux list-sessions || true
+    printf '\nwindows:\n'
+    tmux list-windows -a -F '  #{session_name}:#{window_index}:#{window_name} active=#{window_active} panes=#{window_panes}' || true
+  else
+    printf 'tmux server not running or tmux missing\n'
+  fi
+  printf '\n\n'
+
+  printf '## repos\n'
+  repo_status "$HOME/src/profile" profile
+  repo_status "$HOME/src/hermes" hermes
+  repo_status "$HOME/src/notes" notes
+  printf '\n'
+
+  printf '## Neovim agent registry\n'
+  local registry="$PROFILE_DIR/bin/nvim/lua/kh/agent_registry.lua"
+  if [ -f "$registry" ]; then
+    printf 'registry: %s\n' "$registry"
+    python3 - "$registry" <<'PY' || true
+from pathlib import Path
+import re, sys
+text = Path(sys.argv[1]).read_text()
+order = re.search(r'M\.order\s*=\s*{([^}]*)}', text, re.S)
+if order:
+    names = [x.strip().strip('"\'') for x in order.group(1).split(',') if x.strip()]
+else:
+    names = re.findall(r'^\s*([A-Za-z0-9_]+)\s*=\s*{\s*\n\s*type\s*=', text, re.M)
+print('registered: ' + ', '.join(names))
+print('chief-of-staff registered: ' + ('yes' if any(n in {'chief_of_staff','chief-of-staff','cos'} for n in names) else 'no'))
+PY
+  else
+    printf 'registry missing: %s\n' "$registry"
+  fi
+  printf '\n'
+
+  printf '## Omnigent (optional runtime)\n'
+  if have omni; then
+    timeout 8s omni server status 2>&1 | sed 's/^/  /' || true
+    timeout 8s omni host status --server "" 2>&1 | sed 's/^/  /' || true
+  else
+    printf '  omni missing\n'
+  fi
+}
+
+open_cmd() {
+  local no_switch="${COS_NO_SWITCH:-0}" dry_run=0 passthrough=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-switch) no_switch=1; shift ;;
+      --window) WINDOW_NAME="${2:?}"; shift 2 ;;
+      --session) SESSION_NAME="${2:?}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      --) shift; passthrough=("$@"); break ;;
+      *) passthrough+=("$1"); shift ;;
+    esac
+  done
+
+  local launch_cmd
+  launch_cmd="cd '$HOME' && '$AGENTS' up chief-of-staff --surface tui"
+  if [ "${#passthrough[@]}" -gt 0 ]; then
+    local quoted=()
+    local arg
+    for arg in "${passthrough[@]}"; do quoted+=("$(printf '%q' "$arg")"); done
+    launch_cmd+=" -- ${quoted[*]}"
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'window=%s\n' "$WINDOW_NAME"
+    printf 'session=%s\n' "${SESSION_NAME:-<current>}"
+    printf 'no_switch=%s\n' "$no_switch"
+    printf 'command=%s\n' "$launch_cmd"
+    return 0
+  fi
+
+  if ! have tmux || { [ -z "${TMUX:-}" ] && [ -z "$SESSION_NAME" ]; }; then
+    exec "$AGENTS" up chief-of-staff --surface tui "${passthrough[@]}"
+  fi
+
+  local session
+  if [ -n "$SESSION_NAME" ]; then
+    session="$SESSION_NAME"
+  else
+    session="$(tmux display-message -p '#{session_name}')"
+  fi
+
+  local existing
+  existing="$(tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | awk -v name="$WINDOW_NAME" '$0==name {print; exit}')"
+  if [ -n "$existing" ]; then
+    if [ "$no_switch" = "1" ]; then
+      printf 'cos window already exists: %s:%s\n' "$session" "$WINDOW_NAME"
+    else
+      tmux select-window -t "$session:$WINDOW_NAME"
+    fi
+    return 0
+  fi
+
+  if [ "$no_switch" = "1" ]; then
+    tmux new-window -d -t "$session" -n "$WINDOW_NAME" -c "$HOME" "$launch_cmd"
+    printf 'created detached cos window: %s:%s\n' "$session" "$WINDOW_NAME"
+  else
+    tmux new-window -t "$session" -n "$WINDOW_NAME" -c "$HOME" "$launch_cmd"
+  fi
+}
+
+cmd="${1:-open}"
+case "$cmd" in
+  open) shift || true; open_cmd "$@" ;;
+  status) shift || true; status_cmd "$@" ;;
+  help|-h|--help) usage ;;
+  *)
+    # Backwards-compatible default: `cos --foo` means open and pass args through.
+    if [[ "$cmd" == -* ]]; then
+      open_cmd "$cmd" "$@"
+    else
+      printf 'unknown cos command: %s\n\n' "$cmd" >&2
+      usage >&2
+      exit 2
+    fi
+    ;;
+esac
