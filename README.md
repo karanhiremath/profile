@@ -50,6 +50,8 @@ Run `just --list` for descriptions. Individual tools can be installed/upgraded i
 | `just nvim` | Neovim install |
 | `just git` | Git config |
 | `just tmux` | Tmux install + config |
+| `just sesh` | sesh (smart tmux session manager, popup picker on `prefix + T`) |
+| `just tmux-goto` | Register `tmux-goto://` deep links (see `bin/tmux-goto/README.md`) |
 | `just gh` | GitHub CLI |
 | `just ghostty` | Ghostty terminal |
 | `just zsh` | Zsh setup |
