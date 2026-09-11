@@ -2,20 +2,44 @@
 """Install and select Karan's Nighttide Herm TUI themes.
 
 Keeps Herm's visual theme aligned with ~/src/profile/bin/ghostty/config.
-The dark background is intentionally the exact Ghostty background (#2e3d4e)
-for both personal and work profiles, while preserving a small identity cue:
-  - personal/default profiles use the purple accent
-  - work profiles use the orange accent
+The dark background is the exact Ghostty background (#2e3d4e). Accent is
+the host/profile identity cue:
 
-Safe to rerun after `herm-tui` upgrades; preserves unrelated Herm preferences
-such as eikon, kanban state, never-prompts, and lastSessionId.
+  this MBP Cos          nighttide-violet
+  home-mac-mini Cos     nighttide-teal
+  mac-mbp-13 Cos        nighttide-blue
+  omarchy-mbp-13 Cos    nighttide-amber
+  qemu / omarchy Cos    nighttide-green
+  work / cosw           nighttide-ember  (mac + tc2 share this profile)
+  dream / dreamw        nighttide-cyan
+
+`--theme NAME` is one-shot for this run. `--set-default` persists that
+theme on targeted homes as `nighttideDefault` so later applies keep it.
+`--profile` / `--home` limit which homes are rewritten. `--eikon` sets
+the default eikon on those homes.
+
+Safe to rerun after `herm-tui` upgrades. Writes theme JSON into:
+  1. the active herm-tui package `themes/` dir (published installs)
+  2. each Hermes home's `herm/themes/` (user-theme overlay; fork + package)
+and patches the package theme registry when `index.js` is present.
+
+Preserves unrelated Herm preferences (eikon, kanban, never-prompts,
+lastSessionId). Existing nighttide-* selections on non-Cos homes are kept.
+Cos personal homes are remapped to the host accent so a prior installer
+stomp (personal/ares) can be repaired.
+
+Usage: apply-nighttide-theme [--dry-run] [--force] [--theme NAME]
+       [--set-default] [--profile NAME] [--home PATH] [--eikon NAME]
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
+import socket
 import subprocess
+import sys
 from pathlib import Path
 
 HOME = Path.home()
@@ -28,19 +52,25 @@ def _under_root(root: Path) -> Path | None:
     (layout differs across pnpm versions, e.g. v11 -> $PNPM_HOME/global/v11), so
     check both `<root>/herm-tui` and `<root>/node_modules/herm-tui`.
     """
-    for candidate in (root / "herm-tui", root / "node_modules" / "herm-tui"):
+    candidates = [root / "herm-tui", root / "node_modules" / "herm-tui"]
+    # pnpm v11 may place global packages under a hash/project directory.
+    candidates.extend(sorted(root.glob("*/herm-tui")))
+    candidates.extend(sorted(root.glob("*/node_modules/herm-tui")))
+    for candidate in candidates:
         if candidate.exists():
             return candidate
     return None
 
 
 def _herm_tui_dir() -> Path:
-    """Locate the pnpm-global herm-tui install directory.
+    """Locate the active herm-tui install/source directory.
 
-    Resolution order (robust across pnpm's internal global layout):
-      1. HERMES_PNPM_GLOBAL_ROOT (exported by install-tui after `pnpm root -g`)
-      2. `pnpm root -g` at runtime
-      3. glob under the toolchain-local PNPM_HOME
+    Resolution order:
+      1. HERMES_HERM_TUI_DIR (install-tui exports this; may be ~/src/herm)
+      2. HERMES_PNPM_GLOBAL_ROOT / `pnpm root -g`
+      3. toolchain-local pnpm global store
+      4. legacy npm-global install used by older profile shims
+      5. local fork checkout at ~/src/herm
     """
     direct_env = os.environ.get("HERMES_HERM_TUI_DIR")
     if direct_env and Path(direct_env).exists():
@@ -55,8 +85,6 @@ def _herm_tui_dir() -> Path:
         root = subprocess.run(
             ["pnpm", "root", "-g"], capture_output=True, text=True, check=True
         ).stdout.strip()
-        # pnpm returns an error string (not a path) when its global bin dir is
-        # not on PATH; guard by requiring the resolved dir to exist.
         if root:
             found = _under_root(Path(root))
             if found:
@@ -71,16 +99,48 @@ def _herm_tui_dir() -> Path:
     )
     if matches:
         return matches[-1]
+
+    toolchain = Path(os.environ.get("HERMES_TOOLCHAIN_HOME", HOME / ".local/share/hermes-toolchain"))
+    npm_home = Path(os.environ.get("HERMES_NPM_HOME", toolchain / "npm"))
+    legacy = npm_home / "lib/node_modules/herm-tui"
+    if legacy.exists():
+        return legacy
+
+    local_fork = HOME / "src/herm"
+    if local_fork.exists():
+        return local_fork
     return pnpm_home / "global/v11/node_modules/herm-tui"
 
 
 HERM_TUI = _herm_tui_dir()
+BUILTIN_THEMES = HERM_TUI / "src/theme/themes"
 THEMES = HERM_TUI / "themes"
 INDEX = HERM_TUI / "index.js"
 
 GHOSTTY_CONFIG = HOME / "src/profile/bin/ghostty/config"
 DEFAULT_GHOSTTY_BG = "#2e3d4e"
-RED_ACCENT = "#cd5244"
+
+# Ghostty palette + existing herm-fork Nighttide tokens.
+NIGHTTIDE_PRIMARY = "#64ba9a"
+GHOSTTY_COLOR12 = "#5b8fd4"
+VIOLET = "#c792ea"
+TEAL = "#64ba9a"
+BLUE = "#5b8fd4"
+AMBER = "#e4c843"
+GREEN = "#5eae63"
+CYAN = "#64bb9b"
+RED = "#cd5244"
+EMBER = "#fc7a37"
+PRODUCT_GROWTH_LIGHT = "#ceecbf"
+TRANSPARENT = "transparent"
+COS_IDENTITY = {
+    "eikon": "nous",
+    "identity": {
+        "label": "CoS",
+        "badge": "PERSONAL",
+        "detail": "Personal operating system, reviews, and machine rollout",
+    },
+}
 
 
 def ghostty_background() -> str:
@@ -95,22 +155,82 @@ def ghostty_background() -> str:
     return DEFAULT_GHOSTTY_BG
 
 
-NIGHTTIDE_PRIMARY = "#64ba9a"
-GHOSTTY_COLOR12 = "#5b8fd4"
-
-# Work theme colors:
-# - Primary text: Ghostty palette color12 (#5b8fd4)
-# - Main border: light Cartesia Growth scale step, green-200 (#ceecbf)
-# - Ember accent: cartesia-orange-500 (#fc7a37)
-WORK_PRIMARY_TEXT = GHOSTTY_COLOR12
-PRODUCT_GROWTH_LIGHT = "#ceecbf"
-PRODUCT_EMBER = "#fc7a37"
-
-
 GHOSTTY_BG = ghostty_background()
-PERSONAL_ACCENT = RED_ACCENT
-WORK_ACCENT = PRODUCT_EMBER
-WORK_LINE_COLOR = PRODUCT_GROWTH_LIGHT
+
+# (accent, primary, line_color). Dark surfaces stay transparent so Ghostty
+# shows through — Cos chrome is accent-only, not a painted panel.
+THEME_VARIANTS: dict[str, tuple[str, str, str]] = {
+    "nighttide": (EMBER, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-ember": (EMBER, GHOSTTY_COLOR12, PRODUCT_GROWTH_LIGHT),
+    "nighttide-work": (EMBER, GHOSTTY_COLOR12, PRODUCT_GROWTH_LIGHT),
+    "nighttide-violet": (VIOLET, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-teal": (TEAL, BLUE, TRANSPARENT),
+    "nighttide-blue": (BLUE, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-amber": (AMBER, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-green": (GREEN, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-cyan": (CYAN, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-red": (RED, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-personal": (RED, NIGHTTIDE_PRIMARY, TRANSPARENT),
+}
+
+# hostname -s / HERMES_MACHINE_PROFILE prefixes → Cos personal theme.
+# More-specific prefixes first. Work/cosw stays ember via is_work_home —
+# tc2 and work-mbp share that profile; they are listed so personal Cos
+# on those hosts is explicit instead of falling through to the default.
+COS_HOST_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("khire-mac-mini", "nighttide-teal"),
+    ("home-mac-mini", "nighttide-teal"),
+    ("personal-mini", "nighttide-teal"),
+    ("mac-mbp-13", "nighttide-blue"),
+    ("omarchy-mbp-13", "nighttide-amber"),
+    ("omarchy-qemu", "nighttide-green"),
+    ("qemu-omarchy", "nighttide-green"),
+    ("omarchy-desktop", "nighttide-green"),
+    ("omarchy", "nighttide-green"),
+    ("karans-macbook-pro", "nighttide-violet"),
+    ("work-mbp", "nighttide-violet"),
+    ("work-devbox", "nighttide-violet"),
+    ("tc2", "nighttide-violet"),
+)
+
+# Launcher / home aliases → profile class used for default theme + targeting.
+PROFILE_ALIASES: dict[str, str] = {
+    "cosw": "work",
+    "chief-of-staff-work": "work",
+    "hwork": "work",
+    "dreamw": "dream",
+    "dream": "dream",
+    "hdream": "dream",
+    "hdream-sandbox": "dream",
+    "cos": "cos",
+    "chief-of-staff": "cos",
+    "hpersonal": "cos",
+}
+
+PROFILE_DEFAULT_THEME: dict[str, str] = {
+    "work": "nighttide-ember",
+    "dream": "nighttide-cyan",
+}
+
+PIN_KEY = "nighttideDefault"
+
+
+def machine_id() -> str:
+    explicit = os.environ.get("HERMES_MACHINE_PROFILE", "").strip()
+    if explicit:
+        return explicit.lower()
+    try:
+        return socket.gethostname().split(".")[0].lower()
+    except OSError:
+        return ""
+
+
+def host_cos_theme(mid: str | None = None) -> str:
+    name = (mid if mid is not None else machine_id()).lower()
+    for prefix, theme in COS_HOST_PREFIXES:
+        if name == prefix or name.startswith(prefix):
+            return theme
+    return "nighttide-violet"
 
 
 def nighttide_theme(
@@ -120,18 +240,13 @@ def nighttide_theme(
     primary: str = NIGHTTIDE_PRIMARY,
 ) -> dict:
     """Return a Nighttide theme with profile-specific accent and line colors."""
-    light_accent = accent
-    light_line_color = line_color
     return {
         "$schema": "https://opencode.ai/theme.json",
         "defs": {
-            "ntBg0": GHOSTTY_BG,
-            # Keep panel/element surfaces on the exact terminal background while
-            # allowing the work profile's line/border color to follow the product
-            # primary token when WORK_LINE_COLOR overrides it.
-            "ntBg1": GHOSTTY_BG,
-            "ntBg2": GHOSTTY_BG,
-            "ntLine": line_color,
+            "ntBg0": TRANSPARENT,
+            "ntBg1": TRANSPARENT,
+            "ntBg2": TRANSPARENT,
+            "ntLine": line_color if line_color != GHOSTTY_BG else TRANSPARENT,
             "ntText": "#eceff0",
             "ntTextSoft": "#bec2c5",
             "ntMuted": primary,
@@ -139,23 +254,23 @@ def nighttide_theme(
             "ntSecondary": "#5b8fd4",
             "ntAccent": accent,
             "ntAccent2": accent,
-            "ntRed": "#cd5244",
-            "ntGreen": "#5eae63",
-            "ntYellow": "#e4c843",
-            "ntOrange": WORK_ACCENT,
-            "ntCyan": "#64bb9b",
-            "ntBlue": "#5b8fd4",
+            "ntRed": RED,
+            "ntGreen": GREEN,
+            "ntYellow": AMBER,
+            "ntOrange": EMBER,
+            "ntCyan": CYAN,
+            "ntBlue": BLUE,
             "ntDiffAddBg": "#244633",
             "ntDiffDelBg": "#4a2a2b",
             "lightBg": "#f5f7f8",
             "lightPanel": "#edf2f1",
             "lightElem": "#e2ebe8",
-            "lightLine": light_line_color,
+            "lightLine": line_color,
             "lightText": "#1d332b",
             "lightMuted": "#4a9e7c",
             "lightPrimary": "#4a9e7c",
             "lightSecondary": "#3f73aa",
-            "lightAccent": light_accent,
+            "lightAccent": accent,
             "lightRed": "#b94035",
             "lightGreen": "#43864a",
             "lightYellow": "#a3831d",
@@ -216,21 +331,95 @@ def nighttide_theme(
     }
 
 
-THEME_VARIANTS = {
-    # Backward-compatible alias: if a profile already points at nighttide, it
-    # remains personal unless the path is clearly work-scoped below.
-    "nighttide": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-personal": (PERSONAL_ACCENT, NIGHTTIDE_PRIMARY, GHOSTTY_BG),
-    "nighttide-work": (WORK_ACCENT, WORK_PRIMARY_TEXT, WORK_LINE_COLOR),
-}
+def theme_json(name: str) -> str:
+    accent, primary, line_color = THEME_VARIANTS[name]
+    return json.dumps(nighttide_theme(accent, primary=primary, line_color=line_color), indent=2) + "\n"
 
 
-def write_themes() -> None:
-    THEMES.mkdir(parents=True, exist_ok=True)
-    for name, (accent, primary, line_color) in THEME_VARIANTS.items():
-        (THEMES / f"{name}.json").write_text(
-            json.dumps(nighttide_theme(accent, primary=primary, line_color=line_color), indent=2) + "\n"
+def write_theme_dir(dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in THEME_VARIANTS:
+        (dest / f"{name}.json").write_text(theme_json(name))
+
+
+def herm_fork_dirs() -> list[Path]:
+    """Fork checkouts that Cos actually execs (often not the pnpm/npm package)."""
+    found: list[Path] = []
+    seen: set[Path] = set()
+    candidates = []
+    env = os.environ.get("HERMES_HERM_TUI_DIR")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(HOME / "src/herm")
+    if HERM_TUI.exists():
+        candidates.append(HERM_TUI)
+    for raw in candidates:
+        try:
+            key = raw.resolve()
+        except FileNotFoundError:
+            continue
+        if key in seen:
+            continue
+        if (key / "src/theme/themes").is_dir() and (key / "src/theme/manifest.ts").exists():
+            seen.add(key)
+            found.append(key)
+    return found
+
+
+def _preview_entry(name: str) -> str:
+    accent, primary, _line = THEME_VARIANTS[name]
+    return (
+        f'  "{name}": {{ primary: "{primary}", accent: "{accent}", '
+        f'background: "{TRANSPARENT}" }},'
+    )
+
+
+def ensure_fork_manifest(manifest: Path) -> None:
+    text = manifest.read_text()
+    changed = False
+    for name in THEME_VARIANTS:
+        entry = _preview_entry(name)
+        token = f'"{name}":'
+        pattern = (
+            rf'  "{re.escape(name)}": \{{ primary: "#[0-9A-Fa-f]{{6}}", '
+            rf'accent: "#[0-9A-Fa-f]{{6}}", background: "(?:#[0-9A-Fa-f]{{6}}|transparent)" \}},'
         )
+        if token in text:
+            text, n = re.subn(pattern, entry, text, count=1)
+            changed = changed or bool(n)
+            continue
+        anchor = '  "nighttide-violet":' if '"nighttide-violet":' in text else '  "nighttide":'
+        idx = text.find(anchor)
+        if idx < 0:
+            raise SystemExit(f"could not patch herm fork manifest: {manifest}")
+        line_end = text.find("\n", idx)
+        insert_at = line_end + 1 if line_end >= 0 else idx
+        text = text[:insert_at] + entry + "\n" + text[insert_at:]
+        changed = True
+    if changed:
+        manifest.write_text(text)
+
+
+def write_fork_themes() -> list[str]:
+    """Older herm forks have no user-theme loader; Cos falls back to tokyonight
+    unless nighttide-* exists in src/theme/themes + manifest PREVIEW."""
+    written = []
+    for fork in herm_fork_dirs():
+        dest = fork / "src/theme/themes"
+        write_theme_dir(dest)
+        ensure_fork_manifest(fork / "src/theme/manifest.ts")
+        written.append(str(dest))
+    return written
+
+
+def write_package_themes() -> str | None:
+    """Write into a published herm-tui package. Skip dirtying a local fork."""
+    if (HERM_TUI / "src/theme/themes").is_dir():
+        return None
+    if not HERM_TUI.exists():
+        return None
+    write_theme_dir(THEMES)
+    return str(THEMES)
 
 
 def ensure_registry() -> None:
@@ -239,19 +428,28 @@ def ensure_registry() -> None:
     text = INDEX.read_text(errors="ignore")
     entries = {
         name: f'{name if "-" not in name else json.dumps(name)}:'
-        f'{{primary:"{primary}",accent:"{accent}",background:"{GHOSTTY_BG}"}},'
+        f'{{primary:"{primary}",accent:"{accent}",background:"{TRANSPARENT}"}},'
         for name, (accent, primary, _line_color) in THEME_VARIANTS.items()
     }
 
     changed = False
     for name, entry in entries.items():
-        token = f'{name}:{{' if "-" not in name else f'"{name}":{{'
+        token = f"{name}:{{" if "-" not in name else f'"{name}":{{'
         if token in text:
-            # Keep reruns idempotent, but update colors if the entry changed.
-            text, n = re.subn(re.escape(token) + r'primary:"#[0-9A-Fa-f]{6}",accent:"#[0-9A-Fa-f]{6}",background:"#[0-9A-Fa-f]{6}"\},', entry, text, count=1)
+            text, n = re.subn(
+                re.escape(token)
+                + r'primary:"#[0-9A-Fa-f]{6}",accent:"#[0-9A-Fa-f]{6}",background:"(?:#[0-9A-Fa-f]{6}|transparent)"\},',
+                entry,
+                text,
+                count=1,
+            )
             changed = changed or bool(n)
             continue
-        insert_after = entries["nighttide"] if "nighttide:{" in text else 'nightowl:{primary:"#82AAFF",accent:"#c792ea",background:"#011627"},'
+        insert_after = (
+            entries["nighttide"]
+            if "nighttide:{" in text
+            else 'nightowl:{primary:"#82AAFF",accent:"#c792ea",background:"#011627"},'
+        )
         if insert_after not in text:
             raise SystemExit("could not patch herm-tui theme registry: insertion point missing")
         text = text.replace(insert_after, insert_after + entry, 1)
@@ -262,16 +460,119 @@ def ensure_registry() -> None:
 
 
 def is_work_home(home: Path) -> bool:
-    parts = set(home.parts)
+    parts = {part.lower() for part in home.parts}
     name = home.name.lower()
-    return "work" in parts or "chief-of-staff-work" in parts or name.endswith("-work")
+    return (
+        "chief-of-staff-work" in parts
+        or name == "hwork"
+        or name == "cosw"
+        or name.startswith("work-")
+        or name.endswith("-work")
+        or (name == "work" and "profiles" in parts)
+    )
 
 
-def theme_for_home(home: Path) -> str:
-    return "nighttide-work" if is_work_home(home) else "nighttide-personal"
+def is_dream_home(home: Path) -> bool:
+    if is_work_home(home):
+        return False
+    parts = {part.lower() for part in home.parts}
+    name = home.name.lower()
+    return (
+        name in {"hdream", "hdream-sandbox", "dream", "dreamw"}
+        or name.startswith("dreamw")
+        or "hdream" in parts
+        or "dreamw" in parts
+    )
 
 
-def merge_pref(home: Path) -> str:
+def is_cos_home(home: Path) -> bool:
+    if is_work_home(home) or is_dream_home(home):
+        return False
+    parts = {part.lower() for part in home.parts}
+    name = home.name.lower()
+    return "chief-of-staff" in parts or name in {"hpersonal", "cos"}
+
+
+def profile_class(home: Path) -> str:
+    if is_work_home(home):
+        return "work"
+    if is_dream_home(home):
+        return "dream"
+    if is_cos_home(home):
+        return "cos"
+    return "other"
+
+
+def resolve_profile_class(name: str) -> str | None:
+    key = name.strip().lower()
+    if key in PROFILE_ALIASES:
+        return PROFILE_ALIASES[key]
+    if key in PROFILE_DEFAULT_THEME or key in {"cos", "other"}:
+        return key
+    return None
+
+
+def pinned_theme(home: Path) -> str | None:
+    path = home / "herm" / "tui.json"
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    pinned = data.get(PIN_KEY)
+    if isinstance(pinned, str) and pinned in THEME_VARIANTS:
+        return pinned
+    return None
+
+
+def existing_theme(home: Path) -> str | None:
+    path = home / "herm" / "tui.json"
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    theme = data.get("theme")
+    return theme if isinstance(theme, str) and theme else None
+
+
+def theme_for_home(
+    home: Path,
+    *,
+    force: bool = False,
+    theme_override: str | None = None,
+) -> str:
+    if theme_override:
+        if theme_override not in THEME_VARIANTS:
+            raise SystemExit(f"unknown nighttide theme: {theme_override}")
+        return theme_override
+    if not force:
+        pinned = pinned_theme(home)
+        if pinned:
+            return pinned
+    kind = profile_class(home)
+    if kind == "work":
+        return PROFILE_DEFAULT_THEME["work"]
+    if kind == "dream":
+        return PROFILE_DEFAULT_THEME["dream"]
+    if kind == "cos":
+        return host_cos_theme()
+    current = existing_theme(home)
+    if not force and current and current in THEME_VARIANTS:
+        return current
+    return "nighttide-personal"
+
+
+def merge_pref(
+    home: Path,
+    *,
+    force: bool = False,
+    theme_override: str | None = None,
+    set_default: bool = False,
+    eikon: str | None = None,
+) -> str:
     path = home / "herm" / "tui.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -280,8 +581,17 @@ def merge_pref(home: Path) -> str:
             data = {}
     except Exception:
         data = {}
-    theme = theme_for_home(home)
+    theme = theme_for_home(home, force=force, theme_override=theme_override)
     data.update({"theme": theme, "themeMode": "dark"})
+    if set_default:
+        data[PIN_KEY] = theme
+    if eikon:
+        data["eikon"] = eikon
+    if is_cos_home(home):
+        if not data.get("eikon"):
+            data["eikon"] = COS_IDENTITY["eikon"]
+        if not isinstance(data.get("identity"), dict):
+            data["identity"] = dict(COS_IDENTITY["identity"])
     path.write_text(json.dumps(data, indent=2) + "\n")
     return theme
 
@@ -289,15 +599,19 @@ def merge_pref(home: Path) -> str:
 def candidate_homes() -> list[Path]:
     homes = [HOME / ".hermes"]
 
-    # Profile homes under the default Hermes root, including ~/.hermes/profiles/work.
     profiles = HOME / ".hermes" / "profiles"
     if profiles.exists():
         homes.extend(p for p in profiles.iterdir() if p.is_dir())
 
-    # Standalone Hermes Agent profile homes, plus their nested profile homes.
     agents = HOME / ".local/share/hermes-agents"
     if agents.exists():
-        homes.extend(p for p in agents.rglob("*") if (p / "config.yaml").exists() or (p / "SOUL.md").exists())
+        for dirpath, _dirnames, _filenames in os.walk(agents, onerror=lambda _e: None):
+            d = Path(dirpath)
+            try:
+                if (d / "config.yaml").exists() or (d / "SOUL.md").exists():
+                    homes.append(d)
+            except OSError:
+                continue
 
     seen = set()
     ordered = []
@@ -313,22 +627,118 @@ def candidate_homes() -> list[Path]:
     return ordered
 
 
-def main() -> None:
-    if not HERM_TUI.exists():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    p.add_argument("--dry-run", action="store_true", help="print planned actions only")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="ignore pinned nighttideDefault and remap non-Cos homes",
+    )
+    p.add_argument(
+        "--theme",
+        metavar="NAME",
+        help="one-shot nighttide-* theme for targeted homes this run",
+    )
+    p.add_argument(
+        "--set-default",
+        action="store_true",
+        help="persist --theme (or the computed theme) as nighttideDefault",
+    )
+    p.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="limit to homes for this launcher/profile (cosw, dreamw, cos, …)",
+    )
+    p.add_argument(
+        "--home",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="limit to this Hermes home (repeatable)",
+    )
+    p.add_argument("--eikon", metavar="NAME", help="set default eikon on targeted homes")
+    p.add_argument("--quiet", action="store_true", help="suppress per-home listing")
+    return p.parse_args(argv)
+
+
+def selected_homes(args: argparse.Namespace) -> list[Path]:
+    homes = candidate_homes()
+    if args.home:
+        explicit: list[Path] = []
+        seen: set[Path] = set()
+        for raw in args.home:
+            home = Path(raw).expanduser()
+            try:
+                key = home.resolve()
+            except FileNotFoundError:
+                key = home
+            if key in seen:
+                continue
+            seen.add(key)
+            explicit.append(home)
+        homes = explicit
+    if args.profile:
+        kind = resolve_profile_class(args.profile)
+        if kind is None:
+            needle = args.profile.strip().lower()
+            homes = [h for h in homes if needle in {p.lower() for p in h.parts}]
+        elif kind != "other":
+            homes = [h for h in homes if profile_class(h) == kind]
+    return homes
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    theme_override = args.theme
+    if theme_override and theme_override not in THEME_VARIANTS:
+        raise SystemExit(
+            f"unknown theme {theme_override!r}; choose from: "
+            + ", ".join(sorted(THEME_VARIANTS))
+        )
+    homes = selected_homes(args)
+    if args.dry_run:
+        print(f"herm-tui={HERM_TUI}")
+        print(f"machine={machine_id()} cos={host_cos_theme()}")
+        print(f"package_themes={'skip-fork' if (HERM_TUI / 'src/theme/themes').is_dir() else THEMES}")
+        print(f"forks={[str(p) for p in herm_fork_dirs()]}")
+        for home in homes:
+            theme = theme_for_home(home, force=args.force, theme_override=theme_override)
+            pin = " persist" if args.set_default else ""
+            print(f"  {home}: {theme}{pin}")
+        return 0
+
+    if not HERM_TUI.exists() and not homes and not herm_fork_dirs():
         raise SystemExit(f"herm-tui install not found: {HERM_TUI}")
 
-    write_themes()
-    ensure_registry()
+    package_dir = write_package_themes()
+    if package_dir:
+        ensure_registry()
+    forks = write_fork_themes()
 
     applied = []
-    for home in candidate_homes():
-        theme = merge_pref(home)
+    for home in homes:
+        write_theme_dir(home / "herm" / "themes")
+        theme = merge_pref(
+            home,
+            force=args.force,
+            theme_override=theme_override,
+            set_default=args.set_default,
+            eikon=args.eikon,
+        )
         applied.append(f"{home}: {theme}")
 
-    print(f"nighttide themes installed with Ghostty background {GHOSTTY_BG}")
-    for line in applied:
-        print(f"  {line}")
+    if not args.quiet:
+        print(f"nighttide themes installed with Ghostty background {GHOSTTY_BG}")
+        print(f"  machine={machine_id()} cos={host_cos_theme()}")
+        if package_dir:
+            print(f"  package={package_dir}")
+        for fork in forks:
+            print(f"  fork={fork}")
+        for line in applied:
+            print(f"  {line}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

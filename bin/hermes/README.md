@@ -19,9 +19,26 @@ bin/hermes/env           # print PATH additions
 bin/hermes/agents        # run isolated Hermes voice agents for daily terminal use
 bin/hermes/cos           # launch personal Chief of Staff profile
 bin/hermes/cosw          # launch work Chief of Staff profile
+bin/hermes/dreamw        # launch dreamw profile (nighttide-cyan)
+bin/hermes/apply-nighttide-theme  # install/select host + profile Nighttide colors
 bin/hermes/pm <project>  # attach/start a registered project-manager tmux/TUI
 bin/hermes/pl <project>  # attach a registered project-lead implementation session
 ```
+
+## Nighttide TUI colors
+
+`apply-nighttide-theme` installs the Nighttide family and selects a default per
+host + profile. `cosw` on mac and `cosw` on tc2 share `chief-of-staff-work`
+(`nighttide-ember`). `dreamw` / `hdream` default to `nighttide-cyan`.
+
+```bash
+bin/hermes/apply-nighttide-theme --dry-run
+bin/hermes/apply-nighttide-theme --profile dreamw --theme nighttide-cyan --set-default --eikon nous
+bin/hermes/apply-nighttide-theme --profile cosw --theme nighttide-blue   # one-shot
+bin/hermes/test_apply_nighttide_theme.py
+```
+
+New profile colors/eikons: `skills/herm-tui-profiles/SKILL.md`.
 
 ## CoS / PM / PL command model
 

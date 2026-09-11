@@ -354,6 +354,7 @@ unset _hermes_toolchain_home
 alias agents="$HOME/src/profile/bin/hermes/agents"
 alias cos="$HOME/src/profile/bin/hermes/cos"
 alias cosw="$HOME/src/profile/bin/hermes/cosw"
+alias dreamw="$HOME/src/profile/bin/hermes/dreamw"
 alias pm="$HOME/src/profile/bin/hermes/pm"
 alias pl="$HOME/src/profile/bin/hermes/pl"
 
