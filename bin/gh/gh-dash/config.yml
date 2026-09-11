@@ -1,0 +1,94 @@
+# yaml-language-server: $schema=https://gh-dash.dev/schema.json
+# Karan's terminal-native PR review dashboard.
+# Launch with: gh dash --config ~/src/profile/bin/gh/gh-dash/config.yml
+
+prSections:
+  - title: My PRs
+    filters: >-
+      owner:karanhiremath
+      is:open
+      author:@me
+      archived:false
+      sort:updated-desc
+    limit: 50
+  - title: Needs My Review
+    filters: >-
+      owner:karanhiremath
+      is:open
+      review-requested:@me
+      -author:@me
+      archived:false
+      sort:updated-desc
+    limit: 50
+  - title: Hermes
+    filters: >-
+      repo:karanhiremath/hermes
+      is:open
+      author:@me
+      archived:false
+      sort:updated-desc
+    limit: 30
+  - title: Profile
+    filters: >-
+      repo:karanhiremath/profile
+      is:open
+      author:@me
+      archived:false
+      sort:updated-desc
+    limit: 30
+  - title: Notes
+    filters: >-
+      repo:karanhiremath/notes
+      is:open
+      author:@me
+      archived:false
+      sort:updated-desc
+    limit: 20
+
+issuesSections: []
+
+repoPaths:
+  karanhiremath/hermes: ~/src/hermes
+  karanhiremath/profile: ~/src/profile
+  karanhiremath/notes: ~/src/notes
+
+defaults:
+  view: prs
+  refetchIntervalMinutes: 5
+  prsLimit: 50
+  issuesLimit: 20
+  prApproveComment: LGTM
+  preview:
+    open: true
+    width: 50
+  layout:
+    prs:
+      repo:
+        width: 22
+      author:
+        hidden: true
+      base:
+        hidden: true
+      createdAt:
+        hidden: true
+      updatedAt:
+        width: 10
+      lines:
+        width: 10
+      reviewStatus:
+        width: 12
+      ci:
+        width: 10
+
+pager:
+  diff: less -R
+
+confirmQuit: false
+showAuthorIcons: true
+smartFilteringAtLaunch: true
+theme:
+  ui:
+    sectionsShowCount: true
+    table:
+      compact: false
+      showSeparator: true

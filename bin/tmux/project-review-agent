@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+scope="${1:-personal}"
+pr_pane="${2:-}"
+
+case "$scope" in
+  personal)
+    profile_name="chief-of-staff"
+    profile_home="$HOME/.local/share/hermes-agents/chief-of-staff/profiles/chief-of-staff"
+    title="Personal code review manager"
+    ;;
+  work)
+    profile_name="chief-of-staff-work"
+    profile_home="$HOME/.local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+    title="Work code review manager"
+    ;;
+  *)
+    echo "ERROR: unknown project-review scope: $scope" >&2
+    exit 2
+    ;;
+esac
+
+export TMUX_PR_REVIEW_SCOPE="$scope"
+export TMUX_PR_REVIEW_PANE="$pr_pane"
+export PATH="$HOME/.local/share/hermes-toolchain/npm/bin:$HOME/.local/bin:$PATH"
+
+hermes_bin="${HERMES_BIN:-}"
+if [ -z "$hermes_bin" ]; then
+  if command -v hermes >/dev/null 2>&1; then
+    hermes_bin="$(command -v hermes)"
+  else
+    for candidate in \
+      "$HOME/.local/share/hermes-toolchain/npm/bin/hermes" \
+      "$HOME/.local/bin/hermes"; do
+      if [ -x "$candidate" ]; then
+        hermes_bin="$candidate"
+        break
+      fi
+    done
+  fi
+fi
+[ -n "$hermes_bin" ] || { echo "ERROR: hermes not found. PATH=$PATH" >&2; exit 127; }
+
+if [ -d "$profile_home" ]; then
+  export HERMES_HOME="$profile_home"
+fi
+
+# In this two-pane review workflow, typed follow-ups should steer by default
+# instead of interrupting an in-flight code-review turn. Allow override for
+# ad-hoc testing with HERMES_PROJECT_REVIEW_BUSY_INPUT_MODE=interrupt|steer|queue.
+busy_input_mode="${HERMES_PROJECT_REVIEW_BUSY_INPUT_MODE:-steer}"
+if [ -n "${HERMES_HOME:-}" ]; then
+  "$hermes_bin" config set display.busy_input_mode "$busy_input_mode" >/dev/null 2>&1 || true
+fi
+
+printf '%s\n' "$title"
+printf 'Profile: %s\n' "$profile_name"
+printf 'PR pane: %s\n' "${pr_pane:-unknown}"
+printf 'Busy input: %s\n\n' "$busy_input_mode"
+
+# Use the classic CLI for predictable tmux paste/input behavior.
+exec "$hermes_bin" chat --cli --source tmux-pr-review

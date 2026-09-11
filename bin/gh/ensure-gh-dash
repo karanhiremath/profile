@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "ERROR: gh is required before installing gh-dash" >&2
+  exit 127
+fi
+
+if gh extension list | grep -q '^gh dash[[:space:]]'; then
+  gh extension upgrade gh-dash || gh extension upgrade dash || true
+else
+  gh extension install dlvhdr/gh-dash
+fi
