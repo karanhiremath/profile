@@ -105,6 +105,17 @@ The TUI installer downloads the Bun release asset for the current OS/arch, verif
 
 `install` writes user-local shims to `${HERMES_SHIM_DIR:-$HOME/.local/bin}` for `hermes`, `hermes-agent`, and `herm`. If that directory is already on PATH, no `source <(.../env)` step is needed.
 
+Hermes Python aliases (`hermes`, `hermes-agent`, `cosw`, `cos`, `agents`, `pm`, `pl`) source `fork-env.sh` and prefer the `karanhiremath/hermes-agent` checkout (timeout-free Cursor SDK overlay) over the published wheel. `herm` prefers `~/src/herm` or `~/src/herm-tui`. Keep forks current with:
+
+```bash
+bin/hermes/fork-sync status
+bin/hermes/fork-sync ensure
+bin/hermes/fork-sync fetch
+bin/hermes/fork-sync nightly
+```
+
+`fork-env.sh` accepts both `~/src/hermes-agent-worktrees/timeout-free-cursor-sdk` and the dated tc2 overlay `timeout-free-cursor-sdk-20260831T1834`.
+
 ## Machine-aware setup
 
 `configure-machine` reads a non-secret profile from:
