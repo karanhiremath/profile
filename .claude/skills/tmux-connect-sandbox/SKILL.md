@@ -7,6 +7,10 @@ argument-hint: "<host> <sandbox> [session]"
 
 # tmux-connect --sandbox
 
+## When To Load This
+
+This skill is verbose (ssh/tmux/podman recipes + two documented gotchas) and only earns its context cost in a consumer context that actually does remote host/sandbox operations — not every Claude Code session or agent profile needs it loaded. A narrow, single-purpose worker with no remote-host access shouldn't carry it. On a machine running a larger multi-profile agent fleet, which profile(s) get this skill installed/loaded is that fleet's own decision, layered on top of this generic skill — this file is not "always load me."
+
 ## Syntax reference
 
 ```
