@@ -86,6 +86,7 @@ configure_pi_agent() {
     if [ -d "$extensions_src" ] && compgen -G "${extensions_src}/*.ts" >/dev/null; then
         cp "${extensions_src}"/*.ts "$extensions_dir"/
     fi
+    node "${SCRIPT_DIR}/install-handoff-runtime.mjs" --destination "$extensions_dir" --apply
 
     TRUST_FILE="$trust_file" HOME_DIR="$HOME" node <<'NODE'
 const fs = require('fs');
