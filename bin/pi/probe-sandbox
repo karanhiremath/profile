@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Run the canonical Pi fixture probe inside an already-running Podman sandbox.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+container=""
+dry_run=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      printf '%s\n' 'Usage: probe-sandbox --container NAME [--dry-run] -- [toolcall-probe options]'
+      exit 0 ;;
+    --container) container="${2:?missing container}"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    --) shift; break ;;
+    *) printf '%s\n' 'probe-sandbox: unknown option' >&2; exit 2 ;;
+  esac
+done
+if [[ ! "$container" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+  printf '%s\n' '{"schema":"harness.pi-sandbox.v1","status":"blocked","reason":"invalid_container"}'
+  exit 2
+fi
+if [ "$dry_run" -eq 1 ]; then
+  printf '{"schema":"harness.pi-sandbox.v1","container":"%s","dryRun":true,"mutated":false}\n' "$container"
+  exit 0
+fi
+if ! command -v podman >/dev/null 2>&1 || [ "$(podman container inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" != true ]; then
+  printf '%s\n' '{"schema":"harness.pi-sandbox.v1","status":"blocked","reason":"sandbox_not_running"}'
+  exit 2
+fi
+# Exclusive random staging name. Only this fixture is copied; no host credentials/config.
+stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
+cp "$root/toolcall-probe.mjs" "$stage/probe.mjs"
+remote="/tmp/$(basename "$stage")-pi-probe.mjs"
+podman cp "$stage/probe.mjs" "$container:$remote" >&2
+result=0
+podman exec "$container" node "$remote" "$@" || result=$?
+# The probe has exited. Remove only its staged source, never signal processes.
+podman exec "$container" rm -f "$remote" >&2 || true
+exit "$result"
