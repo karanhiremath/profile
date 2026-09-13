@@ -18,11 +18,43 @@ bin/hermes/doctor        # non-secret status
 bin/hermes/env           # print PATH additions
 bin/hermes/agents        # run isolated Hermes voice agents for daily terminal use
 bin/hermes/cos           # launch personal Chief of Staff profile
-bin/hermes/cosw          # launch work Chief of Staff profile
+bin/hermes/cos sandbox   # same plane as cosw sandbox (personal profile)
+bin/hermes/cosw          # launch work Chief of Staff profile (sandbox if healthy)
+bin/hermes/cosw sandbox  # status | families | up | attach | exec | rebuild | down
+bin/hermes/sandbox-ctl   # same plane for --profile <pm/pl/fleet> --family <name>
 bin/hermes/dreamw        # launch dreamw profile (nighttide-cyan)
 bin/hermes/apply-nighttide-theme  # install/select host + profile Nighttide colors
 bin/hermes/pm <project>  # attach/start a registered project-manager tmux/TUI
 bin/hermes/pl <project>  # attach a registered project-lead implementation session
+bin/hermes/herm-tui-m    # mobile CLI attach/launch (cos-m / notes-m / …)
+bin/hermes/notes-m       # personal-notes-steward in tmux notes:m
+bin/hermes/notesw-m      # work-notes-steward (work host + profile only)
+bin/hermes/cos-m         # chief-of-staff, phone-friendly
+bin/hermes/cosw-m        # chief-of-staff-work, phone-friendly
+bin/hermes/pm-m <p>      # PM session; CLI surface if it must start
+bin/hermes/pl-m <p>      # same attach as pl
+```
+
+## Alias isolation
+
+`cos`, `cos-m`, `cosw`, `notes-m`, `pm`, and `pl` are isolation seats, not
+alternate views of `~/.hermes`. Each family owns one `hermes-agents/<profile>`
+home, one tmux session, and at most one live herm-tui. A second TUI pane on
+the same home closes the gateway pipe.
+
+- `cos` and `cos-m` share `chief-of-staff` / tmux `cos`. Mobile attaches the
+  live desktop pane when a lock is held; it does not spawn `cos:m` as a second
+  TUI.
+- `cosw` is a different home and session. Personal hosts must not create it.
+- `~/.hermes` (`factory` / `project-manager`) is never a Cos inbox or seat.
+- Launchers export `HERMES_ALIAS_PIN=1` and write `alias.seat.json` so herm-tui
+  cannot switch to a duplicate `default` sibling.
+- Hermes-agent must not emit `hermes -p` wrappers named `cos` / `cosw` / `pm`.
+
+```bash
+python3 bin/hermes/test_alias_seat.py
+bin/hermes/test_herm_tui_m.sh
+bin/hermes/tests/alias-isolation/run.sh   # podman sandbox; required before live
 ```
 
 ## Nighttide TUI colors
@@ -46,9 +78,21 @@ These commands are generic profile-level wrappers. They do not embed work/privat
 
 ```bash
 cos                         # agents up chief-of-staff
-cosw                        # agents up chief-of-staff-work
+cos sandbox status          # personal CoS image / family / container
+cos sandbox families        # distrohop catalog
+cos sandbox rebuild         # personal default: arch-toolkit
+cosw                        # agents up chief-of-staff-work (host-native default)
+cosw --host-tools           # Hermes TUI on the host; no container
+cosw sandbox status         # image / family / container / materialized backend
+cosw sandbox up             # start long-lived attachable CoS-W container
+cosw sandbox attach         # exec into that container
+cosw sandbox rebuild        # requires project-selected family/image on work hosts
 pm <project>                # attach/start the Hermes PM TUI session for project
 pl <project>                # attach the project-lead implementation tmux session
+notes-m                     # personal notes steward (CLI in tmux notes:m)
+notesw-m                    # work notes steward when that profile exists
+cos-m / cosw-m / pm-m / pl-m
+sandbox-ctl --profile <name> status|up|attach|rebuild
 bin/hermes/project_sessions.py list
 bin/hermes/project_sessions.py resolve <project>
 ```
@@ -104,6 +148,14 @@ The installer uses `uv venv`, installs the small Python helper dependency (`PyYA
 The TUI installer downloads the Bun release asset for the current OS/arch, verifies it against `SHASUMS256.txt`, and installs it under the Hermes toolchain instead of using the global Bun installer.
 
 `install` writes user-local shims to `${HERMES_SHIM_DIR:-$HOME/.local/bin}` for `hermes`, `hermes-agent`, and `herm`. If that directory is already on PATH, no `source <(.../env)` step is needed.
+
+Hermes Python aliases (`hermes`, `hermes-agent`, `cosw`, `cos`, `agents`, `pm`, `pl`) source `fork-env.sh` and prefer the `karanhiremath/hermes-agent` checkout (timeout-free Cursor SDK overlay) over the published PyPI/npm wheel. `herm` prefers `~/src/herm` (fork of liftaris/herm). Keep forks current with:
+
+```bash
+bin/hermes/fork-sync status
+bin/hermes/fork-sync ensure
+bin/hermes/fork-sync fetch
+```
 
 ## Machine-aware setup
 

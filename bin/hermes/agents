@@ -8,17 +8,28 @@
 #   new <name> [--dir D]       Scaffold a profile from TEMPLATE.
 #                              D = work | personal | profile | <path> (default: personal)
 #   check <profile>            Materialize + run an end-to-end endpoint health check
+#   secrets-status             Cursor key cache presence (never the value)
+#   secrets-refresh            Sync Cursor key from 1Password once into local cache
 #   up <profile> [opts] [-- ...args]
 #                              Materialize the isolated home and launch the agent
 #
 # Convenience wrappers:
 #   cos                        agents up chief-of-staff
 #   cosw                       agents up chief-of-staff-work
-#   pm <project>               attach/start registered Hermes PM tmux/TUI
+#   notes-m                    mobile CLI for personal-notes-steward (tmux notes:m)
+#   notesw-m                   mobile CLI for work-notes-steward (work host)
+#   cos-m / cosw-m / pm-m / pl-m
+#   pm <project>               launch registered Hermes PM TUI in the current pane
 #   pl <project>               attach registered project-lead tmux session
 #       --surface cli|tui|gateway   Override the profile's default surface
 #       --platform <name>           Messaging platform for surface=gateway
+#       --model <name>              Launch-scoped model (writes HERMES_AGENT_LLM_MODEL)
+#       --provider <name>           Launch-scoped provider (openai-codex, cursor, xai, ...)
+#       --host, --no-sandbox        Host-native local terminal
+#       --sandbox                   Compose sandbox (work-devboxes or personal hermes-sandboxes)
 #       --check                     Run an endpoint health check before launching
+#       --here                      Launch in this pane (never a second TUI on a live home)
+#       --force-tui                 Fail instead of attaching when a TUI already holds the home
 #       -- <args>                   Pass remaining args through to hermes/herm
 #
 # Each agent runs under its own HERMES_HOME so it never touches ~/.hermes.
@@ -51,9 +62,64 @@ PY="$VENV/bin/python"
 SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 export PATH="$SHIM_DIR:$VENV/bin:$PATH"
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+SEAT_PY="$SCRIPT_DIR/alias_seat.py"
+
+export_pin() {
+  local alias_name="$1"
+  local line key val
+  while IFS= read -r line; do
+    key="${line%%=*}"
+    val="${line#*=}"
+    [ -n "$key" ] || continue
+    export "$key=$val"
+  done < <("$PY" "$SEAT_PY" pin-env "$alias_name")
+}
+
+alias_for_profile() {
+  local profile="$1"
+  case "$profile" in
+    chief-of-staff) printf '%s\n' cos ;;
+    chief-of-staff-work) printf '%s\n' cosw ;;
+    personal-notes-steward) printf '%s\n' notes ;;
+    work-notes-steward|notes-steward-work) printf '%s\n' notesw ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
+
+attach_live_tui() {
+  local profile="$1" session="${2:-}"
+  local target
+  if [ -n "$session" ]; then
+    target="$("$PY" "$SEAT_PY" attach-target "$profile" "$session" 2>/dev/null || true)"
+  else
+    target="$("$PY" "$SEAT_PY" attach-target "$profile" 2>/dev/null || true)"
+  fi
+  [ -n "$target" ] || return 1
+  echo "profile=$profile action=attach-live-tui target=$target" >&2
+  if [ -n "${TMUX:-}" ]; then
+    exec tmux switch-client -t "$target"
+  fi
+  exec tmux attach-session -t "$target"
+}
+
+ensure_profile_sandbox() {
+  local profile="$1"
+  local work="${COSW_WORK_DEVBOX:-$HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox}"
+  local personal="${COS_PERSONAL_DEVBOX:-$HOME/src/hermes/sandboxes/personal-devbox}"
+  if [ -e "$work" ] && "$work" has "$profile"; then
+    "$work" ensure "$profile"
+    return 0
+  fi
+  if [ -e "$personal" ] && "$personal" has "$profile"; then
+    "$personal" ensure "$profile"
+    return 0
+  fi
+  die "no sandbox stack for profile: $profile (try: cosw-s ls or cos-s ls)"
+}
 
 [ -x "$PY" ] || die "Hermes venv python missing ($PY); run bin/hermes/install first"
 
@@ -100,19 +166,61 @@ case "$cmd" in
     HERMES_HOME="$home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt
     ;;
 
+  secrets-status)
+    "$PY" "$PY_BACKEND" secrets-status
+    ;;
+
+  secrets-refresh)
+    "$PY" "$PY_BACKEND" secrets-refresh
+    ;;
+
   up)
     [ "$#" -ge 1 ] || die "up needs a profile name"
     profile="$1"; shift
-    surface=""; platform=""; do_check=0; passthrough=()
+    surface=""; platform=""; do_check=0; model=""; provider=""; sandbox=""
+    here=0; force_tui=0; passthrough=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --surface) surface="${2:?}"; shift 2 ;;
         --platform) platform="${2:?}"; shift 2 ;;
+        --model) model="${2:?}"; shift 2 ;;
+        --provider) provider="${2:?}"; shift 2 ;;
+        --host|--host-tools|--no-sandbox) sandbox="host"; shift ;;
+        --sandbox|--docker) sandbox="sandbox"; shift ;;
         --check) do_check=1; shift ;;
+        --here) here=1; shift ;;
+        --force-tui) force_tui=1; shift ;;
         --) shift; passthrough=("$@"); break ;;
         *) die "unknown option: $1" ;;
       esac
     done
+    if [ "$sandbox" = "host" ]; then
+      export HERMES_AGENT_TERMINAL_BACKEND=local
+      export TERMINAL_ENV=local
+    elif [ "$sandbox" = "sandbox" ]; then
+      export HERMES_AGENT_TERMINAL_BACKEND=docker
+      export TERMINAL_ENV=docker
+      export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-true}"
+      ensure_profile_sandbox "$profile"
+    fi
+    if [ -n "$provider" ]; then
+      export HERMES_AGENT_LLM_PROVIDER="$provider"
+      export HERMES_INFERENCE_PROVIDER="$provider"
+      export HERMES_TUI_PROVIDER="$provider"
+    fi
+    if [ -n "$model" ]; then
+      export HERMES_AGENT_LLM_MODEL="$model"
+      export HERMES_INFERENCE_MODEL="$model"
+      export HERMES_MODEL="$model"
+    fi
+    # Cursor SDK on Mini rejects grok-4.6:fast. Strip the thinking suffix.
+    case "${HERMES_MODEL:-}" in
+      grok-4.6:fast|grok-4.6:*)
+        export HERMES_AGENT_LLM_MODEL=grok-4.6
+        export HERMES_INFERENCE_MODEL=grok-4.6
+        export HERMES_MODEL=grok-4.6
+        ;;
+    esac
 
     # Default surface from the profile if not overridden.
     [ -n "$surface" ] || surface="$("$PY" "$PY_BACKEND" resolve "$profile" | sed -n 's/.*"surface": *"\([^"]*\)".*/\1/p')"
@@ -129,21 +237,67 @@ case "$cmd" in
     if [ -n "$runtime_profile" ] && [ "$runtime_profile" != "default" ] && [ -d "$home/profiles/$runtime_profile" ]; then
       runtime_home="$home/profiles/$runtime_profile"
     fi
-    echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home"
+    alias_name="$(alias_for_profile "$profile")"
+    if [ -n "$alias_name" ]; then
+      "$PY" "$SEAT_PY" write-seat "$profile" "$alias_name" >/dev/null
+      export_pin "$alias_name"
+    fi
+    echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home alias=${alias_name:-none}"
 
     if [ "$do_check" -eq 1 ]; then
       HERMES_HOME="$runtime_home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt || die "endpoint health check failed; not launching"
     fi
 
     export HERMES_HOME="$runtime_home"
+    if [ "$surface" = "tui" ]; then
+      _held="$("$PY" "$SEAT_PY" lock-pid "$profile" 2>/dev/null || true)"
+      if [ -n "${_held:-}" ]; then
+        if [ "$here" -eq 1 ] || [ "$force_tui" -eq 1 ]; then
+          die "HERMES_HOME already has a live TUI (pid $_held). One pane per home — extra panes close the gateway pipe and leave synthesizing hung."
+        fi
+        attach_live_tui "$profile" "${HERMES_ALIAS_SESSION:-}" \
+          || die "live TUI holds $runtime_home (pid $_held) but no tmux pane was found. Close that process; do not start a second pane."
+      fi
+      if [ "$here" -eq 0 ] && [ -n "$alias_name" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+        session="${HERMES_ALIAS_SESSION:-$alias_name}"
+        if ! tmux has-session -t "$session" 2>/dev/null; then
+          build_cmd=("$0" up "$profile" --surface tui --here)
+          [ ${#passthrough[@]} -eq 0 ] || build_cmd+=(-- "${passthrough[@]}")
+          tmux new-session -d -s "$session" -n 0 "${build_cmd[@]}"
+        fi
+        exec tmux attach-session -t "$session"
+      fi
+      printf '%s\n' "$$" > "$runtime_home/.herm-tui.lock"
+    fi
+    # Cursor SDK reads process env, not only HERMES_HOME/.env. Export without echoing.
+    if [ -f "$runtime_home/.env" ]; then
+      _cursor_key="$(sed -n 's/^CURSOR_API_KEY=//p' "$runtime_home/.env" | tail -n 1 || true)"
+      if [ -n "${_cursor_key:-}" ]; then
+        export CURSOR_API_KEY="$_cursor_key"
+        launchctl setenv CURSOR_API_KEY "$_cursor_key" 2>/dev/null || true
+      fi
+      unset _cursor_key
+    fi
+    resolve_herm() {
+      if [ -x "$HOME/src/herm/src/index.tsx" ] && [ -x "$HOME/.local/bin/herm" ]; then
+        printf '%s\n' "$HOME/.local/bin/herm"
+        return 0
+      fi
+      if [ -x "$HOME/src/herm/src/index.tsx" ]; then
+        printf '%s\n' "$HOME/src/herm/src/index.tsx"
+        return 0
+      fi
+      command -v herm
+    }
+
     case "$surface" in
       cli)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"
         exec hermes chat "${passthrough[@]+"${passthrough[@]}"}"
         ;;
       tui)
-        command -v herm >/dev/null 2>&1 || die "herm (TUI) not installed; run bin/hermes/install-tui"
-        exec herm "${passthrough[@]+"${passthrough[@]}"}"
+        herm_bin="$(resolve_herm)" || die "herm (TUI) not installed; run bin/hermes/install-tui"
+        exec "$herm_bin" "${passthrough[@]+"${passthrough[@]}"}"
         ;;
       gateway)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"

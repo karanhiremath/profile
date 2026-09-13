@@ -12,7 +12,7 @@ Commands:
   project_sessions.py list
   project_sessions.py names
   project_sessions.py resolve <project>
-  project_sessions.py pm <project> [--dry-run]
+  project_sessions.py pm <project> [--dry-run] [--surface cli|tui]
   project_sessions.py pl <project> [--dry-run]
 """
 
@@ -135,14 +135,17 @@ def agents_bin() -> str:
     return str(SCRIPT_DIR / "agents")
 
 
-def pm_launch_command(project: dict[str, Any]) -> str:
+def pm_launch_command(project: dict[str, Any], surface: str = "tui") -> str:
     pm = project.get("pm") or {}
-    if pm.get("command"):
+    if pm.get("command") and surface == "tui":
         return str(pm["command"])
     profile = pm.get("profile") or project.get("pm_profile")
     if not profile:
         raise SystemExit(f"ERROR: project {project.get('name')} has no pm.profile or pm.command")
-    return " ".join([shlex.quote(agents_bin()), "up", shlex.quote(str(profile)), "--surface", "tui"])
+    cmd = [agents_bin(), "up", str(profile), "--surface", surface]
+    if surface == "cli":
+        cmd.extend(["--", "--continue", "--cli"])
+    return " ".join(shlex.quote(part) for part in cmd)
 
 
 def tmux_exists(session: str) -> bool:
@@ -194,12 +197,33 @@ def attach_or_switch(session: str, dry_run: bool) -> int:
     return subprocess.call(cmd)
 
 
-def cmd_pm(project_name: str, dry_run: bool) -> int:
+def live_tui_target(profile: str, session: str) -> str | None:
+    try:
+        import alias_seat
+    except ImportError:
+        return None
+    return alias_seat.attach_target(profile, session)
+
+
+def cmd_pm(project_name: str, dry_run: bool, surface: str = "tui") -> int:
     project = find_project(project_name)
     session = session_name(project, "pm")
     created = False
+    pm = project.get("pm") or {}
+    profile = str(pm.get("profile") or project.get("pm_profile") or "")
+    if surface == "tui" and profile:
+        target = live_tui_target(profile, session)
+        if target:
+            emit_project_event(
+                project,
+                "pm_attached",
+                f"pm_attached manifest event: live TUI holds {profile}; attaching {target}.",
+                session,
+                dry_run,
+            )
+            return attach_or_switch(target, dry_run)
     if not tmux_exists(session):
-        launch = pm_launch_command(project)
+        launch = pm_launch_command(project, surface=surface)
         cwd = workdir(project)
         new_cmd = ["tmux", "new-session", "-d", "-s", session, "-c", str(cwd), launch]
         if dry_run:
@@ -248,6 +272,8 @@ def main(argv: list[str]) -> int:
         p = sub.add_parser(name)
         p.add_argument("project")
         p.add_argument("--dry-run", action="store_true")
+        if name == "pm":
+            p.add_argument("--surface", choices=("cli", "tui"), default="tui")
     args = parser.parse_args(argv)
 
     if args.cmd == "list":
@@ -261,7 +287,7 @@ def main(argv: list[str]) -> int:
         print(json.dumps(find_project(args.project), indent=2, sort_keys=True))
         return 0
     if args.cmd == "pm":
-        return cmd_pm(args.project, args.dry_run)
+        return cmd_pm(args.project, args.dry_run, surface=args.surface)
     if args.cmd == "pl":
         return cmd_pl(args.project, args.dry_run)
     raise SystemExit(f"ERROR: unknown command {args.cmd}")
