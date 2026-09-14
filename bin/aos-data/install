@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Install aos-data and argv0 aliases notes + kh.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/aos-data/install [--help] [--rebuild]
+
+Build the ao0 vault toolkit and install:
+
+  ~/.local/bin/aos-data
+  ~/.local/bin/notes      -> aos-data
+  ~/.local/bin/kh         -> aos-data
+
+Sandbox: set AGENTIC_PREFIX to install under <prefix>/bin.
+EOF
+}
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+REBUILD=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --rebuild) REBUILD=1; shift ;;
+    *)
+      echo "aos-data/install: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+PREFIX="${AGENTIC_PREFIX:-$HOME/.local}"
+BIN="$PREFIX/bin"
+mkdir -p "$BIN"
+
+cd "$SCRIPT_DIR"
+if [ "$REBUILD" -eq 1 ] || [ ! -x "$BIN/aos-data" ]; then
+  cargo build --release
+  cp target/release/aos-data "$BIN/aos-data"
+fi
+ln -fns "$BIN/aos-data" "$BIN/notes"
+ln -fns "$BIN/aos-data" "$BIN/kh"
+
+SKILLS_SRC="$PROFILE_DIR/skills/pi/aos-data"
+if [ -d "$SKILLS_SRC" ]; then
+  mkdir -p "$HOME/.pi/agent/skills"
+  ln -fns "$SKILLS_SRC" "$HOME/.pi/agent/skills/aos-data"
+fi

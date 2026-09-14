@@ -16,6 +16,7 @@ Tool-only repo. No Cartesia project context, customer data, or work notes.
 ```bash
 just cursor-cli    # install/upgrade cursor-agent
 just cursor-setup  # link agents/skills + validate models
+just aos-data      # ao0 vault toolkit → ~/.local/bin/{aos-data,notes,kh}
 ```
 
 ### Model defaults (orchestrator samples)

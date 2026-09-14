@@ -240,6 +240,13 @@ nvim:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/nvim/install
 
+# Build and install aos-data (ao0 vault toolkit; argv0 notes|kh)
+aos-data *FLAGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    ./bin/aos-data/install {{FLAGS}}
+
 # Build and install pc (pi-code session manager)
 pc:
     #!/usr/bin/env bash
