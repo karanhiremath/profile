@@ -45,6 +45,10 @@ the same home closes the gateway pipe.
 - `cos` and `cos-m` share `chief-of-staff` / tmux `cos`. Mobile attaches the
   live desktop pane when a lock is held; it does not spawn `cos:m` as a second
   TUI.
+- `cos --lane NAME` / `cosw --lane NAME` mint a sibling seat
+  (`chief-of-staff-NAME` / `chief-of-staff-work-NAME`, tmux `cos-NAME` /
+  `cosw-NAME`) so parallel TUIs do not share a home or lock. Omitting
+  `--lane` keeps the default single-pane seat.
 - `cosw` is a different home and session. Personal hosts must not create it.
 - `~/.hermes` (`factory` / `project-manager`) is never a Cos inbox or seat.
 - Launchers export `HERMES_ALIAS_PIN=1` and write `alias.seat.json` so herm-tui
@@ -53,6 +57,8 @@ the same home closes the gateway pipe.
 
 ```bash
 python3 bin/hermes/test_alias_seat.py
+python3 bin/hermes/test_ensure_lane.py
+bin/hermes/test_lane_isolation.sh
 bin/hermes/test_herm_tui_m.sh
 bin/hermes/tests/alias-isolation/run.sh   # podman sandbox; required before live
 ```
@@ -78,10 +84,13 @@ These commands are generic profile-level wrappers. They do not embed work/privat
 
 ```bash
 cos                         # agents up chief-of-staff
+cos --lane o1               # isolated sibling seat; parallel with default cos
+cos --lane o1 --print-plan  # profile/session/home only
 cos sandbox status          # personal CoS image / family / container
 cos sandbox families        # distrohop catalog
 cos sandbox rebuild         # personal default: arch-toolkit
 cosw                        # agents up chief-of-staff-work (host-native default)
+cosw --lane o1              # isolated work sibling seat
 cosw --host-tools           # Hermes TUI on the host; no container
 cosw sandbox status         # image / family / container / materialized backend
 cosw sandbox up             # start long-lived attachable CoS-W container

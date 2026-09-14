@@ -459,11 +459,21 @@ def ensure_registry() -> None:
         INDEX.write_text(text)
 
 
+def _part_is_work_profile(part: str) -> bool:
+    return part == "chief-of-staff-work" or part.startswith("chief-of-staff-work-")
+
+
+def _part_is_cos_profile(part: str) -> bool:
+    return part == "chief-of-staff" or (
+        part.startswith("chief-of-staff-") and not _part_is_work_profile(part)
+    )
+
+
 def is_work_home(home: Path) -> bool:
     parts = {part.lower() for part in home.parts}
     name = home.name.lower()
     return (
-        "chief-of-staff-work" in parts
+        any(_part_is_work_profile(part) for part in parts)
         or name == "hwork"
         or name == "cosw"
         or name.startswith("work-")
@@ -490,7 +500,7 @@ def is_cos_home(home: Path) -> bool:
         return False
     parts = {part.lower() for part in home.parts}
     name = home.name.lower()
-    return "chief-of-staff" in parts or name in {"hpersonal", "cos"}
+    return any(_part_is_cos_profile(part) for part in parts) or name in {"hpersonal", "cos"}
 
 
 def profile_class(home: Path) -> str:
