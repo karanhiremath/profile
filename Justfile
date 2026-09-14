@@ -268,6 +268,22 @@ atop:
     chmod 755 "$HOME/.local/bin/atop"
     echo "installed $HOME/.local/bin/atop"
 
+# Portable aos binary (buf + GitHub self-update). From-source until aos-v* ships.
+aos *FLAGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/aos-buf/install --from-source {{FLAGS}}
+
+# Refresh aos from GitHub Releases (falls back to source if no pin/tag)
+aos-update *FLAGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/aos-buf/install --update {{FLAGS}}
+
 # Build and install pc (pi-code session manager)
 pc:
     #!/usr/bin/env bash

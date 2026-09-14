@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.13.7/.schema/devbox.schema.json",
+  "packages": ["rustc@1.85", "cargo@1.85", "just@latest", "gh@latest"],
+  "shell": {
+    "init_hook": [
+      "echo aos portable build box — rustc/cargo/just/gh"
+    ],
+    "scripts": {
+      "build": "cargo build --release --bin aos",
+      "test": "cargo test",
+      "install": "./install --from-source"
+    }
+  }
+}

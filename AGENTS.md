@@ -16,6 +16,8 @@ Tool-only repo. No Cartesia project context, customer data, or work notes.
 ```bash
 just cursor-cli    # install/upgrade cursor-agent
 just cursor-setup  # link agents/skills + validate models
+just aos           # portable aos binary (from-source)
+just aos-update    # GitHub self-update when aos-v* exists
 ```
 
 ### Model defaults (orchestrator samples)

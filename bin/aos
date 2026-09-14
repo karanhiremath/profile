@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# aos — platform surface. Buffer ops go through aos-buf.
+# Usage: aos buf | aos apply | aos vi | aos tty
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+resolve_aos_buf() {
+  if [[ -n "${AOS_BUF:-}" && -x "${AOS_BUF}" ]]; then
+    printf '%s\n' "$AOS_BUF"
+    return 0
+  fi
+  local cand
+  for cand in \
+    "$SCRIPT_DIR/aos-buf/target/debug/aos" \
+    "$SCRIPT_DIR/aos-buf/target/debug/aos-buf" \
+    "$SCRIPT_DIR/aos-buf/target/release/aos" \
+    "$SCRIPT_DIR/aos-buf/target/release/aos-buf" \
+    "${HOME}/.local/bin/aos" \
+    "${HOME}/.local/bin/aos-buf"
+  do
+    if [[ -x "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  command -v aos-buf
+}
+
+usage() {
+  cat <<'EOF'
+Usage: aos update | aos version | aos buf | aos apply | aos vi | aos tty
+
+  aos update [--dry-run] [--from-source] [--tag aos-vX]
+  aos version
+  aos buf catalog|list|get|set|apply|jobs|job   buffer primitives (aos-buf)
+  aos apply <id> --file PATH                    queued write; aos.apply.v1
+  aos vi ...                                    facade → atop vi
+  aos tty ...                                   PTY eval
+EOF
+}
+
+BUF="$(resolve_aos_buf || true)"
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+  update|--update)
+    shift
+    if [[ -n "$BUF" ]]; then
+      exec "$BUF" update "$@"
+    fi
+    exec "$SCRIPT_DIR/aos-buf/install" --update "$@"
+    ;;
+  version|--version)
+    if [[ -n "$BUF" ]]; then
+      exec "$BUF" version
+    fi
+    printf 'aos (wrapper) no binary; run just aos\n' >&2
+    exit 1
+    ;;
+  buf)
+    shift
+    [[ -n "$BUF" ]] || { printf 'aos: missing aos-buf (just aos-buf)\n' >&2; exit 1; }
+    exec "$BUF" "$@"
+    ;;
+  apply)
+    shift
+    [[ -n "$BUF" ]] || { printf 'aos: missing aos-buf (just aos-buf)\n' >&2; exit 1; }
+    exec "$BUF" apply "$@"
+    ;;
+  vi)
+    shift
+    exec "$SCRIPT_DIR/a-top" vi "$@"
+    ;;
+  tty|eval)
+    shift
+    exec "$SCRIPT_DIR/a-top" tty "$@"
+    ;;
+  "")
+    usage >&2
+    exit 2
+    ;;
+  *)
+    printf 'aos: unknown command: %s\n' "$1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

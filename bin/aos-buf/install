@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Install or self-update the portable aos binary.
+# GitHub release (checksummed) when a pin/tag exists; otherwise cargo --from-source.
+# Never curl|sh.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/aos-buf/install [--help] [--from-source] [--update] [--dry-run] [--tag aos-vX]
+
+Install ~/.local/bin/aos (+ aos-buf symlink) from:
+  1. GitHub release karanhiremath/profile tag aos-v* (SHA256SUMS + optional pin)
+  2. cargo --from-source when no pin/release exists (mise rust / host rustc)
+
+Sandbox: AGENTIC_PREFIX/<bin>/aos
+Pin file: bin/aos-buf/pin.env  (copied to ~/.config/aos/pin.env)
+EOF
+}
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+export PROFILE_DIR
+
+FROM_SOURCE=0
+DRY_RUN=0
+TAG=""
+DEST=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --from-source) FROM_SOURCE=1; shift ;;
+    --update) shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --tag) TAG="${2:?missing tag}"; shift 2 ;;
+    --dest) DEST="${2:?missing dest}"; shift 2 ;;
+    *)
+      echo "aos-buf/install: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -f "$SCRIPT_DIR/pin.env" ]; then
+  # shellcheck disable=SC1091
+  set -a
+  # shellcheck source=pin.env
+  . "$SCRIPT_DIR/pin.env"
+  set +a
+fi
+mkdir -p "${HOME}/.config/aos"
+if [ -f "$SCRIPT_DIR/pin.env" ]; then
+  cp "$SCRIPT_DIR/pin.env" "${HOME}/.config/aos/pin.env"
+fi
+
+if [ -n "${AGENTIC_PREFIX:-}" ]; then
+  DEST="${DEST:-$AGENTIC_PREFIX/bin/aos}"
+else
+  DEST="${DEST:-$HOME/.local/bin/aos}"
+fi
+
+args=(update)
+[ "$DRY_RUN" -eq 1 ] && args+=(--dry-run)
+[ "$FROM_SOURCE" -eq 1 ] && args+=(--from-source)
+[ -n "$TAG" ] && args+=(--tag "$TAG")
+args+=(--dest "$DEST")
+
+build_local() {
+  cargo build --quiet --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin aos
+  printf '%s\n' "$SCRIPT_DIR/target/debug/aos"
+}
+
+BUF=""
+if [ -x "$SCRIPT_DIR/target/debug/aos" ]; then
+  BUF="$SCRIPT_DIR/target/debug/aos"
+elif [ -x "$SCRIPT_DIR/target/release/aos" ]; then
+  BUF="$SCRIPT_DIR/target/release/aos"
+elif [ -x "$HOME/.local/bin/aos-buf" ]; then
+  BUF="$HOME/.local/bin/aos-buf"
+fi
+if [ -z "$BUF" ]; then
+  BUF="$(build_local)"
+fi
+
+exec "$BUF" "${args[@]}"
