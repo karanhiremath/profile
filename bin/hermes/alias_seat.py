@@ -5,13 +5,18 @@ Each fleet alias owns exactly one isolated HERMES_HOME, one tmux session,
 and at most one live TUI. A second TUI on the same home closes the gateway
 pipe and leaves synthesizing hung. ~/.hermes is never a Cos/PM/notes seat.
 
+`cos --lane NAME` / `cosw --lane NAME` mint a sibling seat
+(`chief-of-staff-NAME`, tmux `cos-NAME`) so parallel TUIs do not share a home.
+
 Usage:
     alias_seat.py resolve <alias>
+    alias_seat.py resolve-profile <profile>
+    alias_seat.py lane-profile <alias-or-profile> <lane>
     alias_seat.py family <alias-or-profile>
     alias_seat.py lock-pid <profile>
     alias_seat.py attach-target <profile> [session]
     alias_seat.py write-seat <profile> <alias>
-    alias_seat.py pin-env <alias>
+    alias_seat.py pin-env <alias-or-profile>
     alias_seat.py homes <profile>
 """
 
@@ -19,10 +24,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+_INSTANCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$")
 
 SEAT_FILENAME = "alias.seat.json"
 LOCK_FILENAME = ".herm-tui.lock"
@@ -199,18 +207,78 @@ def seat_by_profile(profile: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def resolve_alias(alias: str) -> Dict[str, Any]:
-    seat = seat_by_alias(alias)
+def parse_instance_profile(profile: str) -> Optional[Tuple[Dict[str, Any], str]]:
+    """Split chief-of-staff-o1 / chief-of-staff-work-o1 into (base seat, instance)."""
+    name = (profile or "").strip()
+    if not name:
+        return None
+    seats = sorted(_SEATS, key=lambda s: len(str(s["profile"])), reverse=True)
+    for seat in seats:
+        candidates = (seat["profile"],) + tuple(seat.get("alt_profiles") or ())
+        for base in candidates:
+            prefix = f"{base}-"
+            if name.startswith(prefix):
+                instance = name[len(prefix):]
+                if instance:
+                    found = dict(seat)
+                    found["profile"] = base
+                    return found, instance
+    return None
+
+
+def validate_instance(base_profile: str, instance: str) -> str:
+    instance = (instance or "").strip()
+    if not _INSTANCE_RE.fullmatch(instance):
+        raise SystemExit(
+            "ERROR: --lane needs a name like o1 or research "
+            f"(got {instance!r})"
+        )
+    profile = f"{base_profile}-{instance}"
+    owned = seat_by_profile(profile)
+    if owned is not None:
+        raise SystemExit(
+            f"ERROR: --lane {instance} collides with {owned['family']} "
+            f"profile {profile}"
+        )
+    return profile
+
+
+def instance_profile(base: str, instance: str) -> str:
+    seat = seat_by_profile(base) or seat_by_alias(base)
     if seat is None:
-        raise SystemExit(f"ERROR: unknown isolation alias: {alias}")
+        raise SystemExit(f"ERROR: unknown lane family: {base}")
+    return validate_instance(str(seat["profile"]), instance)
+
+
+def seat_for_profile(profile: str) -> Optional[Dict[str, Any]]:
+    name = (profile or "").strip()
+    exact = seat_by_profile(name)
+    if exact is not None:
+        out = dict(exact)
+        out["instance"] = ""
+        return out
+    parsed = parse_instance_profile(name)
+    if parsed is None:
+        return None
+    base, instance = parsed
+    validate_instance(str(base["profile"]), instance)
+    out = dict(base)
+    out["profile"] = f"{base['profile']}-{instance}"
+    out["session"] = f"{base['session']}-{instance}"
+    out["instance"] = instance
+    return out
+
+
+def _resolve_seat(seat: Dict[str, Any], alias: str = "") -> Dict[str, Any]:
     profile = str(seat["profile"])
     root = isolated_root(profile)
     runtime = runtime_home(profile, root)
-    mobile = alias.endswith("-m") or alias.endswith("_m")
-    window = seat["mobile_window"] if mobile else seat["desktop_window"]
     held = lock_pid(profile)
+    aliases = tuple(seat.get("aliases") or ())
+    mobile = bool(alias) and (alias.endswith("-m") or alias.endswith("_m"))
+    window = seat["mobile_window"] if mobile else seat["desktop_window"]
     return {
-        "alias": alias,
+        "alias": alias or (aliases[0] if aliases else seat["family"]),
         "family": seat["family"],
         "profile": profile,
         "session": seat["session"],
@@ -218,6 +286,7 @@ def resolve_alias(alias: str) -> Dict[str, Any]:
         "desktop_window": seat["desktop_window"],
         "mobile_window": seat["mobile_window"],
         "lane": seat["lane"],
+        "instance": seat.get("instance") or "",
         "root": str(root),
         "runtime_home": str(runtime),
         "fallback_home": str(fallback_hermes_home()),
@@ -229,9 +298,28 @@ def resolve_alias(alias: str) -> Dict[str, Any]:
     }
 
 
-def pin_env(alias: str) -> Dict[str, str]:
-    info = resolve_alias(alias)
-    return {
+def resolve_profile(profile: str) -> Dict[str, Any]:
+    seat = seat_for_profile(profile)
+    if seat is None:
+        raise SystemExit(f"ERROR: unknown isolation profile: {profile}")
+    return _resolve_seat(seat)
+
+
+def resolve_alias(alias: str) -> Dict[str, Any]:
+    seat = seat_by_alias(alias)
+    if seat is None:
+        raise SystemExit(f"ERROR: unknown isolation alias: {alias}")
+    seat = dict(seat)
+    seat["instance"] = ""
+    return _resolve_seat(seat, alias)
+
+
+def pin_env(target: str) -> Dict[str, str]:
+    if seat_by_alias(target):
+        info = resolve_alias(target)
+    else:
+        info = resolve_profile(target)
+    env = {
         "HERMES_HOME": info["runtime_home"],
         "HERMES_PROFILE": info["profile"],
         "HERMES_ALIAS": info["alias"],
@@ -239,9 +327,30 @@ def pin_env(alias: str) -> Dict[str, str]:
         "HERMES_ALIAS_PIN": "1",
         "HERMES_ALIAS_SESSION": info["session"],
     }
+    if info.get("instance"):
+        env["HERMES_LANE"] = str(info["instance"])
+    return env
 
 
 def seat_payload(profile: str, alias: str) -> Dict[str, Any]:
+    mapped = seat_for_profile(profile)
+    if mapped is not None and mapped.get("instance"):
+        family_alias = seat_by_alias(alias)
+        if family_alias is not None and family_alias["family"] != mapped["family"]:
+            raise SystemExit(
+                f"ERROR: alias {alias} does not own profile {profile}"
+            )
+        return {
+            "family": mapped["family"],
+            "aliases": list(mapped["aliases"]),
+            "profile": profile,
+            "session": mapped["session"],
+            "lane": mapped["lane"],
+            "instance": mapped["instance"],
+            "pinned": True,
+            "runtime_home": str(runtime_home(profile)),
+            "root": str(isolated_root(profile)),
+        }
     info = resolve_alias(alias)
     if info["profile"] != profile and profile not in OWNED_PROFILES:
         raise SystemExit(f"ERROR: alias {alias} does not own profile {profile}")
@@ -390,7 +499,7 @@ def attach_target(profile: str, session: Optional[str] = None) -> Optional[str]:
     """Return the tmux target that already holds this home's TUI."""
     held = lock_pid(profile)
     panes = list_tmux_panes()
-    preferred = session or (seat_by_profile(profile) or {}).get("session")
+    preferred = session or (seat_for_profile(profile) or {}).get("session")
 
     if held is not None:
         matches = []
@@ -419,7 +528,7 @@ def homes_conflict(profile: str) -> List[str]:
     """Detect another alias family sharing this isolated home."""
     root = isolated_root(profile)
     seat = read_seat(root)
-    expected = seat_by_profile(profile)
+    expected = seat_for_profile(profile)
     if not seat or not expected:
         return []
     if seat.get("family") and seat.get("family") != expected.get("family"):
@@ -444,10 +553,19 @@ def main(argv: List[str]) -> int:
         if not rest:
             raise SystemExit("ERROR: resolve needs an alias")
         return emit(resolve_alias(rest[0]))
+    if cmd == "resolve-profile":
+        if not rest:
+            raise SystemExit("ERROR: resolve-profile needs a profile")
+        return emit(resolve_profile(rest[0]))
+    if cmd == "lane-profile":
+        if len(rest) < 2:
+            raise SystemExit("ERROR: lane-profile needs <alias-or-profile> <lane>")
+        print(instance_profile(rest[0], rest[1]))
+        return 0
     if cmd == "family":
         if not rest:
             raise SystemExit("ERROR: family needs an alias or profile")
-        seat = seat_by_alias(rest[0]) or seat_by_profile(rest[0])
+        seat = seat_by_alias(rest[0]) or seat_for_profile(rest[0])
         if seat is None:
             raise SystemExit(f"ERROR: unknown seat: {rest[0]}")
         return emit(seat)
@@ -473,7 +591,7 @@ def main(argv: List[str]) -> int:
         return 0
     if cmd == "pin-env":
         if not rest:
-            raise SystemExit("ERROR: pin-env needs an alias")
+            raise SystemExit("ERROR: pin-env needs an alias or profile")
         for key, value in pin_env(rest[0]).items():
             print(f"{key}={value}")
         return 0

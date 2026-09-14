@@ -8,4 +8,86 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-exec "$SCRIPT_DIR/agents" up chief-of-staff "$@"
+
+usage() {
+  cat <<'EOF'
+Launch the personal Chief of Staff (chief-of-staff) herm-tui.
+
+Usage:
+  cos                         default seat (one live TUI on this home)
+  cos --lane NAME             isolated sibling seat chief-of-staff-NAME
+  cos --lane NAME --print-plan
+                              show profile/session/home and exit
+
+A second TUI on the same Hermes home closes the gateway pipe. Parallel
+cos sessions need --lane so each pane owns its own home and lock.
+EOF
+}
+
+log() { printf 'cos: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+resolve_py() {
+  local toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+  local py="${HERMES_PYTHON:-$toolchain/venv/bin/python}"
+  if [ -x "$py" ]; then
+    printf '%s\n' "$py"
+    return 0
+  fi
+  command -v python3
+}
+
+COS_BASE=chief-of-staff
+COS_PROFILE="$COS_BASE"
+COS_LANE=""
+COS_PRINT_PLAN=0
+COS_ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    --lane)
+      [ -n "${2:-}" ] || die "--lane needs a name (e.g. --lane o1)"
+      COS_LANE="$2"
+      shift 2
+      ;;
+    --lane=*)
+      COS_LANE="${1#--lane=}"
+      [ -n "$COS_LANE" ] || die "--lane needs a name (e.g. --lane o1)"
+      shift
+      ;;
+    --print-plan)
+      COS_PRINT_PLAN=1
+      shift
+      ;;
+    --)
+      shift
+      COS_ARGS+=("--" "$@")
+      break
+      ;;
+    *)
+      COS_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+PY="$(resolve_py)" || die "python3 not found"
+SEAT_PY="$SCRIPT_DIR/alias_seat.py"
+if [ -n "$COS_LANE" ]; then
+  COS_PROFILE="$("$PY" "$SEAT_PY" lane-profile "$COS_BASE" "$COS_LANE")"
+fi
+
+if [ "$COS_PRINT_PLAN" = "1" ]; then
+  "$PY" "$SEAT_PY" resolve-profile "$COS_PROFILE"
+  exit 0
+fi
+
+if [ -n "$COS_LANE" ]; then
+  COS_PROFILE="$("$PY" "$SCRIPT_DIR/hermes_agents.py" ensure-lane "$COS_BASE" "$COS_LANE")"
+  log "lane $COS_LANE -> $COS_PROFILE"
+fi
+
+exec "$SCRIPT_DIR/agents" up "$COS_PROFILE" "${COS_ARGS[@]+"${COS_ARGS[@]}"}"

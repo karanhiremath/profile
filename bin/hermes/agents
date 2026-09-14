@@ -82,8 +82,8 @@ export_pin() {
 alias_for_profile() {
   local profile="$1"
   case "$profile" in
-    chief-of-staff) printf '%s\n' cos ;;
-    chief-of-staff-work) printf '%s\n' cosw ;;
+    chief-of-staff-work|chief-of-staff-work-*) printf '%s\n' cosw ;;
+    chief-of-staff|chief-of-staff-*) printf '%s\n' cos ;;
     personal-notes-steward) printf '%s\n' notes ;;
     work-notes-steward|notes-steward-work) printf '%s\n' notesw ;;
     *) printf '%s\n' "" ;;
@@ -240,7 +240,7 @@ case "$cmd" in
     alias_name="$(alias_for_profile "$profile")"
     if [ -n "$alias_name" ]; then
       "$PY" "$SEAT_PY" write-seat "$profile" "$alias_name" >/dev/null
-      export_pin "$alias_name"
+      export_pin "$profile"
     fi
     echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home alias=${alias_name:-none}"
 

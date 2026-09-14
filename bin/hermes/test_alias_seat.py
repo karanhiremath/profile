@@ -174,6 +174,58 @@ class AliasSeatTests(unittest.TestCase):
             with mock.patch.object(seat, "pid_in_tree", side_effect=lambda root, wanted: root == os.getpid()):
                 self.assertEqual(seat.attach_target("chief-of-staff"), "cos:0.0")
 
+    def test_lane_profiles_do_not_share_homes_or_sessions(self) -> None:
+        main = seat.resolve_profile("chief-of-staff")
+        o1 = seat.resolve_profile("chief-of-staff-o1")
+        o2 = seat.resolve_profile("chief-of-staff-o2")
+        work = seat.resolve_profile("chief-of-staff-work-o1")
+        self.assertEqual(o1["instance"], "o1")
+        self.assertEqual(o1["session"], "cos-o1")
+        self.assertEqual(o2["session"], "cos-o2")
+        self.assertEqual(work["session"], "cosw-o1")
+        self.assertEqual(work["family"], "cosw")
+        self.assertNotEqual(main["root"], o1["root"])
+        self.assertNotEqual(o1["root"], o2["root"])
+        self.assertNotEqual(o1["root"], work["root"])
+        self.assertTrue(o1["root"].endswith("hermes-agents/chief-of-staff-o1"))
+        self.assertEqual(seat.instance_profile("cos", "o1"), "chief-of-staff-o1")
+        self.assertEqual(seat.instance_profile("cosw", "o1"), "chief-of-staff-work-o1")
+
+    def test_work_prefix_wins_over_personal_prefix(self) -> None:
+        parsed = seat.parse_instance_profile("chief-of-staff-work-o1")
+        self.assertIsNotNone(parsed)
+        base, instance = parsed
+        self.assertEqual(base["family"], "cosw")
+        self.assertEqual(instance, "o1")
+
+    def test_lane_work_collision_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            seat.instance_profile("chief-of-staff", "work")
+        with self.assertRaises(SystemExit):
+            seat.instance_profile("cos", "../x")
+
+    def test_write_seat_lane_stays_on_lane_home(self) -> None:
+        path = seat.write_seat("chief-of-staff-o1", "cos")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["profile"], "chief-of-staff-o1")
+        self.assertEqual(data["session"], "cos-o1")
+        self.assertEqual(data["instance"], "o1")
+        self.assertTrue(str(path).endswith("hermes-agents/chief-of-staff-o1/alias.seat.json"))
+        main_root = seat.isolated_root("chief-of-staff")
+        self.assertFalse((main_root / seat.SEAT_FILENAME).exists())
+
+    def test_pin_env_profile_uses_lane_home(self) -> None:
+        env = seat.pin_env("chief-of-staff-o1")
+        self.assertEqual(env["HERMES_PROFILE"], "chief-of-staff-o1")
+        self.assertEqual(env["HERMES_ALIAS_SESSION"], "cos-o1")
+        self.assertEqual(env["HERMES_LANE"], "o1")
+        self.assertTrue(
+            env["HERMES_HOME"].endswith("chief-of-staff-o1")
+            or "profiles/chief-of-staff-o1" in env["HERMES_HOME"]
+        )
+        main = seat.pin_env("cos")
+        self.assertNotEqual(env["HERMES_HOME"], main["HERMES_HOME"])
+
 
 if __name__ == "__main__":
     unittest.main()

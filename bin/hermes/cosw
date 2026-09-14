@@ -13,6 +13,36 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 log() { printf 'cosw: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+usage() {
+  cat <<'EOF'
+Launch the work Chief of Staff (chief-of-staff-work) herm-tui.
+
+Usage:
+  cosw                         default seat (one live TUI on this home)
+  cosw --lane NAME             isolated sibling seat chief-of-staff-work-NAME
+  cosw --lane NAME --print-plan
+                               show profile/session/home and exit
+
+A second TUI on the same Hermes home closes the gateway pipe. Parallel
+cosw sessions need --lane so each pane owns its own home and lock.
+EOF
+}
+
+resolve_py() {
+  local toolchain="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+  local py="${HERMES_PYTHON:-$toolchain/venv/bin/python}"
+  if [ -x "$py" ]; then
+    printf '%s\n' "$py"
+    return 0
+  fi
+  command -v python3
+}
+
+COSW_BASE=chief-of-staff-work
+COSW_PROFILE="${COSW_PROFILE:-$COSW_BASE}"
+COSW_LANE=""
+COSW_PRINT_PLAN=0
+
 resolve_link() {
   local target="$1" dir next
   while [ -L "$target" ]; do
@@ -143,7 +173,7 @@ ensure_podman() {
   export TERMINAL_DOCKER_IMAGE="${TERMINAL_DOCKER_IMAGE:-$image}"
 
   local observer_dir volumes
-  observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/host-observer}"
+  observer_dir="${COSW_HOST_OBSERVER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/${COSW_PROFILE}/host-observer}"
   mkdir -p "$observer_dir"
   if [ "${COSW_HOST_OBSERVER:-1}" = "1" ] && [ -x "$SCRIPT_DIR/cosw-host-observer" ]; then
     "$SCRIPT_DIR/cosw-host-observer" start --state-dir "$observer_dir" >/dev/null || \
@@ -175,7 +205,7 @@ ensure_podman() {
     die "sandbox image missing: $image (run: ${HERMES_PRIVATE_DIR:-$HOME/src/hermes}/scripts/build-sandbox-image.sh python-node-fedora)"
 
   local home name smoke volume_args=() vol
-  home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work"
+  home="${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents/${COSW_PROFILE}/profiles/${COSW_PROFILE}"
   mkdir -p "$home/sandboxes/docker/default/home" "$home/sandboxes/docker/default/workspace" \
     "$home/skills" "$home/image_cache" "$home/audio_cache"
   for vol in "${volumes[@]}"; do
@@ -219,8 +249,61 @@ ensure_podman() {
         fi
         ;;
     esac
-  done < <("$podman" ps -a --filter label=hermes-profile=chief-of-staff-work --format '{{.ID}}' 2>/dev/null || true)
+  done < <("$podman" ps -a --filter "label=hermes-profile=${COSW_PROFILE}" --format '{{.ID}}' 2>/dev/null || true)
 }
+
+FILTERED_ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    --lane)
+      [ -n "${2:-}" ] || die "--lane needs a name (e.g. --lane o1)"
+      COSW_LANE="$2"
+      shift 2
+      ;;
+    --lane=*)
+      COSW_LANE="${1#--lane=}"
+      [ -n "$COSW_LANE" ] || die "--lane needs a name (e.g. --lane o1)"
+      shift
+      ;;
+    --print-plan)
+      COSW_PRINT_PLAN=1
+      shift
+      ;;
+    --)
+      FILTERED_ARGS+=("--" "$@")
+      break
+      ;;
+    *)
+      FILTERED_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${FILTERED_ARGS[@]+"${FILTERED_ARGS[@]}"}"
+
+PY="$(resolve_py)" || die "python3 not found"
+SEAT_PY="$SCRIPT_DIR/alias_seat.py"
+if [ -n "$COSW_LANE" ]; then
+  COSW_PROFILE="$("$PY" "$SEAT_PY" lane-profile "$COSW_BASE" "$COSW_LANE")"
+fi
+
+if [ "$COSW_PRINT_PLAN" = "1" ]; then
+  "$PY" "$SEAT_PY" resolve-profile "$COSW_PROFILE"
+  exit 0
+fi
+
+if [ -n "$COSW_LANE" ]; then
+  if [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
+    ensure_toolchain
+  fi
+  PY="$(resolve_py)" || die "python3 not found"
+  COSW_PROFILE="$("$PY" "$SCRIPT_DIR/hermes_agents.py" ensure-lane "$COSW_BASE" "$COSW_LANE")"
+  log "lane $COSW_LANE -> $COSW_PROFILE"
+fi
 
 if [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
   ensure_toolchain
@@ -230,4 +313,4 @@ if [ "${COSW_SKIP_PREFLIGHT:-0}" != "1" ]; then
 fi
 
 strip_cosw_args "$@"
-exec "$SCRIPT_DIR/agents" up chief-of-staff-work "${COSW_ARGS[@]}"
+exec "$SCRIPT_DIR/agents" up "$COSW_PROFILE" "${COSW_ARGS[@]}"

@@ -16,6 +16,7 @@ Usage:
     hermes_agents.py list
     hermes_agents.py resolve <profile>        # JSON, host redacted
     hermes_agents.py materialize <profile>    # prints HERMES_HOME path on stdout
+    hermes_agents.py ensure-lane <base> <lane>
     hermes_agents.py secrets-status           # cache presence only; never the key
     hermes_agents.py secrets-refresh          # pull from 1Password once, then cache
 """
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -93,13 +95,47 @@ def _source_label(path: Path) -> str:
     return path.parent.name
 
 
-def find_profile(name: str) -> Path:
+def find_profile_or_none(name: str) -> Optional[Path]:
     for d in profile_path():
         cand = d / f"{name}.yaml"
         if cand.exists():
             return cand
+    return None
+
+
+def find_profile(name: str) -> Path:
+    found = find_profile_or_none(name)
+    if found is not None:
+        return found
     searched = "\n  ".join(str(d) for d in profile_path()) or "(no profile dirs found)"
     raise SystemExit(f"ERROR: no such profile: {name}. Searched:\n  {searched}")
+
+
+def _rewrite_profile_name(text: str, old: str, new: str) -> str:
+    return re.sub(
+        rf"^name:\s*{re.escape(old)}\s*$",
+        f"name: {new}",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+
+
+def ensure_lane_profile(base: str, instance: str) -> str:
+    """Clone <base>.yaml to <base>-<instance>.yaml on first use. Returns profile name."""
+    profile = alias_seat.instance_profile(base, instance)
+    existing = find_profile_or_none(profile)
+    if existing is not None:
+        return profile
+    src = find_profile(base)
+    dst = src.with_name(f"{profile}.yaml")
+    if dst.exists():
+        return profile
+    text = src.read_text(encoding="utf-8")
+    loaded = yaml.safe_load(text) or {}
+    src_name = str((loaded.get("name") if isinstance(loaded, dict) else None) or base)
+    dst.write_text(_rewrite_profile_name(text, src_name, profile), encoding="utf-8")
+    return profile
 
 
 def _data_home() -> Path:
@@ -716,7 +752,7 @@ def materialize(name: str) -> Path:
 
     # Pin owned fleet aliases so herm-tui cannot treat the isolated root
     # as a second switchable "default" Cos/PM/notes profile.
-    mapped = alias_seat.seat_by_profile(runtime_name) or alias_seat.seat_by_profile(name)
+    mapped = alias_seat.seat_for_profile(runtime_name) or alias_seat.seat_for_profile(name)
     if mapped:
         alias_seat.assert_not_fallback_home(home)
         alias_seat.assert_not_fallback_home(runtime_home)
@@ -845,6 +881,11 @@ def main(argv: list[str]) -> int:
         if not rest:
             raise SystemExit("ERROR: materialize needs a profile name")
         print(materialize(rest[0]))
+        return 0
+    if cmd == "ensure-lane":
+        if len(rest) < 2:
+            raise SystemExit("ERROR: ensure-lane needs <base> <lane>")
+        print(ensure_lane_profile(rest[0], rest[1]))
         return 0
     if cmd == "secrets-status":
         return cmd_secrets_status()

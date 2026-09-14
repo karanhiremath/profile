@@ -33,6 +33,10 @@ class HostThemeTests(unittest.TestCase):
         self.assertTrue(mod.is_cos_home(Path("/tmp/hermes-agents/chief-of-staff")))
         self.assertTrue(mod.is_cos_home(Path("/tmp/hermes-agents/chief-of-staff/profiles/chief-of-staff")))
         self.assertFalse(mod.is_work_home(Path("/tmp/hermes-agents/chief-of-staff")))
+        self.assertTrue(mod.is_work_home(Path("/tmp/hermes-agents/chief-of-staff-work-o1")))
+        self.assertFalse(mod.is_cos_home(Path("/tmp/hermes-agents/chief-of-staff-work-o1")))
+        self.assertTrue(mod.is_cos_home(Path("/tmp/hermes-agents/chief-of-staff-o1")))
+        self.assertFalse(mod.is_work_home(Path("/tmp/hermes-agents/chief-of-staff-o1")))
 
     def test_dreamw_vs_cosw(self) -> None:
         cosw = Path("/tmp/hermes-agents/chief-of-staff-work")
