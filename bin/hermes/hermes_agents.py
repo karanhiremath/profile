@@ -3,6 +3,7 @@
 an isolated HERMES_HOME for it.
 
 Each agent gets its own HERMES_HOME under
+``$AGENT_SHARED_HOME/hermes-agents/<name>/`` (Crusoe) or
 ``$XDG_DATA_HOME/hermes-agents/<name>/`` so it never touches the operator's
 main ~/.hermes. The home gets a derived ``config.yaml`` (Cartesia TTS+STT wired
 to the profile's endpoint/models), an ``.env`` seeded from ~/.hermes/.env with
@@ -91,9 +92,31 @@ def find_profile(name: str) -> Path:
     raise SystemExit(f"ERROR: no such profile: {name}. Searched:\n  {searched}")
 
 
+def _shared_people_root() -> Optional[Path]:
+    for key in ("AGENT_SHARED_HOME", "HERMES_SHARED_PEOPLE_HOME"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            if path.is_dir():
+                return path
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if not user:
+        return None
+    root = Path("/shared/people") / user
+    return root if root.is_dir() else None
+
+
+def _shared_people_agents_home() -> Optional[Path]:
+    root = _shared_people_root()
+    return (root / "hermes-agents") if root is not None else None
+
+
 def _data_home() -> Path:
     if override := os.environ.get("HERMES_AGENTS_DATA_HOME"):
         return Path(override).expanduser()
+    shared = _shared_people_agents_home()
+    if shared is not None:
+        return shared
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "hermes-agents"
 
@@ -112,8 +135,8 @@ def _read_env_file(path: Path) -> Dict[str, str]:
     return out
 
 
-def _cursor_api_key_from_pi_auth() -> Optional[str]:
-    """Read the Cursor key Pi already stores, without printing it."""
+def _api_key_from_pi_auth(provider: str) -> Optional[str]:
+    """Read a provider key Pi already stores, without printing it."""
     raw_dir = os.environ.get("PI_AGENT_DIR") or str(Path.home() / ".pi" / "agent")
     path = Path(raw_dir).expanduser() / "auth.json"
     try:
@@ -122,11 +145,15 @@ def _cursor_api_key_from_pi_auth() -> Optional[str]:
         return None
     if not isinstance(data, dict):
         return None
-    cursor = data.get("cursor")
-    if not isinstance(cursor, dict):
+    entry = data.get(provider)
+    if not isinstance(entry, dict):
         return None
-    key = str(cursor.get("key") or cursor.get("api_key") or "").strip()
+    key = str(entry.get("key") or entry.get("api_key") or "").strip()
     return key or None
+
+
+def _cursor_api_key_from_pi_auth() -> Optional[str]:
+    return _api_key_from_pi_auth("cursor")
 
 
 def _resolve_env(key: str) -> Optional[str]:
@@ -138,9 +165,76 @@ def _resolve_env(key: str) -> Optional[str]:
     from_dotenv = _read_env_file(MAIN_HOME / ".env").get(key)
     if from_dotenv:
         return from_dotenv
-    if key == "CURSOR_API_KEY":
-        return _cursor_api_key_from_pi_auth()
+    pi_auth_providers = {
+        "CURSOR_API_KEY": "cursor",
+        "TOGETHER_API_KEY": "together",
+    }
+    provider = pi_auth_providers.get(key)
+    if provider:
+        return _api_key_from_pi_auth(provider)
     return None
+
+
+ROUTER_PROFILE_NAME = "model-router"
+
+
+def _load_shared_model_router(profile_file: Path) -> Dict[str, Any]:
+    """Load the shared model-router fragment merged under every profile.
+
+    Searched next to the profile first (work vs personal homes can diverge),
+    then along the profile search PATH. Missing router = no merge, so
+    sandboxes/checkouts without the fragment keep working unchanged.
+    """
+    candidates = [profile_file.parent / f"{ROUTER_PROFILE_NAME}.yaml"]
+    candidates += [d / f"{ROUTER_PROFILE_NAME}.yaml" for d in profile_path()]
+    for router_path in candidates:
+        if not router_path.exists():
+            continue
+        data = yaml.safe_load(router_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            raise SystemExit(f"ERROR: shared model router is not a mapping: {router_path}")
+        return data
+    return {}
+
+
+def _merge_shared_model_router(profile: Dict[str, Any], profile_file: Path) -> None:
+    """Merge the shared model-router under a profile (profile wins per key).
+
+    - llm: only fills keys the profile omits (provider/model/thinking/
+      reasoning_effort/base_url).
+    - fallback_model: installed only when the profile defines none; entries
+      equal to the profile's primary route are excluded so a seat never
+      'falls back' to the model it already runs.
+    """
+    router = _load_shared_model_router(profile_file)
+    if not router:
+        return
+
+    router_llm = router.get("llm")
+    if isinstance(router_llm, dict) and router_llm:
+        llm = profile.get("llm")
+        if not isinstance(llm, dict):
+            llm = {}
+            profile["llm"] = llm
+        for key in ("provider", "model", "thinking", "reasoning_effort", "base_url"):
+            if key in router_llm and not str(llm.get(key) or "").strip():
+                llm[key] = router_llm[key]
+
+    if "fallback_model" not in profile:
+        chain = router.get("fallback_model")
+        if isinstance(chain, list) and chain:
+            llm = profile.get("llm") or {}
+            primary = (str(llm.get("provider") or "").strip().lower(), str(llm.get("model") or "").strip().lower())
+            entries: list[Dict[str, Any]] = []
+            for entry in chain:
+                if not isinstance(entry, dict):
+                    continue
+                candidate = (str(entry.get("provider") or "").strip().lower(), str(entry.get("model") or "").strip().lower())
+                if primary == ("", "") or candidate == primary:
+                    continue
+                entries.append(entry)
+            if entries:
+                profile["fallback_model"] = entries
 
 
 def load_profile(name: str) -> Dict[str, Any]:
@@ -149,6 +243,7 @@ def load_profile(name: str) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise SystemExit(f"ERROR: profile is not a mapping: {path}")
     data.setdefault("name", name)
+    _merge_shared_model_router(data, path)
     return data
 
 
@@ -311,6 +406,23 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         # built-in OpenRouter-backed default when that provider is not
         # configured in the runtime home.
         cfg["moa"] = moa
+    fallback_model = profile.get("fallback_model")
+    if fallback_model is not None:
+        # Shared model-router chain (or a profile-local override). Validate
+        # fail-closed here so a malformed router breaks loudly at materialize
+        # time instead of silently disabling fallback inside Hermes.
+        entries = fallback_model if isinstance(fallback_model, list) else [fallback_model]
+        cleaned: list[Dict[str, Any]] = []
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise SystemExit(f"ERROR: fallback_model[{i}] must be a dict with 'provider' and 'model'")
+            provider = str(entry.get("provider") or "").strip()
+            model = str(entry.get("model") or "").strip()
+            if not provider or not model:
+                raise SystemExit(f"ERROR: fallback_model[{i}] needs non-empty 'provider' and 'model'")
+            cleaned.append({"provider": provider, "model": model})
+        if cleaned:
+            cfg["fallback_model"] = cleaned
     if tts_on:
         cfg["tts"] = {"provider": "cartesia", "model": tts.get("model", "sonic-3.5"), "voice": voice}
     if stt_on:
@@ -321,6 +433,19 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         }
     else:
         cfg["stt"] = {"enabled": False}
+    journal = os.environ.get("HERMES_STATE_JOURNAL_MODE", "").strip().lower()
+    shared_root = _shared_people_root()
+    if not journal and (
+        str(_data_home()).startswith("/shared/people/")
+        or (shared_root is not None and str(_data_home()).startswith(str(shared_root)))
+    ):
+        journal = "delete"
+    if journal in {"delete", "wal"}:
+        db_cfg = dict(cfg.get("database") or {})
+        db_cfg.setdefault("journal_mode", journal)
+        if journal == "delete":
+            db_cfg.setdefault("synchronous", "FULL")
+        cfg["database"] = db_cfg
     return cfg
 
 
@@ -647,6 +772,8 @@ def cmd_resolve(name: str) -> int:
         "home": str(_data_home() / name),
         "model": cfg.get("model"),
     }
+    if cfg.get("fallback_model"):
+        out["fallback_model"] = cfg["fallback_model"]
     reasoning_effort = (cfg.get("agent") or {}).get("reasoning_effort") if isinstance(cfg.get("agent"), dict) else None
     if reasoning_effort:
         out["thinking"] = reasoning_effort

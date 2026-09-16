@@ -12,6 +12,15 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 WORK_DREAMW="${WORK_DREAMW:-$HOME/src/karan.hiremath/agentic/scripts/dreamw}"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/llm-flags.sh"
+
+if ! parse_llm_flags "$@"; then
+  exit 1
+fi
+llm_flags_export
+set -- "${LLM_FLAGS_REST[@]+${LLM_FLAGS_REST[@]}}"
+
 if [ -x "$WORK_DREAMW" ]; then
   exec "$WORK_DREAMW" "$@"
 fi

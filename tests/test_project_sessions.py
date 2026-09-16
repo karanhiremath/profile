@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
+from io import StringIO
 from pathlib import Path
 
 import yaml
@@ -13,6 +16,14 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "bin/hermes/project_sessions.py"
+
+
+def load_sessions_module():
+    spec = importlib.util.spec_from_file_location("project_sessions_unit", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ProjectSessionsIntegrationTest(unittest.TestCase):
@@ -141,6 +152,29 @@ raise SystemExit(0)
         self.assertFalse(value["ok"])
         self.assertIn("Set HERMES_PROJECT_REGISTRY_PATH", value["remediation"])
 
+    def test_string_event_bus_is_not_launch_fatal(self):
+        broken = {
+            "name": "broken-bus",
+            "workdir": str(self.work),
+            "pm": {"profile": "alpha-pm"},
+            "tmux": {"pm_session": "bb-pm", "pl_session": "bb-impl", "implementation_session": "bb-impl"},
+            "event_bus": "broken-bus",
+            "sessions": {
+                "pm": {"tmux_session": "bb-pm", "command": "pm broken-bus"},
+                "pl": {"command": "pl broken-bus"},
+            },
+        }
+        (self.registry / "broken-bus.yaml").write_text(yaml.safe_dump(broken, sort_keys=False))
+        doctor = json.loads(self.run_script("doctor").stdout)
+        self.assertTrue(doctor["ok"])
+        self.assertEqual(doctor["project_count"], 3)
+        row = next(item for item in doctor["projects"] if item["name"] == "broken-bus")
+        self.assertFalse(row["valid"])
+        self.assertTrue(any("event_bus must be a mapping" in error for error in row["errors"]))
+        listing = json.loads(self.run_script("list").stdout)
+        broken_row = next(item for item in listing if item["name"] == "broken-bus")
+        self.assertEqual(broken_row["pm_session"], "bb-pm")
+
     def test_stale_project_workdir_is_not_launch_fatal(self):
         stale = {
             "name": "stale",
@@ -164,6 +198,65 @@ raise SystemExit(0)
         ensure = self.run_script("ensure-pm", "stale", check=False)
         self.assertNotEqual(ensure.returncode, 0)
         self.assertIn("registered project workdir does not exist", ensure.stderr)
+
+
+class LlmFlagOverrideTest(unittest.TestCase):
+    def _args(self, **kwargs):
+        import argparse
+
+        payload = {"cmd": "pm", "dry_run": True}
+        payload.update(kwargs)
+        return argparse.Namespace(**payload)
+
+    def test_split_model_selector_known_provider(self):
+        module = load_sessions_module()
+        self.assertEqual(
+            module.split_model_selector("together/zai-org/GLM-5.3-Flash"),
+            ("together", "zai-org/GLM-5.3-Flash"),
+        )
+        self.assertEqual(module.split_model_selector("gpt-5.5"), ("", "gpt-5.5"))
+
+    def test_apply_llm_flags_exports_launcher_envs(self):
+        module = load_sessions_module()
+        env = {
+            "HERMES_AGENT_LLM_PROVIDER": "",
+            "HERMES_AGENT_LLM_MODEL": "",
+            "HERMES_AGENT_LLM_THINKING": "",
+            "HERMES_MODEL": "",
+            "HERMES_INFERENCE_MODEL": "",
+        }
+        args = self._args(
+            llm_provider="", llm_model="together/zai-org/GLM-5.3-Flash", llm_thinking="xhigh"
+        )
+        with unittest.mock.patch.dict(os.environ, env, clear=False):
+            module.apply_llm_flags(args)
+            self.assertEqual(os.environ.get("HERMES_AGENT_LLM_PROVIDER"), "together")
+            self.assertEqual(os.environ.get("HERMES_AGENT_LLM_MODEL"), "zai-org/GLM-5.3-Flash")
+            self.assertEqual(os.environ.get("HERMES_AGENT_LLM_THINKING"), "xhigh")
+        # patch.dict rolls the exported overrides back for later tests.
+        self.assertEqual(os.environ.get("HERMES_AGENT_LLM_PROVIDER", ""), "")
+
+    def test_conflicting_provider_and_model_split_errors(self):
+        module = load_sessions_module()
+        args = self._args(
+            llm_provider="cursor", llm_model="together/zai-org/GLM-5.3-Flash", llm_thinking=""
+        )
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            with self.assertRaises(SystemExit):
+                module.apply_llm_flags(args)
+
+    def test_pl_flags_are_ignored_with_warning(self):
+        module = load_sessions_module()
+        env = {
+            "HERMES_AGENT_LLM_MODEL": "",
+            "HERMES_INFERENCE_MODEL": "",
+        }
+        args = self._args(cmd="pl", llm_provider="", llm_model="gpt-5.5", llm_thinking="")
+        with unittest.mock.patch.dict(os.environ, env, clear=False):
+            with unittest.mock.patch("sys.stderr", new_callable=StringIO) as err:
+                module.apply_llm_flags(args)
+        self.assertIn("ignored", err.getvalue())
+        self.assertEqual(os.environ.get("HERMES_AGENT_LLM_MODEL", ""), "")
 
 
 if __name__ == "__main__":

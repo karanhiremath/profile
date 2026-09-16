@@ -12,9 +12,9 @@ Commands:
   project_sessions.py list
   project_sessions.py names
   project_sessions.py resolve <project>
-  project_sessions.py pm <project> [--dry-run]
+  project_sessions.py pm <project> [--dry-run] [--provider P] [--model M] [--thinking T]
       Launch the PM TUI in the current pane (does not create/switch tmux sessions).
-  project_sessions.py pl <project> [--dry-run]
+  project_sessions.py pl <project> [--dry-run] [--provider P] [--model M] [--thinking T]
   project_sessions.py ensure-pm <project> [--dry-run]
       Provision the registered PM tmux session (hostctl / non-interactive).
   project_sessions.py ensure-pl <project> [--dry-run]
@@ -146,6 +146,8 @@ def session_name(project: dict[str, Any], kind: str, *, required: bool = True) -
     tmux = project.get("tmux") or {}
     sessions = project.get("sessions") or {}
     value = tmux.get(f"{kind}_session") or sessions.get(kind)
+    if isinstance(value, dict):
+        value = value.get("tmux_session") or value.get("session")
     if value:
         return str(value)
     if kind == "pm":
@@ -219,11 +221,20 @@ def validate_project(project: dict[str, Any]) -> list[str]:
     cwd = workdir(project)
     if not cwd.is_dir():
         errors.append(f"workdir does not exist or is not a directory: {cwd}")
-    event_types = {str(value) for value in (project.get("event_bus") or {}).get("event_types") or []}
-    if "pm_action_required" not in event_types:
-        errors.append("event_bus.event_types must include pm_action_required")
-    if not writable_event_paths(project):
-        errors.append("event_bus needs at least one writable source or publish path")
+    bus = project.get("event_bus")
+    if not isinstance(bus, dict):
+        errors.append("event_bus must be a mapping with event_types and a writable source or publish path")
+    else:
+        raw_types = bus.get("event_types") or []
+        if isinstance(raw_types, list):
+            event_types = {str(value) for value in raw_types}
+        else:
+            errors.append("event_bus.event_types must be a list")
+            event_types = set()
+        if "pm_action_required" not in event_types:
+            errors.append("event_bus.event_types must include pm_action_required")
+        if not writable_event_paths(project):
+            errors.append("event_bus needs at least one writable source or publish path")
     profile = pm.get("profile") if isinstance(pm, dict) else None
     profile = profile or project.get("pm_profile")
     if profile and not any((directory / f"{profile}.yaml").is_file() for directory in profile_dirs()):
@@ -274,6 +285,8 @@ def doctor() -> tuple[dict[str, Any], bool]:
 
 def publish_paths(project: dict[str, Any]) -> list[Path]:
     bus = project.get("event_bus") or {}
+    if not isinstance(bus, dict):
+        return []
     paths: list[Path] = []
     for item in bus.get("publish_paths") or []:
         if isinstance(item, dict):
@@ -432,6 +445,63 @@ def cmd_pl(project_name: str, dry_run: bool) -> int:
     return attach_or_switch(session, dry_run)
 
 
+# Providers whose "provider/model" prefixes split into explicit provider +
+# model when set via --model at launch time. Mirrors llm-flags.sh in bash.
+LLM_KNOWN_PROVIDERS = {
+    "openai-codex", "openai", "anthropic", "anthropic-beta", "azure-openai-responses",
+    "amazon-bedrock", "cursor", "together", "xai", "xai-oauth", "openrouter", "pi",
+    "nemoclaw", "ollama", "moa", "google", "google-vertex", "moonshotai", "groq",
+    "cerebras", "zai", "mistral", "deepseek",
+}
+
+
+def split_model_selector(value: str) -> tuple[str, str]:
+    """provider/model -> (provider, model) when the prefix is a known provider."""
+    if "/" in value:
+        head, rest = value.split("/", 1)
+        if head in LLM_KNOWN_PROVIDERS and rest:
+            return head, rest
+    return "", value
+
+
+def apply_llm_flags(args: argparse.Namespace) -> None:
+    """Export launcher env overrides from --provider/--model/--thinking flags.
+
+    pm execs the registered launch command, so the env propagates into the
+    spawned herm/hermes process. pl attaches an existing tmux session where
+    model flags are meaningless — accepted but ignored with a warning.
+    """
+    provider = getattr(args, "llm_provider", None) or ""
+    model = getattr(args, "llm_model", None) or ""
+    thinking = getattr(args, "llm_thinking", None) or ""
+    if model:
+        split_provider, split_model = split_model_selector(model)
+        if split_provider:
+            if provider and provider != split_provider:
+                raise SystemExit(f"ERROR: conflicting --provider {provider} vs --model {model}")
+            provider = provider or split_provider
+            model = split_model
+    overrides = {
+        "HERMES_AGENT_LLM_PROVIDER": provider,
+        "HERMES_INFERENCE_PROVIDER": provider,
+        "HERMES_TUI_PROVIDER": provider,
+        "HERMES_AGENT_LLM_MODEL": model,
+        "HERMES_INFERENCE_MODEL": model,
+        "HERMES_MODEL": model,
+        "HERMES_AGENT_LLM_THINKING": thinking,
+    }
+    if args.cmd == "pl" and (provider or model or thinking):
+        print(
+            "pl: attaches an existing session; --provider/--model/--thinking ignored "
+            "(model is session state; use pm or ensure-pm to launch with an override)",
+            file=sys.stderr,
+        )
+        return
+    for key, value in overrides.items():
+        if value:
+            os.environ[key] = value
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -444,6 +514,9 @@ def main(argv: list[str]) -> int:
         p = sub.add_parser(name)
         p.add_argument("project")
         p.add_argument("--dry-run", action="store_true")
+        p.add_argument("--provider", dest="llm_provider", default="", help="launch-scoped provider (openai-codex, cursor, together, xai, ...)")
+        p.add_argument("--model", dest="llm_model", default="", help="launch-scoped model; provider/ prefix splits when known")
+        p.add_argument("--thinking", dest="llm_thinking", default="", help="launch-scoped thinking level (low, medium, high, xhigh)")
     args = parser.parse_args(argv)
 
     if args.cmd == "list":
@@ -461,8 +534,10 @@ def main(argv: list[str]) -> int:
         print(json.dumps(find_project(args.project), indent=2, sort_keys=True))
         return 0
     if args.cmd == "pm":
+        apply_llm_flags(args)
         return cmd_pm(args.project, args.dry_run)
     if args.cmd == "pl":
+        apply_llm_flags(args)
         return cmd_pl(args.project, args.dry_run)
     if args.cmd == "ensure-pm":
         return cmd_ensure(args.project, "pm", args.dry_run)

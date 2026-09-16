@@ -8,25 +8,33 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/llm-flags.sh"
+
+if ! parse_llm_flags "$@"; then
+  exit 1
+fi
 
 flags=()
 passthrough=()
-while [ "$#" -gt 0 ]; do
-  case "$1" in
+llm_rest=("${LLM_FLAGS_REST[@]+${LLM_FLAGS_REST[@]}}")
+i=0
+while [ "$i" -lt "${#llm_rest[@]}" ]; do
+  arg="${llm_rest[$i]}"
+  case "$arg" in
     --sandbox|--docker|--host|--host-tools|--no-sandbox)
-      flags+=("$1")
-      shift
+      flags+=("$arg")
       ;;
     --)
-      shift
-      passthrough+=("$@")
+      passthrough+=("${llm_rest[@]:$((i + 1))}")
       break
       ;;
     *)
-      passthrough+=("$1")
-      shift
+      passthrough+=("$arg")
       ;;
   esac
+  i=$((i + 1))
 done
 
+llm_flags_export
 exec "$SCRIPT_DIR/agents" up chief-of-staff "${flags[@]+"${flags[@]}"}" "${passthrough[@]+"${passthrough[@]}"}"

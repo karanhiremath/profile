@@ -132,6 +132,41 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("conflicting seats", proc.stderr)
 
+    def test_model_flag_splits_known_provider(self):
+        plan = run_plan("--model", "together/zai-org/GLM-5.3-Flash")
+        self.assertEqual(plan["seat"], "custom")
+        self.assertEqual(plan["provider"], "together")
+        self.assertEqual(plan["model"], "zai-org/GLM-5.3-Flash")
+        self.assertEqual(plan["thinking"], "xhigh")
+        self.assertEqual(plan["cursor_sdk"], "0")
+
+    def test_provider_model_thinking_flags(self):
+        plan = run_plan(
+            "--provider", "openai-codex", "--model", "gpt-5.6-luna", "--thinking", "high"
+        )
+        self.assertEqual(plan["seat"], "custom")
+        self.assertEqual(plan["provider"], "openai-codex")
+        self.assertEqual(plan["model"], "gpt-5.6-luna")
+        self.assertEqual(plan["thinking"], "high")
+
+    def test_thinking_only_flag_keeps_default_seat(self):
+        plan = run_plan("--thinking", "low")
+        self.assertEqual(plan["seat"], "cursor-grok")
+        self.assertEqual(plan["provider"], "cursor")
+        self.assertEqual(plan["model"], "grok-4.6:fast")
+        self.assertEqual(plan["thinking"], "low")
+        self.assertEqual(plan["cursor_sdk"], "1")
+        self.assertEqual(plan["timeout_free"], "1")
+
+    def test_flag_conflicts_with_seat_preset_fail(self):
+        proc = subprocess.run(
+            [str(COSW), "--codex", "--model", "gpt-5.5", "--print-plan"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("conflicting seat", proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

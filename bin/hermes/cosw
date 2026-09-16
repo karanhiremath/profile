@@ -10,6 +10,12 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+if [ -f "$SCRIPT_DIR/fork-env.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$SCRIPT_DIR/fork-env.sh"
+fi
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/llm-flags.sh"
 
 log() { printf 'cosw: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -33,8 +39,16 @@ Backend:
 Seats:
   --codex, --gpt-5.5                   start on openai-codex/gpt-5.5
   --grok, --cursor-grok                Cursor grok-4.6:fast + timeout-free PYTHONPATH
+Seats:
+  --codex, --gpt-5.5                   start on openai-codex/gpt-5.5
+  --grok, --cursor-grok                Cursor grok-4.6:fast + timeout-free PYTHONPATH
   --xai-grok, --grok-xai               xAI grok-4.6 (not the Cursor SDK)
   --seat provider/model                explicit seat
+
+Model flags (scoped model at startup; overrides the profile llm block):
+  --provider <name>                    launch-scoped provider (openai-codex, cursor, together, xai, ...)
+  --model <provider/model>             launch-scoped model; provider/ prefix splits when known
+  --thinking <level>                   launch-scoped thinking level (low, medium, high, xhigh)
 
 Lane isolation:
   --lane NAME                          run as isolated profile
@@ -92,6 +106,41 @@ set_seat() {
   COSW_SEAT="$next"
 }
 
+# --provider/--model land as a custom seat (only provided keys are exported)
+# unless a seat preset was already chosen. --thinking only overrides the
+# thinking level and keeps the default seat (e.g. cursor-grok + timeout-free
+# PYTHONPATH stay intact).
+cosw_llm_flag() {
+  local kind="$1" value="$2"
+  case "$kind" in
+    thinking)
+      COSW_THINKING_FLAG="$value"
+      COSW_LLM_FLAGS=1
+      return 0
+      ;;
+  esac
+  case "${COSW_SEAT:-}" in
+    ""|custom) set_seat custom ;;
+    *) die "conflicting seat: ${COSW_SEAT} vs --$kind" ;;
+  esac
+  case "$kind" in
+    model)
+      llm_flags_split "$value"
+      if [ -n "$LLM_SPLIT_PROVIDER" ]; then
+        if [ -n "${COSW_PROVIDER:-}" ] && [ "$COSW_PROVIDER" != "$LLM_SPLIT_PROVIDER" ]; then
+          die "conflicting --provider $COSW_PROVIDER vs --model $value"
+        fi
+        [ -n "${COSW_PROVIDER:-}" ] || COSW_PROVIDER="$LLM_SPLIT_PROVIDER"
+        COSW_MODEL="$LLM_SPLIT_MODEL"
+      else
+        COSW_MODEL="$value"
+      fi
+      ;;
+    provider) COSW_PROVIDER="$value" ;;
+  esac
+  COSW_LLM_FLAGS=1
+}
+
 parse_seat_value() {
   local value="$1"
   case "$value" in
@@ -128,6 +177,8 @@ strip_cosw_args() {
   COSW_SEAT="${COSW_SEAT:-}"
   COSW_PROVIDER="${COSW_PROVIDER:-}"
   COSW_MODEL="${COSW_MODEL:-}"
+  COSW_THINKING_FLAG="${COSW_THINKING_FLAG:-}"
+  COSW_LLM_FLAGS="${COSW_LLM_FLAGS:-0}"
   COSW_XAI_PROVIDER="${COSW_XAI_PROVIDER:-xai}"
   COSW_LANE="${COSW_LANE:-}"
   COSW_PROFILE="${COSW_PROFILE:-chief-of-staff-work}"
@@ -194,6 +245,15 @@ strip_cosw_args() {
         ;;
       --seat=*)
         parse_seat_value "${arg#--seat=}"
+        ;;
+      --provider|--model|--thinking)
+        next="${1:-}"
+        [ -n "$next" ] || die "$arg needs a value"
+        cosw_llm_flag "${arg#--}" "$next"
+        shift
+        ;;
+      --provider=*|--model=*|--thinking=*)
+        cosw_llm_flag "${arg#--}" "${arg#*=}"
         ;;
       --terminal-backend)
         next="${1:-}"
@@ -271,6 +331,9 @@ raise SystemExit(0 if any(name in providers or name in pool for name in ("xai", 
 
 apply_cosw_seat() {
   COSW_THINKING="${COSW_THINKING:-xhigh}"
+  if [ -n "${COSW_THINKING_FLAG:-}" ]; then
+    COSW_THINKING="$COSW_THINKING_FLAG"
+  fi
   COSW_SEAT_OVERRIDE=0
   COSW_CURSOR_SDK=0
   case "${COSW_SEAT:-}" in
@@ -295,8 +358,10 @@ apply_cosw_seat() {
       COSW_SEAT_OVERRIDE=1
       ;;
     custom)
-      [ -n "$COSW_PROVIDER" ] && [ -n "$COSW_MODEL" ] || die "--seat custom is missing provider/model"
-      if [ "$COSW_PROVIDER" = "cursor" ]; then
+      if [ "${COSW_LLM_FLAGS:-0}" != "1" ] && [ -z "${COSW_PROVIDER:-}" ] && [ -z "${COSW_MODEL:-}" ]; then
+        die "--seat custom is missing provider/model"
+      fi
+      if [ "${COSW_PROVIDER:-}" = "cursor" ]; then
         COSW_CURSOR_SDK=1
       fi
       COSW_SEAT_OVERRIDE=1
@@ -308,14 +373,12 @@ apply_cosw_seat() {
 }
 
 export_seat_env() {
-  if [ "$COSW_SEAT_OVERRIDE" = "1" ]; then
-    export HERMES_AGENT_LLM_PROVIDER="$COSW_PROVIDER"
-    export HERMES_AGENT_LLM_MODEL="$COSW_MODEL"
+  if [ "$COSW_SEAT_OVERRIDE" = "1" ] || [ -n "${COSW_THINKING_FLAG:-}" ]; then
+    [ -n "${COSW_PROVIDER:-}" ] && export HERMES_AGENT_LLM_PROVIDER="$COSW_PROVIDER" && export HERMES_INFERENCE_PROVIDER="$COSW_PROVIDER" && export HERMES_TUI_PROVIDER="$COSW_PROVIDER"
+    [ -n "${COSW_MODEL:-}" ] && export HERMES_AGENT_LLM_MODEL="$COSW_MODEL"
+    [ -n "${COSW_MODEL:-}" ] && export HERMES_INFERENCE_MODEL="$COSW_MODEL"
+    [ -n "${COSW_MODEL:-}" ] && export HERMES_MODEL="$COSW_MODEL"
     export HERMES_AGENT_LLM_THINKING="$COSW_THINKING"
-    export HERMES_INFERENCE_PROVIDER="$COSW_PROVIDER"
-    export HERMES_TUI_PROVIDER="$COSW_PROVIDER"
-    export HERMES_INFERENCE_MODEL="$COSW_MODEL"
-    export HERMES_MODEL="$COSW_MODEL"
   fi
 }
 
@@ -347,6 +410,12 @@ emit_catalog_plan_fields() {
   else
     set -- print-plan "$COSW_PROFILE" --host
   fi
+  # Host --lane clones are not catalog entries. A missing catalog row must not
+  # fail interactive print-plan / launch preflight.
+  if ! catalog_plan="$("$bin" "$@" 2>/dev/null)"; then
+    printf 'stack=\ncompose=0\ncompose_file=\ncompose_service=\ncontainer=\npersist=0\nhostctl=0\nimage=\n'
+    return 0
+  fi
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="${line%%=*}"
@@ -356,7 +425,7 @@ emit_catalog_plan_fields() {
         printf '%s=%s\n' "$key" "$value"
         ;;
     esac
-  done < <("$bin" "$@")
+  done <<< "$catalog_plan"
 }
 
 print_cosw_plan() {
@@ -975,6 +1044,13 @@ else
   log "host-native launch provider=$COSW_PROVIDER model=$COSW_MODEL sandbox=0"
   if [ "$COSW_CURSOR_SDK" = "1" ]; then
     log "timeout-free PYTHONPATH=$PYTHONPATH"
+  fi
+fi
+
+if [ "${COSW_PROVIDER:-}" = "openai-codex" ] && [ "${HERMES_CODEX_GRANT_ISOLATE:-0}" != "1" ]; then
+  grant_sync="$SCRIPT_DIR/codex_grant_sync.py"
+  if [ -x "$grant_sync" ] || [ -f "$grant_sync" ]; then
+    python3 "$grant_sync" adopt >/dev/null || log "codex grant adopt skipped"
   fi
 fi
 exec "$SCRIPT_DIR/agents" up "$COSW_PROFILE" "${COSW_ARGS[@]}"
