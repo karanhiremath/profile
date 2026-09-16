@@ -1,0 +1,5 @@
+Date,User,Cloud Agent ID,Automation ID,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
+2026-09-15T12:00:00.000Z,user@example.com,,,Free,cursor-grok-4.6-xhigh-fast,No,0,500000,200000,50000,750000,Free
+2026-09-15T12:01:00.000Z,user@example.com,,,Free,cursor-grok-4.6-high-fast,No,0,250000,100000,25000,375000,Free
+2026-09-15T12:02:00.000Z,user@example.com,,,Free,cursor-grok-4.6-xhigh,No,0,1000000,0,0,1000000,Free
+2026-09-15T12:03:00.000Z,user@example.com,,,Free,claude-opus-5-thinking-high,No,450000,100000,800000,50000,1400000,Free

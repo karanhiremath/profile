@@ -1,0 +1,35 @@
+{
+  "schema": "aos.usage-windows.v1",
+  "updated": "2026-09-15",
+  "notes": [
+    "Null caps are report-only. Do not invent a weekly dollar cap from a Cursor Token Fee remaining snapshot.",
+    "Claude and Codex subscription windows are independent of Cursor token-fee dollars."
+  ],
+  "windows": {
+    "cursor": {
+      "session_usd": null,
+      "weekly_usd": null,
+      "weekly_fee_units": null
+    },
+    "claude": {
+      "session_usd": null,
+      "weekly_usd": null
+    },
+    "codex": {
+      "session_usd": null,
+      "weekly_usd": null
+    },
+    "together": {
+      "session_usd": null,
+      "weekly_usd": null
+    }
+  },
+  "sources": {
+    "ledger": "~/.pi/agent/atop/usage-cache.json",
+    "cursor_events": "~/.local/share/aos/spend/cursor-usage-events.v1.json",
+    "token_fee": "~/src/profile/config/aos/pricing/cursor-token-fee.v1.json",
+    "cursor_export": "aos-spend ingest-cursor-csv --csv <export.csv> | aos-spend fetch-cursor-csv",
+    "claude_probe": "claude-usage",
+    "eval": "aos-spend eval"
+  }
+}
