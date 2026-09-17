@@ -8,18 +8,28 @@
 #   new <name> [--dir D]       Scaffold a profile from TEMPLATE.
 #                              D = work | personal | profile | <path> (default: personal)
 #   check <profile>            Materialize + run an end-to-end endpoint health check
+#   secrets-status             Cursor key cache presence (never the value)
+#   secrets-refresh            Sync Cursor key from 1Password once into local cache
 #   up <profile> [opts] [-- ...args]
 #                              Materialize the isolated home and launch the agent
 #
 # Convenience wrappers:
 #   cos                        agents up chief-of-staff
 #   cosw                       agents up chief-of-staff-work
-#   pm <project>               attach/start registered Hermes PM tmux/TUI
+#   pm <project>               launch registered Hermes PM TUI in the current pane
 #   pl <project>               attach registered project-lead tmux session
 #       --surface cli|tui|gateway   Override the profile's default surface
 #       --platform <name>           Messaging platform for surface=gateway
+#       --model <name>              Launch-scoped model (writes HERMES_AGENT_LLM_MODEL)
+#       --provider <name>           Launch-scoped provider (openai-codex, cursor, xai, ...)
+#       --host, --no-sandbox        Host-native local terminal
+#       --sandbox                   Compose sandbox (work-devboxes or personal hermes-sandboxes)
 #       --check                     Run an endpoint health check before launching
 #       -- <args>                   Pass remaining args through to hermes/herm
+#
+# TUI: many panes per HERMES_HOME. Each pane owns its gateway pipe + Hermes
+# session. Extra panes start `--fresh` (do not resume the live session).
+# Coordinate via `atop vi` buffers, not a shared rendered TUI.
 #
 # Each agent runs under its own HERMES_HOME so it never touches ~/.hermes.
 set -euo pipefail
@@ -31,6 +41,14 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+if [ -f "$SCRIPT_DIR/../agentic-dev/host-env.sh" ]; then
+  # shellcheck source=../agentic-dev/host-env.sh
+  . "$SCRIPT_DIR/../agentic-dev/host-env.sh"
+fi
+if [ -f "$SCRIPT_DIR/fork-env.sh" ]; then
+  # shellcheck source=fork-env.sh
+  . "$SCRIPT_DIR/fork-env.sh"
+fi
 PY_BACKEND="$SCRIPT_DIR/hermes_agents.py"
 TEMPLATE_SRC="$SCRIPT_DIR/profiles/TEMPLATE.yaml"
 PLUGIN_DIR="$SCRIPT_DIR/plugins/cartesia"
@@ -38,7 +56,13 @@ PLUGIN_DIR="$SCRIPT_DIR/plugins/cartesia"
 # Resolve a `new --dir` target: keyword shorthand or a literal path.
 resolve_profile_dir() {
   case "$1" in
-    work)     echo "$HOME/src/karan.hiremath/agentic/hermes/profiles" ;;
+    work)
+      if [ "${AGENTIC_HOST_CLASS:-}" = personal ]; then
+        echo "ERROR: work profile dir is not available on a personal host" >&2
+        exit 1
+      fi
+      echo "$HOME/src/karan.hiremath/agentic/hermes/profiles"
+      ;;
     personal) echo "$HOME/src/hermes/profiles" ;;
     profile)  echo "$SCRIPT_DIR/profiles" ;;
     *)        echo "$1" ;;
@@ -51,9 +75,24 @@ PY="$VENV/bin/python"
 SHIM_DIR="${HERMES_SHIM_DIR:-$HOME/.local/bin}"
 export PATH="$SHIM_DIR:$VENV/bin:$PATH"
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+ensure_profile_sandbox() {
+  local profile="$1"
+  local work="${COSW_WORK_DEVBOX:-$HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox}"
+  local personal="${COS_PERSONAL_DEVBOX:-$HOME/src/hermes/sandboxes/personal-devbox}"
+  if [ "${AGENTIC_HOST_CLASS:-}" != personal ] && [ -e "$work" ] && "$work" has "$profile"; then
+    "$work" ensure "$profile"
+    return 0
+  fi
+  if [ -e "$personal" ] && "$personal" has "$profile"; then
+    "$personal" ensure "$profile"
+    return 0
+  fi
+  die "no sandbox stack for profile: $profile (try: cosw-s ls or cos-s ls)"
+}
 
 [ -x "$PY" ] || die "Hermes venv python missing ($PY); run bin/hermes/install first"
 
@@ -100,19 +139,50 @@ case "$cmd" in
     HERMES_HOME="$home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt
     ;;
 
+  secrets-status)
+    "$PY" "$PY_BACKEND" secrets-status
+    ;;
+
+  secrets-refresh)
+    "$PY" "$PY_BACKEND" secrets-refresh
+    ;;
+
   up)
     [ "$#" -ge 1 ] || die "up needs a profile name"
     profile="$1"; shift
-    surface=""; platform=""; do_check=0; passthrough=()
+    surface=""; platform=""; do_check=0; model=""; provider=""; sandbox=""; passthrough=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --surface) surface="${2:?}"; shift 2 ;;
         --platform) platform="${2:?}"; shift 2 ;;
+        --model) model="${2:?}"; shift 2 ;;
+        --provider) provider="${2:?}"; shift 2 ;;
+        --host|--host-tools|--no-sandbox) sandbox="host"; shift ;;
+        --sandbox|--docker) sandbox="sandbox"; shift ;;
         --check) do_check=1; shift ;;
         --) shift; passthrough=("$@"); break ;;
         *) die "unknown option: $1" ;;
       esac
     done
+    if [ "$sandbox" = "host" ]; then
+      export HERMES_AGENT_TERMINAL_BACKEND=local
+      export TERMINAL_ENV=local
+    elif [ "$sandbox" = "sandbox" ]; then
+      export HERMES_AGENT_TERMINAL_BACKEND=docker
+      export TERMINAL_ENV=docker
+      export TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES="${TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES:-true}"
+      ensure_profile_sandbox "$profile"
+    fi
+    if [ -n "$provider" ]; then
+      export HERMES_AGENT_LLM_PROVIDER="$provider"
+      export HERMES_INFERENCE_PROVIDER="$provider"
+      export HERMES_TUI_PROVIDER="$provider"
+    fi
+    if [ -n "$model" ]; then
+      export HERMES_AGENT_LLM_MODEL="$model"
+      export HERMES_INFERENCE_MODEL="$model"
+      export HERMES_MODEL="$model"
+    fi
 
     # Default surface from the profile if not overridden.
     [ -n "$surface" ] || surface="$("$PY" "$PY_BACKEND" resolve "$profile" | sed -n 's/.*"surface": *"\([^"]*\)".*/\1/p')"
@@ -131,14 +201,52 @@ case "$cmd" in
     fi
 
     export HERMES_HOME="$runtime_home"
+    case "$profile" in
+      chief-of-staff|chief-of-staff-work)
+        export HERMES_BUSY_INPUT_MODE="${HERMES_BUSY_INPUT_MODE:-steer}"
+        ;;
+    esac
+    if [ "$surface" = "tui" ]; then
+      # shellcheck source=tui-panes.sh
+      . "$SCRIPT_DIR/tui-panes.sh"
+      tui_panes_register "$runtime_home"
+      export HERMES_TUI_PANE_PID="$$"
+      _others="$(tui_panes_others "$runtime_home" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+      if [ -n "${_others:-}" ]; then
+        echo "tui: extra pane pid=$$ others=$_others — new Hermes session; steer via atop vi" >&2
+        tui_passthrough_force_fresh "${passthrough[@]+"${passthrough[@]}"}"
+        passthrough=("${TUI_FRESH_ARGS[@]}")
+      fi
+    fi
+    # Cursor SDK reads process env, not only HERMES_HOME/.env. Export without echoing.
+    if [ -f "$runtime_home/.env" ]; then
+      _cursor_key="$(sed -n 's/^CURSOR_API_KEY=//p' "$runtime_home/.env" | tail -n 1 || true)"
+      if [ -n "${_cursor_key:-}" ]; then
+        export CURSOR_API_KEY="$_cursor_key"
+        launchctl setenv CURSOR_API_KEY "$_cursor_key" 2>/dev/null || true
+      fi
+      unset _cursor_key
+    fi
+    resolve_herm() {
+      if [ -x "$HOME/src/herm/src/index.tsx" ] && [ -x "$HOME/.local/bin/herm" ]; then
+        printf '%s\n' "$HOME/.local/bin/herm"
+        return 0
+      fi
+      if [ -x "$HOME/src/herm/src/index.tsx" ]; then
+        printf '%s\n' "$HOME/src/herm/src/index.tsx"
+        return 0
+      fi
+      command -v herm
+    }
+
     case "$surface" in
       cli)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"
         exec hermes chat "${passthrough[@]+"${passthrough[@]}"}"
         ;;
       tui)
-        command -v herm >/dev/null 2>&1 || die "herm (TUI) not installed; run bin/hermes/install-tui"
-        exec herm "${passthrough[@]+"${passthrough[@]}"}"
+        herm_bin="$(resolve_herm)" || die "herm (TUI) not installed; run bin/hermes/install-tui"
+        exec "$herm_bin" "${passthrough[@]+"${passthrough[@]}"}"
         ;;
       gateway)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": {
+    "preCompact": [
+      {
+        "command": "./hooks/handoff-lane.mjs"
+      }
+    ],
+    "stop": [
+      {
+        "command": "./hooks/handoff-lane.mjs",
+        "loop_limit": 1
+      }
+    ]
+  }
+}

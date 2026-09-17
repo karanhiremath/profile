@@ -16,7 +16,20 @@ Tool-only repo. No Cartesia project context, customer data, or work notes.
 ```bash
 just cursor-cli    # install/upgrade cursor-agent
 just cursor-setup  # link agents/skills + validate models
+just agentic-dev   # all agentic toolkits including atop + host-class CosW
+just atop          # fleet TUI only
 ```
+
+`just agentic-dev` (`just dev`) installs every agentic CLI, then provisions CosW
+for the host class. Overrides: `--mode host|sandbox`, `--project NAME`,
+`--class personal|work`.
+
+| Class | CosW plane | Profiles / registry |
+|-------|------------|---------------------|
+| personal (home-mac-mini) | krop-tf / krop-infra / krop-ai | `~/src/hermes` only |
+| work | work-checkout agentic Hermes | `~/src/karan.hiremath` first; no krop registry |
+
+Sandbox mode does not mutate host-global CLIs unless `--install-tools`.
 
 ### Model defaults (orchestrator samples)
 
@@ -44,6 +57,16 @@ Profile owns only generic command wrappers; project/work details live in `~/src/
 - `pl <project>` → attach the registered project-lead implementation-agent tmux session
 
 For Hermes PM-managed Pi handoffs, the generic rule is mandatory: the handoff writer must emit a `pm_action_required` event on the project event bus telling the PM to register/spawn the replacement Pi agent with the handoff prompt. Do not hard-code Cartesia project state in profile; read project registries via `bin/hermes/project_sessions.py`.
+
+Pi/Cursor context handoff (60/70/75, `/handoff-now`, Cursor `preCompact` hook): `config/pi/HANDOFF.md`. Apply with `bin/atop/harness-sync apply`.
+
+### AOS filter + policy engine
+
+`aos.policy.v1` filters/transforms inbound bytes, context, memory, catalogs
+(tools/skills/extensions/prompts/harness), CoT/MoA, and graph-eng edges.
+`just aos-policy` then `aos policy apply`. Silent herm-tui + Cursor rules
+never appear in CoT or human-visible tokens. Overlay writes need ACL/JIT
+(`cos` / `cosw` / `aos-policy-editor`). Docs: `config/aos/policy/README.md`.
 
 ### Fleet registry
 

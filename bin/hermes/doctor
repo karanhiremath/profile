@@ -52,10 +52,50 @@ if command -v herm >/dev/null 2>&1 && command -v bun >/dev/null 2>&1; then
     printf 'herm_help=failed\n'
   fi
 fi
+if [ -x "$HOME/src/herm/src/index.tsx" ]; then
+  printf 'herm_tui_fork=%s\n' "$HOME/src/herm/src/index.tsx"
+else
+  printf 'herm_tui_fork=missing\n'
+fi
+if [ -x "$SHIM_DIR/herm" ] && grep -q "$HOME/src/herm/src/index.tsx" "$SHIM_DIR/herm" 2>/dev/null; then
+  printf 'herm_shim_target=fork\n'
+else
+  printf 'herm_shim_target=not-fork\n'
+fi
+stale_herm=""
+for dest in "$PNPM_HOME/bin/herm" "$HERMES_TOOLCHAIN_HOME/npm/bin/herm" "$HOME/.local/share/pnpm/bin/herm"; do
+  [ -e "$dest" ] || [ -L "$dest" ] || continue
+  if grep -q "$HOME/src/herm/src/index.tsx" "$dest" 2>/dev/null; then
+    continue
+  fi
+  stale_herm="${stale_herm}${stale_herm:+,}$dest"
+done
+if [ -n "$stale_herm" ]; then
+  printf 'herm_stale_wrappers=%s\n' "$stale_herm"
+else
+  printf 'herm_stale_wrappers=none\n'
+fi
 
 if [ -d "$PRIVATE_DIR/.git" ]; then
   printf 'private_repo=present\n'
   git -C "$PRIVATE_DIR" status --short --branch
 else
   printf 'private_repo=missing\n'
+fi
+
+# shellcheck source=fork-env.sh
+. "$(dirname "$0")/fork-env.sh"
+printf 'hermes_agent_fork_root=%s\n' "${HERMES_AGENT_FORK_ROOT:-missing}"
+if [ -x "$(dirname "$0")/fork-sync" ]; then
+  printf 'hermes_fork_sync=\n'
+  "$(dirname "$0")/fork-sync" status || true
+fi
+
+if [ -x "$(dirname "$0")/sandbox-ctl" ]; then
+  printf 'sandbox_families=\n'
+  "$(dirname "$0")/sandbox-ctl" families 2>/dev/null || printf 'sandbox_families=missing\n'
+  printf 'cos_sandbox=\n'
+  "$(dirname "$0")/sandbox-ctl" --profile chief-of-staff status 2>/dev/null || printf 'cos_sandbox=status-failed\n'
+  printf 'cosw_sandbox=\n'
+  "$(dirname "$0")/sandbox-ctl" --profile chief-of-staff-work status 2>/dev/null || printf 'cosw_sandbox=status-failed\n'
 fi

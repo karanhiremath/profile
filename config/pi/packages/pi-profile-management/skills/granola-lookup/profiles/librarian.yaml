@@ -1,0 +1,12 @@
+name: librarian
+class: librarian
+agent: work-notes-librarian
+granola: allow-on-skill
+mcp:
+  - query_granola_meetings
+  - list_meetings
+  - get_meetings
+folderIds: []
+people: []
+topics: []
+notes: Work-private ledger in ~/src/karan.hiremath. Granola only for a cited meeting lookup.

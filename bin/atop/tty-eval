@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# Capture a command's screen on a real PTY (or QEMU console). Never Cos send-keys.
+# Usage: atop tty [--probe] [--mode pty|qemu] [--cols N] [--rows N] [--settle-ms N] -- CMD...
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: atop tty [--probe] [--mode pty|qemu] [--cols N] [--rows N] [--settle-ms N]
+                [--out PATH] [--plain] -- CMD...
+
+  --probe         inventory TTY + QEMU/UTM/Lima/SSH:2222; JSON on stdout
+  --mode pty      local PTY (default). Child sees a real tty.
+  --mode qemu     guest via qemu serial or ssh -t 127.0.0.1:2222
+  --settle-ms N   wait after spawn before dumping the frame (default 1500)
+  --out PATH      write the frame to PATH (0600); still prints stdout
+  --plain         strip CSI/OSC so the frame is readable
+
+Stdout is the captured frame (or probe JSON). Diagnostics on stderr.
+Does not touch Cos / CosW / live atop panes.
+EOF
+}
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+MODE="pty"
+COLS=120
+ROWS=40
+SETTLE_MS=1500
+PROBE=0
+PLAIN=0
+OUT=""
+CMD=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --probe) PROBE=1; shift ;;
+    --plain) PLAIN=1; shift ;;
+    --out)
+      OUT="$2"
+      shift 2
+      ;;
+    --mode)
+      MODE="$2"
+      shift 2
+      ;;
+    --cols)
+      COLS="$2"
+      shift 2
+      ;;
+    --rows)
+      ROWS="$2"
+      shift 2
+      ;;
+    --settle-ms)
+      SETTLE_MS="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      CMD=("$@")
+      break
+      ;;
+    *)
+      CMD+=("$1")
+      shift
+      ;;
+  esac
+done
+
+probe_json() {
+  python3 - "$COLS" "$ROWS" <<'PY'
+import json, os, shutil, socket, subprocess, sys
+
+cols, rows = int(sys.argv[1]), int(sys.argv[2])
+
+def which(name):
+    return shutil.which(name)
+
+def listening(host, port):
+    s = socket.socket()
+    s.settimeout(0.25)
+    try:
+        s.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+def pgrep(pat):
+    try:
+        out = subprocess.check_output(["pgrep", "-lf", pat], text=True, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+def listen_owner(port):
+    try:
+        out = subprocess.check_output(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            text=True, stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    for ln in out.splitlines()[1:]:
+        return ln.split()[0]
+    return None
+
+qemu_bins = [p for p in (
+    which("qemu-system-aarch64"),
+    which("qemu-system-x86_64"),
+    which("qemu-img"),
+    which("utmctl"),
+    which("limactl"),
+) if p]
+vnc_owner = listen_owner(5900) if listening("127.0.0.1", 5900) else None
+apple_vnc = bool(
+    (vnc_owner and vnc_owner in {"screensharingd", "ScreensharingAgent", "VNCPrivilegeProxy"})
+    or pgrep("screensharingd")
+    or pgrep("AppleVNCServer")
+)
+
+print(json.dumps({
+    "schema": "atop.tty-eval.probe.v1",
+    "host_tty": {"stdin": os.isatty(0), "stdout": os.isatty(1)},
+    "cols": cols,
+    "rows": rows,
+    "qemu": {
+        "bins": qemu_bins,
+        "procs": pgrep("qemu-system") + pgrep("qemu-system-"),
+        "ssh_2222": listening("127.0.0.1", 2222),
+        "vnc_5900": listening("127.0.0.1", 5900) and not apple_vnc,
+        "vnc_owner": vnc_owner,
+        "apple_screensharing": apple_vnc,
+        "spice_5930": listening("127.0.0.1", 5930),
+    },
+    "note": "Local --mode pty for nvim/telescope. --mode qemu needs qemu-system or ssh 127.0.0.1:2222.",
+}, indent=2))
+PY
+}
+
+if [[ "$PROBE" -eq 1 ]]; then
+  probe_json
+  exit 0
+fi
+
+if [[ ${#CMD[@]} -eq 0 ]]; then
+  printf 'atop-tty: missing CMD. Try: atop tty --probe  or  atop tty -- atop vi\n' >&2
+  usage >&2
+  exit 2
+fi
+
+if [[ "$MODE" == qemu ]]; then
+  python3 - <<'PY'
+import json, socket, sys
+s = socket.socket(); s.settimeout(0.25)
+ok = False
+try:
+    s.connect(("127.0.0.1", 2222))
+    ok = True
+except OSError:
+    pass
+finally:
+    s.close()
+sys.exit(0 if ok else 3)
+PY
+  ssh_st=$?
+  if [[ "$ssh_st" -ne 0 ]]; then
+    printf 'atop-tty: qemu mode needs a guest (ssh 127.0.0.1:2222 or qemu-system). Probe:\n' >&2
+    probe_json >&2
+    exit 3
+  fi
+  printf 'atop-tty: mode=qemu ssh=127.0.0.1:2222\n' >&2
+  exec ssh -t -o BatchMode=yes -o ConnectTimeout=3 -p 2222 127.0.0.1 -- "${CMD[@]}"
+fi
+
+if [[ "$MODE" != pty ]]; then
+  printf 'atop-tty: unknown --mode %s\n' "$MODE" >&2
+  exit 2
+fi
+
+printf 'atop-tty: mode=pty %sx%s settle=%sms cmd=%s\n' "$COLS" "$ROWS" "$SETTLE_MS" "${CMD[*]}" >&2
+
+export ATOP_TTY_OUT="${OUT}"
+export ATOP_TTY_PLAIN="$PLAIN"
+python3 - "$COLS" "$ROWS" "$SETTLE_MS" "${CMD[@]}" <<'PY'
+import errno
+import fcntl
+import os
+import re
+import select
+import signal
+import struct
+import sys
+import termios
+import time
+
+cols = int(sys.argv[1])
+rows = int(sys.argv[2])
+settle_ms = int(sys.argv[3])
+cmd = sys.argv[4:]
+out_path = os.environ.get("ATOP_TTY_OUT") or ""
+plain = os.environ.get("ATOP_TTY_PLAIN") == "1"
+hard_s = max(8, int(settle_ms / 1000.0) + 15)
+
+def _alarm(_signum, _frame):
+    raise TimeoutError("atop-tty: hard timeout")
+
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(hard_s)
+
+def to_plain(raw: bytes) -> bytes:
+    text = raw.decode("utf-8", "replace")
+    text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
+    text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
+    text = re.sub(r"\x1b[PX^_].*?\x1b\\", "", text, flags=re.S)
+    text = text.replace("\x1b", "")
+    return text.encode("utf-8", "replace")
+
+pid, fd = os.forkpty()
+if pid == 0:
+    os.environ.setdefault("TERM", "xterm-256color")
+    os.environ["COLUMNS"] = str(cols)
+    os.environ["LINES"] = str(rows)
+    os.execvp(cmd[0], cmd)
+
+def kill_tree(child):
+    for fn in (
+        lambda: os.killpg(child, signal.SIGKILL),
+        lambda: os.kill(child, signal.SIGKILL),
+    ):
+        try:
+            fn()
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+buf = bytearray()
+settle_until = time.time() + settle_ms / 1000.0
+try:
+    while time.time() < settle_until:
+        timeout = max(0.05, settle_until - time.time())
+        r, _, _ = select.select([fd], [], [], timeout)
+        if not r:
+            continue
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError as e:
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                continue
+            if e.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        buf.extend(chunk)
+finally:
+    kill_tree(pid)
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+frame = to_plain(bytes(buf)) if plain else bytes(buf)
+if out_path:
+    fdout = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fdout, frame)
+        if frame and not frame.endswith(b"\n"):
+            os.write(fdout, b"\n")
+    finally:
+        os.close(fdout)
+signal.alarm(0)
+sys.stdout.buffer.write(frame)
+if frame and not frame.endswith(b"\n"):
+    sys.stdout.buffer.write(b"\n")
+PY

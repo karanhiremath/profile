@@ -118,3 +118,6 @@ fi
 echo ""
 echo "✓ Profile installation complete"
 echo "  Run 'source ~/.zshrc' or start a new shell to activate"
+echo "  Agentic toolkits (pi/hermes/atop/cosw): just agentic-dev"
+echo "    host:    just agentic-dev --mode host"
+echo "    sandbox: just agentic-dev --mode sandbox --project <name>"

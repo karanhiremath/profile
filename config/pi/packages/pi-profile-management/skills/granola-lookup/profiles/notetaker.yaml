@@ -1,0 +1,13 @@
+name: notetaker
+class: notetaker
+agent: granola-notetaker
+granola: allow-on-skill
+mcp:
+  - query_granola_meetings
+  - list_meetings
+  - get_meetings
+  - get_meeting_transcript
+folderIds: []
+people: []
+topics: []
+notes: Meeting notetaker class. Load this profile before any Granola MCP. Folder IDs filled per meeting source when known.

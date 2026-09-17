@@ -10,6 +10,8 @@ config.yaml and passes them here; anything omitted falls back to env defaults
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -17,13 +19,40 @@ import httpx
 from agent.tts_provider import TTSProvider
 
 from ._common import auth_headers, base_url, get_env
+from ._tts_guard import filter_transcript as _builtin_filter
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "sonic-3.5"  # latest stable (rolling); override via tts.model / CARTESIA_TTS_MODEL
+DEFAULT_MODEL = "sonic-3.6"  # latest GA; override via tts.model / CARTESIA_TTS_MODEL
 DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_BIT_RATE = 128000
 HTTP_TIMEOUT = 60.0
+
+
+def _filter_tts_transcript(text: str) -> str:
+    """aos.policy stream.tts, then the in-plugin exact-sentence guard."""
+    try:
+        here = Path(__file__).resolve()
+        candidates: list[Path] = []
+        env = get_env("AOS_POLICY_ENGINE") or ""
+        if env:
+            candidates.append(Path(env))
+        try:
+            candidates.append(here.parents[3] / "aos-policy")
+        except IndexError:
+            pass
+        candidates.append(Path.home() / "src" / "profile" / "bin" / "aos-policy")
+        for root in candidates:
+            if not (root / "voice.py").is_file():
+                continue
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            from voice import filter_transcript  # type: ignore
+
+            return str(filter_transcript(text).get("speech") or text)
+    except Exception:  # noqa: BLE001 — TTS must still speak a continuation
+        pass
+    return _builtin_filter(text)
 
 
 def _output_format(fmt: str, sample_rate: int) -> Dict[str, Any]:
@@ -80,7 +109,8 @@ class CartesiaTTSProvider(TTSProvider):
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [
-            {"id": "sonic-3.5", "display": "Sonic 3.5 (latest)"},
+            {"id": "sonic-3.6", "display": "Sonic 3.6 (latest)"},
+            {"id": "sonic-3.5", "display": "Sonic 3.5"},
             {"id": "sonic-3", "display": "Sonic 3"},
             {"id": "sonic-latest", "display": "Sonic (rolling latest alias)"},
         ]
@@ -155,9 +185,10 @@ class CartesiaTTSProvider(TTSProvider):
         except ValueError:
             sample_rate = DEFAULT_SAMPLE_RATE
 
+        spoken = _filter_tts_transcript(text)
         body: Dict[str, Any] = {
             "model_id": model_id,
-            "transcript": text,
+            "transcript": spoken,
             "voice": {"mode": "id", "id": voice_id},
             "output_format": _output_format(format, sample_rate),
         }

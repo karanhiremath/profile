@@ -1,0 +1,56 @@
+# Profile-managed oh-my-pi defaults (personal + work seed).
+# Must exist BEFORE the first `omp` process so first-run discovery cannot
+# inherit ~/.claude / ~/.cursor MCP servers (Datadog, Cursor plugins).
+# Work MCP overlays live in ~/.omp/work-agent/ (machine-local), not here.
+# Docs: https://github.com/can1357/oh-my-pi/blob/main/docs/context-files.md
+#       https://github.com/can1357/oh-my-pi/blob/main/docs/settings.md
+startup:
+  quiet: true
+  showSplash: false
+  setupWizard: false
+
+# Per-builtin toggles (schema keys). Approval deny is not enough for eval/browser.
+eval:
+  py: false
+  js: false
+
+browser:
+  enabled: false
+
+computer:
+  enabled: false
+
+tools:
+  approvalMode: always-ask
+  approval:
+    bash: prompt
+    read: allow
+    write: prompt
+    edit: prompt
+    eval: deny
+    browser: deny
+    computer: deny
+    github: deny
+    security_scan: deny
+
+mcp:
+  enableProjectConfig: false
+
+# Discovery-provider ids only. Do not put model backends here (arrays replace).
+# Keep native + omp-plugins + builtin-defaults so ~/.omp itself still loads.
+disabledProviders:
+  - claude
+  - claude-plugins
+  - claude-md
+  - agent-plugins
+  - codex
+  - agents
+  - gemini
+  - opencode
+  - cursor
+  - windsurf
+  - cline
+  - github
+  - vscode
+  - agents-md
+  - mcp-json

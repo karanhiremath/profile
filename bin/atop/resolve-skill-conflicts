@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# One skill name, one discovery root.
+# Cursor-in-pi unions ~/.pi/agent/skills ~/.agents/skills ~/.claude/skills
+# ~/.cursor/skills ~/.codex/skills. Same frontmatter `name:` in two roots is a
+# conflict even when files are identical or all symlink to the same inode.
+#
+# Inheritance:
+#   ~/src/profile/skills/pi/<name> is canonical when present (harness-sync apply).
+#   Do not invent a second name for the same skill. Codex session-compaction is
+#   the May 22 compact-first body, not a Cursor-in-pi adapter.
+#
+# Only pi-crossing names are in the keep-map. Vendor AWS/google triples in
+# agents/claude/cursor are left alone.
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: resolve-skill-conflicts [--dry-run]
+
+Disables extra registrations of the same skill name across harness skill roots
+so Cursor-in-pi sees each name once. Canonical owner is the keep-map (profile/pi
+unless a fuller non-pi copy is the owner).
+
+  --dry-run   print moves, do not change anything
+EOF
+}
+
+dry_run=0
+case "${1:-}" in
+  "" ) ;;
+  --dry-run) dry_run=1 ;;
+  --help|-h) usage; exit 0 ;;
+  *) usage; exit 2 ;;
+esac
+
+pi_skills="${PI_AGENT_SKILLS_DIR:-$HOME/.pi/agent/skills}"
+agents_skills="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}"
+claude_skills="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+cursor_skills="${CURSOR_SKILLS_DIR:-$HOME/.cursor/skills}"
+codex_skills="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}"
+stamp="${SKILL_CONFLICT_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
+backup_root="${SKILL_CONFLICT_BACKUP_DIR:-$HOME/.pi/agent/skills.disabled/duplicates-$stamp}"
+
+# name -> keep root label
+keep_name() {
+  case "$1" in
+    session-compaction) printf 'pi\n' ;;
+    herm-tui-profiles) printf 'pi\n' ;;
+    idle-steer) printf 'pi\n' ;;
+    nvim-prompt-workbench) printf 'pi\n' ;;
+    supacode-cli) printf 'agents\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+root_path() {
+  case "$1" in
+    pi) printf '%s\n' "$pi_skills" ;;
+    agents) printf '%s\n' "$agents_skills" ;;
+    claude) printf '%s\n' "$claude_skills" ;;
+    cursor) printf '%s\n' "$cursor_skills" ;;
+    codex) printf '%s\n' "$codex_skills" ;;
+    *) return 1 ;;
+  esac
+}
+
+moved=0
+for name in session-compaction herm-tui-profiles idle-steer nvim-prompt-workbench supacode-cli; do
+  keep="$(keep_name "$name")"
+  keep_dir="$(root_path "$keep")"
+  keep_path="$keep_dir/$name"
+  if [[ ! -e "$keep_path/SKILL.md" ]]; then
+    printf 'skip %s: keep root %s missing SKILL.md\n' "$name" "$keep" >&2
+    continue
+  fi
+  for root in pi agents claude cursor codex; do
+    [[ "$root" == "$keep" ]] && continue
+    candidate="$(root_path "$root")/$name"
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    dest="$backup_root/$root-$name"
+    printf 'disable %s from %s (keep %s)\n' "$name" "$root" "$keep" >&2
+    if [[ "$dry_run" -eq 0 ]]; then
+      mkdir -p "$backup_root"
+      mv "$candidate" "$dest"
+    fi
+    moved=$((moved + 1))
+  done
+done
+
+if [[ "$moved" -eq 0 ]]; then
+  printf 'no pi-crossing skill conflicts\n' >&2
+  exit 0
+fi
+if [[ "$dry_run" -eq 1 ]]; then
+  printf 'dry-run: %s moves (no backup written)\n' "$moved" >&2
+  exit 0
+fi
+printf 'disabled %s extra registrations\nbackup=%s\n' "$moved" "$backup_root" >&2

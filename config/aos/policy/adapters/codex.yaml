@@ -1,0 +1,9 @@
+schema: aos.policy.adapter.v1
+id: codex
+target: ~/.codex/aos-policy.toml
+native: config.toml approvals
+notes: Sidecar for Codex approval_policy + denied tool names.
+merge:
+  approval_policy: on-request
+  aos_policy.denied_tools: catalog.tools.deny
+  aos_policy.allowed_tools: catalog.tools.allow

@@ -133,12 +133,34 @@ function local_tmux ()
     echo "Connecting to local session name: ${sessionname}"
     tmux has-session -t "${sessionname}" && tmux attach-session -t "${sessionname}" || exec tmux new -s "${sessionname}"
 }
+
 function mac ()
 {
-    local sessionname="${1:-mac}"
-    echo "Connecting to local session name: ${sessionname}"
-    local_tmux "${sessionname}"
+    local _tc="${PROFILE_DIR:-$HOME/src/profile}/bin/tmux/tmux-connect"
+    case "${1:-}" in
+        -h|--help|help)
+            echo "Usage: mac [session]   attach/create local tmux session (default: mac)"
+            echo "       mac --ls        list attachable local tmux sessions"
+            ;;
+        --ls|-l)
+            "$_tc" --ls local
+            ;;
+        *)
+            local_tmux "${1:-mac}"
+            ;;
+    esac
 }
+
+_mac_completions() {
+    local -a flags sessions
+    flags=("--ls:list attachable sessions" "--help:show help")
+    sessions=(${(f)"$(tmux list-sessions -F '#S' 2>/dev/null)"})
+    if (( CURRENT == 2 )); then
+        _describe 'flag' flags
+        _describe 'session' sessions
+    fi
+}
+compdef _mac_completions mac
 
 alias reload-ssh='eval $(tmux show-env -s | grep '^SSH_')'
 
@@ -167,6 +189,15 @@ alias vi="nvim"
 
 # update pi coding agent
 alias pi-update="${PROFILE_DIR}/bin/pi/install"
+
+# update oh-my-pi (omp) — same installer as `just omp`
+alias omp-update="${PROFILE_DIR}/bin/omp/install"
+
+# Isolated named work profile. Default `omp` already uses ~/.omp/agent
+# configured by bin/omp/install from ~/.omp/default-profile (mirrors pi).
+function omp-work() {
+    command omp --profile=work "$@"
+}
 
 # pi-code session manager (tmux + nvim + pi)
 # Binary built from profile/bin/pc (Rust). Install: just pc
@@ -228,11 +259,18 @@ _agents_completions() {
     if [[ -n "$HERMES_AGENT_PROFILE_PATH" ]]; then
         dirs=(${(s/:/)HERMES_AGENT_PROFILE_PATH})
     else
-        dirs=(
-            "$HOME/src/karan.hiremath/agentic/hermes/profiles"
-            "$HOME/src/hermes/profiles"
-            "$HOME/src/profile/bin/hermes/profiles"
-        )
+        if [[ "${AGENTIC_HOST_CLASS:-}" == personal ]]; then
+            dirs=(
+                "$HOME/src/hermes/profiles"
+                "$HOME/src/profile/bin/hermes/profiles"
+            )
+        else
+            dirs=(
+                "$HOME/src/karan.hiremath/agentic/hermes/profiles"
+                "$HOME/src/hermes/profiles"
+                "$HOME/src/profile/bin/hermes/profiles"
+            )
+        fi
     fi
     local d f
     for d in $dirs; do
@@ -289,10 +327,17 @@ if [ -x "${_hermes_toolchain_home}/venv/bin/python" ]; then
 fi
 unset _hermes_toolchain_home
 
+if [ -f "$HOME/src/profile/bin/agentic-dev/host-env.sh" ]; then
+    # shellcheck source=bin/agentic-dev/host-env.sh
+    . "$HOME/src/profile/bin/agentic-dev/host-env.sh"
+fi
+
 # Hermes voice/agent launcher (profiles -> isolated agents; CLI/TUI/gateway)
 alias agents="$HOME/src/profile/bin/hermes/agents"
 alias cos="$HOME/src/profile/bin/hermes/cos"
+alias cos-gpt5.5="$HOME/src/profile/bin/hermes/cos-gpt5.5"
 alias cosw="$HOME/src/profile/bin/hermes/cosw"
+alias slin="$HOME/src/profile/bin/hermes/slin"
 alias pm="$HOME/src/profile/bin/hermes/pm"
 alias pl="$HOME/src/profile/bin/hermes/pl"
 
@@ -304,6 +349,7 @@ _hermes_project_completions() {
 compdef _hermes_project_completions pm
 compdef _hermes_project_completions pl
 
-# Source work-specific extensions if present
-# karan.hiremath provides: tc (training clusters), ic (inference clusters), dashboard
-[ -f "$HOME/src/karan.hiremath/scripts/shell-ext.sh" ] && source "$HOME/src/karan.hiremath/scripts/shell-ext.sh"
+# Work-host extensions only. Personal class never sources the work checkout.
+if [ "${AGENTIC_HOST_CLASS:-}" != personal ] && [ -f "$HOME/src/karan.hiremath/scripts/shell-ext.sh" ]; then
+    source "$HOME/src/karan.hiremath/scripts/shell-ext.sh"
+fi

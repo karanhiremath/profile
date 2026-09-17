@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Link official Hermes autonomous-ai-agents skills and profile skills/pi trees.
+# Usage: install-skill-trees [--help] [--no-harness-sync]
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/atop/install-skill-trees [--no-harness-sync]
+
+Symlink (never copy) official Hermes autonomous-ai-agents skills and
+profile skills/pi into the top-level homes AND the nested runtime homes
+`.../profiles/<name>/skills` that live `cos`/`cosw` actually set as HERMES_HOME:
+
+  ~/.local/share/hermes-agents/chief-of-staff/skills/
+  ~/.local/share/hermes-agents/chief-of-staff/profiles/chief-of-staff/skills/
+  ~/.local/share/hermes-agents/chief-of-staff-work/skills/
+  ~/.local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/skills/
+  ~/.codex/skills/
+  ~/.pi/agent/skills/
+
+Then runs bin/atop/harness-sync apply unless --no-harness-sync.
+EOF
+}
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+RUN_HARNESS_SYNC=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --no-harness-sync) RUN_HARNESS_SYNC=0; shift ;;
+    *)
+      echo "install-skill-trees: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+HERMES_ROOT="${HERMES_AGENT_ROOT:-$HOME/src/hermes-agent}"
+BUNDLED="$HERMES_ROOT/skills/autonomous-ai-agents"
+OPTIONAL="$HERMES_ROOT/optional-skills/autonomous-ai-agents"
+PI_SKILLS="${PI_AGENT_SKILLS_DIR:-$HOME/.pi/agent/skills}"
+CODEX_SKILLS="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}"
+COS_SKILLS="${HERMES_COS_SKILLS_DIR:-$HOME/.local/share/hermes-agents/chief-of-staff/skills}"
+COSW_SKILLS="${HERMES_COSW_SKILLS_DIR:-$HOME/.local/share/hermes-agents/chief-of-staff-work/skills}"
+COS_NEST_SKILLS="${HERMES_COS_NEST_SKILLS_DIR:-$HOME/.local/share/hermes-agents/chief-of-staff/profiles/chief-of-staff/skills}"
+COSW_NEST_SKILLS="${HERMES_COSW_NEST_SKILLS_DIR:-$HOME/.local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/skills}"
+PROFILE_SKILLS="$PROFILE_DIR/skills/pi"
+SHARED_SKILLS="$PROFILE_DIR/skills/shared"
+
+log() { printf 'install-skill-trees: %s\n' "$*" >&2; }
+
+link_replace() {
+  local dest="$1" src="$2"
+  [ -e "$src" ] || [ -L "$src" ] || return 0
+  mkdir -p "$(dirname "$dest")"
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    rm -rf "$dest"
+  fi
+  ln -fns "$src" "$dest"
+}
+
+# Real directory of per-skill symlinks so grok can sit beside bundled names.
+link_autonomous_family() {
+  local dest="$1"
+  if [ -L "$dest" ]; then
+    rm -f "$dest"
+  fi
+  mkdir -p "$dest"
+  local src_root skill
+  for src_root in "$BUNDLED" "$OPTIONAL"; do
+    [ -d "$src_root" ] || continue
+    for skill in "$src_root"/*; do
+      [ -d "$skill" ] || continue
+      [ -f "$skill/SKILL.md" ] || continue
+      ln -fns "$skill" "$dest/$(basename "$skill")"
+    done
+  done
+}
+
+HERMES_SKILL_ROOTS=("$COS_SKILLS" "$COSW_SKILLS")
+[ -d "$(dirname "$COS_NEST_SKILLS")" ] && HERMES_SKILL_ROOTS+=("$COS_NEST_SKILLS")
+[ -d "$(dirname "$COSW_NEST_SKILLS")" ] && HERMES_SKILL_ROOTS+=("$COSW_NEST_SKILLS")
+
+mkdir -p "$PI_SKILLS" "$CODEX_SKILLS" "${HERMES_SKILL_ROOTS[@]}"
+
+if [ ! -d "$OPTIONAL/grok" ]; then
+  log "ERROR: missing $OPTIONAL/grok"
+  exit 1
+fi
+
+for root in "${HERMES_SKILL_ROOTS[@]}"; do
+  link_autonomous_family "$root/autonomous-ai-agents"
+  if [ -d "$OPTIONAL" ]; then
+    link_replace "$root/autonomous-ai-agents-optional" "$OPTIONAL"
+  fi
+done
+
+link_replace "$PI_SKILLS/autonomous-ai-agents-grok" "$OPTIONAL/grok"
+link_replace "$CODEX_SKILLS/autonomous-ai-agents-grok" "$OPTIONAL/grok"
+
+if [ -d "$OPTIONAL" ]; then
+  for skill in "$OPTIONAL"/*; do
+    [ -d "$skill" ] || continue
+    [ -f "$skill/SKILL.md" ] || continue
+    name="$(basename "$skill")"
+    [ "$name" = grok ] && continue
+    link_replace "$PI_SKILLS/autonomous-ai-agents-$name" "$skill"
+    link_replace "$CODEX_SKILLS/autonomous-ai-agents-$name" "$skill"
+  done
+fi
+
+link_profile_tree() {
+  local src_root="$1"
+  [ -d "$src_root" ] || return 0
+  local skill name root
+  for skill in "$src_root"/*; do
+    [ -d "$skill" ] || continue
+    [ -f "$skill/SKILL.md" ] || continue
+    name="$(basename "$skill")"
+    link_replace "$PI_SKILLS/$name" "$skill"
+    link_replace "$CODEX_SKILLS/$name" "$skill"
+    for root in "${HERMES_SKILL_ROOTS[@]}"; do
+      link_replace "$root/$name" "$skill"
+    done
+  done
+}
+
+link_profile_tree "$PROFILE_SKILLS"
+link_profile_tree "$SHARED_SKILLS"
+
+log "linked official + profile skill trees"
+
+if [ "$RUN_HARNESS_SYNC" = 1 ] && [ -x "$SCRIPT_DIR/harness-sync" ]; then
+  "$SCRIPT_DIR/harness-sync" apply
+fi

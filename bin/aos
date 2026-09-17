@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# aos — platform surface. Buffer ops go through aos-buf.
+# Usage: aos buf | aos apply | aos vi | aos tty
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+resolve_aos_buf() {
+  if [[ -n "${AOS_BUF:-}" && -x "${AOS_BUF}" ]]; then
+    printf '%s\n' "$AOS_BUF"
+    return 0
+  fi
+  local cand
+  for cand in \
+    "$SCRIPT_DIR/aos-buf/target/debug/aos-buf" \
+    "$SCRIPT_DIR/aos-buf/target/release/aos-buf" \
+    "${HOME}/.local/bin/aos-buf"
+  do
+    if [[ -x "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  command -v aos-buf
+}
+
+usage() {
+  cat <<'EOF'
+Usage: aos buf | aos apply | aos vi | aos tty | aos policy
+
+  aos buf catalog|list|get|set|apply|jobs|job   buffer primitives (aos-buf)
+  aos apply <id> --file PATH                    queued write; aos.apply.v1
+  aos vi ...                                    facade → atop vi
+  aos tty ...                                   PTY eval
+  aos policy list|eval|filter|compile|apply|grant|put|voice
+                                                filter + policy engine
+  aos policy voice filter|tick|brief|timeout    TTS exact-sentence rewrite
+EOF
+}
+
+resolve_aos_policy() {
+  if [[ -n "${AOS_POLICY:-}" && -x "${AOS_POLICY}" ]]; then
+    printf '%s\n' "$AOS_POLICY"
+    return 0
+  fi
+  local cand
+  for cand in \
+    "$SCRIPT_DIR/aos-policy/aos-policy" \
+    "${HOME}/.local/bin/aos-policy"
+  do
+    if [[ -x "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  command -v aos-policy
+}
+
+BUF="$(resolve_aos_buf || true)"
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+  buf)
+    shift
+    [[ -n "$BUF" ]] || { printf 'aos: missing aos-buf (just aos-buf)\n' >&2; exit 1; }
+    exec "$BUF" "$@"
+    ;;
+  apply)
+    shift
+    [[ -n "$BUF" ]] || { printf 'aos: missing aos-buf (just aos-buf)\n' >&2; exit 1; }
+    exec "$BUF" apply "$@"
+    ;;
+  vi)
+    shift
+    exec "$SCRIPT_DIR/a-top" vi "$@"
+    ;;
+  tty|eval)
+    shift
+    exec "$SCRIPT_DIR/a-top" tty "$@"
+    ;;
+  policy)
+    shift
+    POLICY="$(resolve_aos_policy || true)"
+    [[ -n "${POLICY:-}" ]] || { printf 'aos: missing aos-policy (just aos-policy)\n' >&2; exit 1; }
+    exec "$POLICY" "$@"
+    ;;
+  "")
+    usage >&2
+    exit 2
+    ;;
+  *)
+    printf 'aos: unknown command: %s\n' "$1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

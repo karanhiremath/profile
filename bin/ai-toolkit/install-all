@@ -80,6 +80,46 @@ else
 fi
 echo ""
 
+# oh-my-pi (omp)
+echo "==> Installing/upgrading omp..."
+if "${APP_BIN}/omp/install"; then
+    echo "✓ omp completed successfully"
+else
+    echo "✗ omp failed"
+    failed_installs+=("omp")
+fi
+echo ""
+
+# atop (agent-fleet TUI)
+echo "==> Installing/upgrading atop..."
+if "${APP_BIN}/atop/install"; then
+    echo "✓ atop completed successfully"
+else
+    echo "✗ atop failed"
+    failed_installs+=("atop")
+fi
+echo ""
+
+# Hermes isolated toolchain
+echo "==> Installing/upgrading Hermes..."
+if "${APP_BIN}/hermes/install"; then
+    echo "✓ Hermes completed successfully"
+else
+    echo "✗ Hermes failed"
+    failed_installs+=("hermes")
+fi
+echo ""
+
+# Codex CLI
+echo "==> Installing/upgrading Codex CLI..."
+if "${APP_BIN}/codex/install"; then
+    echo "✓ Codex CLI completed successfully"
+else
+    echo "✗ Codex CLI failed"
+    failed_installs+=("codex")
+fi
+echo ""
+
 # cmux
 echo "==> Installing/upgrading cmux..."
 if "${APP_BIN}/cmux/install"; then
@@ -147,6 +187,16 @@ if "${APP_BIN}/herdr/install"; then
 else
     echo "✗ herdr failed"
     failed_installs+=("herdr")
+fi
+echo ""
+
+# Linear custom-script hook
+echo "==> Installing Linear open-issue hook..."
+if "${APP_BIN}/linear/install"; then
+    echo "✓ Linear open-issue hook completed successfully"
+else
+    echo "✗ Linear open-issue hook failed"
+    failed_installs+=("linear")
 fi
 echo ""
 

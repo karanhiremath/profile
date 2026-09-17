@@ -6,12 +6,12 @@ config.yaml:
     tts:
       provider: cartesia
       voice: <cartesia-voice-id>     # or set CARTESIA_VOICE_ID in ~/.hermes/.env
-      model: sonic-3.5               # optional; defaults to latest (sonic-3.5)
+      model: sonic-3.6               # optional; defaults to latest (sonic-3.6)
     stt:
       enabled: true
       provider: cartesia
       cartesia:
-        model: ink-2                 # optional; defaults to latest (ink-2)
+        model: ink-preview           # websocket (ink-2 / ink-preview); batch is ink-whisper only
         language: en                 # optional
 
 Requires CARTESIA_API_KEY in ~/.hermes/.env.

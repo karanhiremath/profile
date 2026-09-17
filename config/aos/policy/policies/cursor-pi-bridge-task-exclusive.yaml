@@ -1,0 +1,38 @@
+schema: aos.policy.v1
+id: cursor-pi-bridge-task-exclusive
+priority: 80
+enabled: true
+mode: filter
+description: When the pi bridge exposes pi__subagent, Cursor-native Task/subagents are denied.
+when:
+  all:
+    - wrapper:
+        - pi
+        - cursor
+        - cursor-ide
+        - herm-tui
+        - hermes
+    - bridge_tools:
+        - pi__subagent
+        - subagent
+surfaces:
+  - catalog.tools
+rules:
+  - id: deny-cursor-task
+    surface: catalog.tools
+    action: deny
+    visibility: silent
+    match:
+      kind: name
+      any:
+        - Task
+        - task
+        - subagent
+        - best-of-n-runner
+        - generalPurpose
+        - explore
+        - cursor-guide
+        - ci-investigator
+        - bugbot
+        - security-review
+        - granola-engineer

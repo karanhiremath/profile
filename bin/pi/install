@@ -82,7 +82,15 @@ configure_pi_agent() {
     mkdir -p "$theme_dir" "$extensions_dir"
     cp "$theme_src" "$theme_dst"
     cp "$agents_src" "${pi_agent_dir}/AGENTS.md"
-    cp "$settings_src" "$settings_file"
+    # Do not clobber a work-host settings.json that already has work packages.
+    if [ -f "$settings_file" ] && grep -E 'pi-csec|karan.hiremath|cdev/session' "$settings_file" >/dev/null 2>&1; then
+        echo "Keeping existing work pi settings.json (not overwriting with personal defaults)"
+    else
+        cp "$settings_src" "$settings_file"
+    fi
+    if [ -x "${PROFILE_DIR}/bin/atop/harness-sync" ]; then
+        "${PROFILE_DIR}/bin/atop/harness-sync" apply || true
+    fi
     if [ -d "$extensions_src" ] && compgen -G "${extensions_src}/*.ts" >/dev/null; then
         cp "${extensions_src}"/*.ts "$extensions_dir"/
     fi

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Short aliases for work-devboxes sandboxes.
+#   cosw-s ls              list sandbox names
+#   cosw-s <name> [args]   start that sandbox and launch its profile
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+log() { printf 'cosw-s: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  cosw-s ls
+  cosw-s <sandbox-name> [cosw-or-agents args]
+
+Examples:
+  cosw-s ls
+  cosw-s cosw
+  cosw-s cosw --codex
+  cosw-s librarian
+EOF
+}
+
+work_devbox_cmd() {
+  local candidate="${COSW_WORK_DEVBOX:-$HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox}"
+  [ -e "$candidate" ] || die "work-devbox helper missing: $candidate"
+  printf '%s\n' "$candidate"
+}
+
+cmd="${1:-ls}"
+case "$cmd" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  ls|list)
+    exec "$(work_devbox_cmd)" ls
+    ;;
+esac
+
+devbox="$(work_devbox_cmd)"
+profile="$("$devbox" resolve-sandbox "$cmd" --field profile)" || exit 1
+launch="$("$devbox" resolve-sandbox "$cmd" --field launch)" || exit 1
+container="$("$devbox" resolve-sandbox "$cmd" --field container)" || exit 1
+shift
+
+# Pin persist-attach to the catalog box before leftover hermes-* can steal it.
+"$devbox" ensure "$profile"
+export COSW_SANDBOX_CONTAINER="$container"
+export HERMES_SANDBOX_CONTAINER="$container"
+
+if [ "$launch" = "cosw" ]; then
+  exec "$SCRIPT_DIR/cosw" --sandbox "$@"
+fi
+exec "$SCRIPT_DIR/agents" up "$profile" --sandbox "$@"

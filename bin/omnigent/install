@@ -24,15 +24,16 @@ fi
 
 python_bin="${OMNIGENT_PYTHON:-/usr/bin/python3.12}"
 if [ ! -x "$python_bin" ]; then
-  python_bin="$(command -v python3.12 || command -v python3 || true)"
+  python_bin="$(command -v python3.12 || true)"
 fi
+# uv accepts a version pin (e.g. 3.12) and will fetch CPython if needed.
 if [ -z "$python_bin" ]; then
-  echo "ERROR: no python3.12/python3 found for uv tool install" >&2
-  exit 1
+  python_bin="3.12"
 fi
 
 echo "Installing/upgrading Omnigent with $python_bin..."
-uv tool install --python "$python_bin" omnigent
+# --force so a stale uv-tool symlink (or older pin) can be replaced.
+uv tool install --force --python "$python_bin" omnigent
 
 echo ""
 omni --version

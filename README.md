@@ -16,11 +16,25 @@ cd profile
 
 This installs core tooling (zsh, vim/nvim, tmux, ghostty, cargo, just) and sources shell configs into `~/.zshrc`. On macOS it also installs Homebrew and runs the `mac` recipe.
 
-After install, reload your shell:
+After install, reload your shell and stand up the agentic toolkits:
 
 ```bash
 source ~/.zshrc
+just agentic-dev                 # host mode: all CLIs + CosW provision (includes atop)
+just agentic-dev --mode sandbox --project krop-tf
+just atop                        # fleet TUI only
 ```
+
+Host class is auto-detected (`personal` vs `work`) and can be overridden with `--class` / `AGENTIC_HOST_CLASS` / `PROFILE_ENV`.
+
+| Class | `cosw` plane | Notes |
+|-------|--------------|--------|
+| personal | krop-tf / krop-infra / krop-ai | never reads `~/src/karan.hiremath` |
+| work | work-checkout Hermes profiles/projects | never bootstraps krop-* |
+
+Sandbox mode materializes isolated `PI_AGENT_DIR` / `HERMES_HOME` under
+`~/.local/share/agentic-sandboxes/<class>/<project>` and skips host-global
+CLI installs unless `--install-tools`.
 
 ## Hermes sandbox entrypoint
 
@@ -73,7 +87,13 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 | Recipe | Description |
 |--------|-------------|
 | `just claude` | Claude Code |
+| `just agentic-dev` | All agentic CLIs + host-class CosW (`just dev` alias) |
+| `just atop` | atop fleet TUI |
+| `just provision` | CosW / project registries only |
+| `just krop` | krop-tf / krop-infra / krop-ai checkout helper (personal) |
+| `just linear` | Linear custom-script hook + prompt template (`pc` workspace) |
 | `just pi` | pi coding agent + profile-managed theme |
+| `just omp` | oh-my-pi (checksummed GitHub pin + personal/work agent, like pi) |
 | `just pi-skills` | Link profile-managed Pi skills |
 | `just codex` | Codex CLI from Codex.app |
 | `just cmux` | cmux (Claude multiplexer) |

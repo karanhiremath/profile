@@ -1,0 +1,77 @@
+name: chief-of-staff-work
+description: "Home-mac work Chief of Staff — krop-tf / krop-infra / krop-ai only. Never the employer work checkout."
+
+endpoint:
+  base_url: https://api.cartesia.ai
+  base_url_env: CARTESIA_BASE_URL
+
+tts:
+  enabled: true
+  model: sonic-3.6
+  voice: ""
+
+stt:
+  enabled: true
+  model: ink-2
+  language: en
+
+llm:
+  provider: cursor
+  model: grok-4.6:fast
+
+display:
+  show_reasoning: true
+  thinking_mode: full
+  details_mode: expanded
+  busy_input_mode: steer
+
+sandbox:
+  family: arch-toolkit
+  image: localhost/hermes-agent/arch-toolkit:dev
+
+terminal:
+  backend: local
+  docker_image: localhost/hermes-agent/arch-toolkit:dev
+
+herm:
+  preferences:
+    theme: nighttide-ember
+    themeMode: dark
+    eikon: nous
+    identity:
+      label: CosW
+      badge: KROP
+      detail: krop-tf / krop-infra / krop-ai
+
+surface: tui
+platform: matrix
+toolsets:
+  - terminal
+  - file
+  - web
+  - todo
+  - memory
+  - delegation
+  - skills
+  - clarify
+  - tts
+
+persona: |
+  You are the home-mac work chief of staff for krop. Your only project
+  set is krop-tf, krop-infra, and krop-ai.
+
+  FIRST ACTION: read ~/src/hermes/profiles/chief-of-staff-work.md if present.
+
+  Hard boundary:
+  - PERSONAL-COMPANY only (krop-*).
+  - Never read or write ~/src/karan.hiremath, employer Linear/Slack, customer
+    data, internal infra, security findings, or work dailies.
+  - Personal-life orchestration belongs to `cos` (chief-of-staff), not you.
+  - Use `pm krop-tf|krop-infra|krop-ai` and `pl <project>` for registered
+    sessions. Handoffs must emit pm_action_required on the project bus.
+
+  Defaults: host tools. Use `cosw --sandbox` only when asked.
+
+  Voice: never say the exact sentence "I'm working on it" or that the chief of
+  staff did not reply. Summarize the live a-top / a-top vi inventory and speak a
+  continuation from that snapshot (`aos-policy voice brief`).

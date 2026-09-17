@@ -1,0 +1,305 @@
+#!/bin/bash
+# Profile-managed oh-my-pi (omp). Mirrors bin/pi/install:
+# checksummed binary, then copy personal/work sources into ~/.omp/agent.
+# Never curl|sh. Never omp --alias (that writes ~/.bashrc; this host is zsh).
+
+set -euo pipefail
+
+shopt -s failglob
+
+usage() {
+    cat <<'EOF'
+Usage: bin/omp/install [--help]
+
+Install or upgrade oh-my-pi (omp) from a pinned GitHub release checksum, then
+apply the profile-managed agent policy the same way bin/pi/install does.
+
+Config is written BEFORE the binary is installed so first-run discovery cannot
+inherit ~/.claude / ~/.cursor MCP servers.
+
+Profiles (same selector as pi):
+  OMP_AGENT_PROFILE, else PI_AGENT_PROFILE, else ~/.omp/default-profile,
+  else ~/.pi/default-profile, else personal.
+
+  personal  -> ~/src/profile/config/omp/{config.yml,mcp.json,AGENTS.personal.md}
+  work      -> ~/.omp/work-agent/ (seeded once from personal + optional local atop)
+
+macOS / Linux: gh release download + SHA256SUMS + hardcoded pin.
+Never: curl https://omp.sh/install | sh
+Never: omp --alias (bashrc). Use myprofile.sh / zsh completions instead.
+
+Idempotent: re-running re-syncs ~/.omp/agent from the selected source.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" ]]; then
+    usage
+    exit 0
+fi
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+else
+    SCRIPT_DIR="${PROFILE_DIR}/bin/omp"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="omp"
+REPO="can1357/oh-my-pi"
+PIN_TAG="${OMP_PIN_TAG:-v18.1.2}"
+INSTALL_DIR="${PI_INSTALL_DIR:-${HOME}/.local/bin}"
+PERSONAL_SRC="${PROFILE_DIR}/config/omp"
+WORK_SRC="${HOME}/.omp/work-agent"
+AGENT_DIR="${HOME}/.omp/agent"
+NAMED_WORK_DIR="${HOME}/.omp/profiles/work/agent"
+DEFAULT_PROFILE_FILE="${HOME}/.omp/default-profile"
+PI_DEFAULT_PROFILE_FILE="${HOME}/.pi/default-profile"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+pin_asset_and_sha() {
+    case "${MACHINE}" in
+        Darwin|Mac)
+            case "${ARCH}" in
+                arm64|aarch64)
+                    PIN_ASSET="omp-darwin-arm64"
+                    PIN_SHA256="${OMP_PIN_SHA256:-5f2512cce2a154ad2406a4792421c42f022b1335f83dcbde4236f76e50ab35b4}"
+                    ;;
+                x86_64)
+                    PIN_ASSET="omp-darwin-x64"
+                    PIN_SHA256="${OMP_PIN_SHA256:-fff1ecc1950b45530bc30fac54783c45d93f1bc8a5c49186b1bd796cc6cb62d0}"
+                    ;;
+                *)
+                    echo "ERROR: unsupported Darwin arch: ${ARCH}" >&2
+                    exit 1
+                    ;;
+            esac
+            ;;
+        Linux)
+            case "${ARCH}" in
+                x86_64|amd64)
+                    PIN_ASSET="omp-linux-x64"
+                    PIN_SHA256="${OMP_PIN_SHA256:-c6a306347a57c872bf38587e81132db50490228867e3e179a363a4cf874da1a0}"
+                    ;;
+                aarch64|arm64)
+                    PIN_ASSET="omp-linux-arm64"
+                    PIN_SHA256="${OMP_PIN_SHA256:-2865c21a73ae8b893fd5553bf302afc5be8a0bcafa015af99732349d518830da}"
+                    ;;
+                *)
+                    echo "ERROR: unsupported Linux arch: ${ARCH}" >&2
+                    exit 1
+                    ;;
+            esac
+            ;;
+        *)
+            echo "ERROR: unsupported platform: ${MACHINE}" >&2
+            exit 1
+            ;;
+    esac
+}
+
+resolve_profile_selector() {
+    local selector=""
+    if [ -n "${OMP_AGENT_PROFILE:-}" ]; then
+        selector="${OMP_AGENT_PROFILE}"
+    elif [ -n "${PI_AGENT_PROFILE:-}" ]; then
+        selector="${PI_AGENT_PROFILE}"
+    elif [ -f "${DEFAULT_PROFILE_FILE}" ]; then
+        selector="$(tr -d '[:space:]' < "${DEFAULT_PROFILE_FILE}")"
+    elif [ -f "${PI_DEFAULT_PROFILE_FILE}" ]; then
+        selector="$(tr -d '[:space:]' < "${PI_DEFAULT_PROFILE_FILE}")"
+    fi
+    selector="${selector:-personal}"
+    case "${selector}" in
+        personal|work) PROFILE_SELECTOR="${selector}" ;;
+        *)
+            echo "ERROR: unsupported OMP/PI profile: ${selector}" >&2
+            echo "Supported profiles: personal, work" >&2
+            exit 1
+            ;;
+    esac
+}
+
+seed_work_agent_if_needed() {
+    mkdir -p "${WORK_SRC}"
+    if [ ! -f "${WORK_SRC}/config.yml" ]; then
+        cp "${PERSONAL_SRC}/config.yml" "${WORK_SRC}/config.yml"
+    fi
+    if [ ! -f "${WORK_SRC}/AGENTS.md" ]; then
+        if [ -f "${PERSONAL_SRC}/AGENTS.work.md" ]; then
+            cp "${PERSONAL_SRC}/AGENTS.work.md" "${WORK_SRC}/AGENTS.md"
+        else
+            cat > "${WORK_SRC}/AGENTS.md" <<'EOF'
+# Work omp
+
+Inheritance from Claude/Cursor/other IDEs is disabled. MCP is an explicit
+allowlist only. Do not enable Datadog or Cursor plugin MCP by discovery.
+EOF
+        fi
+    fi
+    if [ ! -f "${WORK_SRC}/mcp.json" ]; then
+        local atop_script="${HOME}/src/karan.hiremath/agentic/scripts/atop-mcp.py"
+        local atop_cwd="${HOME}/src/karan.hiremath"
+        if [ -f "${atop_script}" ]; then
+            cat > "${WORK_SRC}/mcp.json" <<EOF
+{
+  "\$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "atop": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "${atop_script}"],
+      "cwd": "${atop_cwd}"
+    }
+  },
+  "disabledServers": [
+    "datadog",
+    "gmail",
+    "slack",
+    "google-drive",
+    "google-calendar",
+    "google_drive",
+    "google_calendar",
+    "clerk",
+    "plugin-gmail-gmail",
+    "plugin-slack-slack",
+    "plugin-google-drive-google-drive",
+    "plugin-google-calendar-google-calendar",
+    "plugin-clerk-clerk",
+    "plugin-datadog-datadog"
+  ]
+}
+EOF
+        else
+            cp "${PERSONAL_SRC}/mcp.json" "${WORK_SRC}/mcp.json"
+        fi
+    fi
+    chmod 600 "${WORK_SRC}/config.yml" "${WORK_SRC}/mcp.json"
+}
+
+write_agent_files() {
+    local dest="$1"
+    local config_src="$2"
+    local mcp_src="$3"
+    local agents_src="$4"
+    mkdir -p "${dest}" "${dest}/bin"
+    cp "${config_src}" "${dest}/config.yml"
+    cp "${mcp_src}" "${dest}/mcp.json"
+    if [ -n "${agents_src}" ] && [ -f "${agents_src}" ]; then
+        cp "${agents_src}" "${dest}/AGENTS.md"
+    fi
+    chmod 600 "${dest}/config.yml" "${dest}/mcp.json"
+}
+
+write_launcher() {
+    local dest="${AGENT_DIR}/bin/omp"
+    cat > "${dest}" <<EOF
+#!/bin/sh
+# Host-local omp launcher. Prefer the configured agent dir unless overridden.
+# Named profiles (OMP_PROFILE / --profile) ignore PI_CODING_AGENT_DIR.
+export PI_CODING_AGENT_DIR="\${PI_CODING_AGENT_DIR:-${AGENT_DIR}}"
+exec "${INSTALL_DIR}/omp" "\$@"
+EOF
+    chmod +x "${dest}"
+}
+
+configure_omp_agent() {
+    if [ ! -f "${PERSONAL_SRC}/config.yml" ] || [ ! -f "${PERSONAL_SRC}/mcp.json" ]; then
+        echo "ERROR: missing omp templates under ${PERSONAL_SRC}" >&2
+        exit 1
+    fi
+
+    resolve_profile_selector
+    echo "Configuring omp ${PROFILE_SELECTOR} agent policy (config first)"
+
+    local config_src mcp_src agents_src
+    if [ "${PROFILE_SELECTOR}" = "work" ]; then
+        seed_work_agent_if_needed
+        config_src="${WORK_SRC}/config.yml"
+        mcp_src="${WORK_SRC}/mcp.json"
+        agents_src="${WORK_SRC}/AGENTS.md"
+        write_agent_files "${NAMED_WORK_DIR}" "${config_src}" "${mcp_src}" "${agents_src}"
+    else
+        config_src="${PERSONAL_SRC}/config.yml"
+        mcp_src="${PERSONAL_SRC}/mcp.json"
+        agents_src="${PERSONAL_SRC}/AGENTS.personal.md"
+    fi
+
+    write_agent_files "${AGENT_DIR}" "${config_src}" "${mcp_src}" "${agents_src}"
+    write_launcher
+    printf '%s\n' "${PROFILE_SELECTOR}" > "${DEFAULT_PROFILE_FILE}"
+    echo "Wrote ${AGENT_DIR} from ${PROFILE_SELECTOR} sources; default-profile=${PROFILE_SELECTOR}"
+}
+
+install_pinned_binary() {
+    pin_asset_and_sha
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "ERROR: gh is required to download the pinned ${REPO} ${PIN_TAG} release." >&2
+        echo "Install GitHub CLI first (just gh), then re-run." >&2
+        exit 1
+    fi
+    local tmp dest
+    tmp="$(mktemp -d)"
+    dest="${INSTALL_DIR}/omp"
+    mkdir -p "${INSTALL_DIR}"
+    (
+        cd "${tmp}"
+        gh release download "${PIN_TAG}" -R "${REPO}" -p "${PIN_ASSET}" -p SHA256SUMS.txt --clobber
+        if [ ! -f SHA256SUMS.txt ] || [ ! -f "${PIN_ASSET}" ]; then
+            echo "ERROR: pinned release assets missing in ${tmp}" >&2
+            exit 1
+        fi
+        grep " ${PIN_ASSET}$" SHA256SUMS.txt | sha256sum -c -
+        actual="$(sha256sum "${PIN_ASSET}" | awk '{print $1}')"
+        if [ "${actual}" != "${PIN_SHA256}" ]; then
+            echo "ERROR: ${PIN_ASSET} sha256 ${actual} != pin ${PIN_SHA256}" >&2
+            exit 1
+        fi
+        install -m 0755 "${PIN_ASSET}" "${dest}"
+    )
+    rm -rf "${tmp}"
+}
+
+install_messages "start" "${app_name}"
+
+# Config before any omp process, including --version on a first install.
+configure_omp_agent
+
+if command -v omp >/dev/null 2>&1; then
+    echo "omp already on PATH: $(command -v omp)"
+    echo "Re-pinning ${PIN_TAG} and re-syncing profile config..."
+fi
+
+install_pinned_binary
+
+if [ ! -x "${INSTALL_DIR}/omp" ]; then
+    echo "ERROR: ${INSTALL_DIR}/omp is not executable" >&2
+    exit 1
+fi
+
+case ":${PATH}:" in
+    *":${INSTALL_DIR}:"*) ;;
+    *) export PATH="${INSTALL_DIR}:${PATH}" ;;
+esac
+
+omp --version
+
+install_messages "end" "${app_name}"
+
+echo ""
+echo "omp ${PIN_TAG} installed at ${INSTALL_DIR}/omp"
+echo "Active agent dir: ${AGENT_DIR} (profile=${PROFILE_SELECTOR})"
+echo "Launcher: ${AGENT_DIR}/bin/omp"
+echo "Update: just omp   or   omp-update"
+echo "Completions: sourced from zsh_profile.sh (eval \"\$(omp completions zsh)\")"
+echo "Do not run: curl -fsSL https://omp.sh/install | sh"
+echo "Do not run: omp --alias (writes bashrc)"
+echo ""

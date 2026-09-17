@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Keep local Hermes harness forks in sync with upstream on this host.
+# Usage: fork-sync [status|fetch|ensure|rebase]
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: fork-sync [status|fetch|ensure|rebase]
+
+  status   print remotes, branch, and ahead/behind vs upstream (default)
+  fetch    fetch origin + upstream for each registered fork
+  ensure   clone missing checkouts and add upstream remotes
+  rebase   fetch, then rebase the overlay branch onto the fork trunk
+
+Does not push. Does not merge 10k+ catch-up windows without a dedicated
+session. See karan.hiremath playbook harness-fork-sync.md.
+USAGE
+}
+
+log() { printf 'hermes-fork-sync: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+CMD="${1:-status}"
+case "$CMD" in
+  -h|--help|help) usage; exit 0 ;;
+  status|fetch|ensure|rebase) ;;
+  *) die "unknown command: $CMD" ;;
+esac
+
+HERMES_AGENT_FORK="${HERMES_AGENT_FORK:-$HOME/src/hermes-agent}"
+HERMES_AGENT_OVERLAY="${HERMES_AGENT_OVERLAY:-$HOME/src/hermes-agent-worktrees/timeout-free-cursor-sdk}"
+HERM_TUI_FORK="${HERM_TUI_FORK:-$HOME/src/herm}"
+
+ensure_repo() {
+  local dest="$1" origin="$2" upstream="$3" trunk="$4"
+  if ! git -C "$dest" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "clone $origin -> $dest"
+    git clone --origin origin "$origin" "$dest"
+  fi
+  git -C "$dest" remote add upstream "$upstream" 2>/dev/null || true
+  git -C "$dest" remote set-url upstream "$upstream"
+  git -C "$dest" fetch origin --prune
+  git -C "$dest" fetch upstream --prune
+  if ! git -C "$dest" rev-parse --verify "$trunk" >/dev/null 2>&1; then
+    git -C "$dest" checkout -B "${trunk#origin/}" --track "$trunk" 2>/dev/null || true
+  fi
+}
+
+print_status() {
+  local dest="$1" label="$2" upstream_ref="$3"
+  printf 'fork=%s\n' "$label"
+  printf 'path=%s\n' "$dest"
+  if ! git -C "$dest" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'present=0\n'
+    printf '\n'
+    return 0
+  fi
+  printf 'present=1\n'
+  printf 'branch=%s\n' "$(git -C "$dest" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  printf 'head=%s\n' "$(git -C "$dest" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  if git -C "$dest" rev-parse --verify "$upstream_ref" >/dev/null 2>&1; then
+    local counts
+    counts="$(git -C "$dest" rev-list --left-right --count HEAD..."$upstream_ref" 2>/dev/null || echo '?	?')"
+    printf 'ahead_behind_upstream=%s\n' "$(printf '%s' "$counts" | tr '\t' '/')"
+  else
+    printf 'ahead_behind_upstream=unfetched\n'
+  fi
+  printf '\n'
+}
+
+ensure_overlay() {
+  local main="$HERMES_AGENT_FORK"
+  local overlay="$HERMES_AGENT_OVERLAY"
+  [ -d "$main/.git" ] || die "hermes-agent fork missing: $main"
+  if [ -d "$overlay/.git" ] || [ -f "$overlay/.git" ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$overlay")"
+  if git -C "$main" show-ref --verify --quiet refs/heads/kh/timeout-free-cursor-sdk; then
+    git -C "$main" worktree add "$overlay" kh/timeout-free-cursor-sdk
+  else
+    git -C "$main" worktree add -b kh/timeout-free-cursor-sdk "$overlay" origin/downstream/main
+  fi
+}
+
+case "$CMD" in
+  ensure)
+    ensure_repo "$HERMES_AGENT_FORK" \
+      git@github.com:karanhiremath/hermes-agent.git \
+      git@github.com:NousResearch/hermes-agent.git \
+      origin/downstream/main
+    ensure_overlay
+    ensure_repo "$HERM_TUI_FORK" \
+      git@github.com:karanhiremath/herm.git \
+      git@github.com:liftaris/herm.git \
+      origin/downstream/dev
+    ;;
+  fetch)
+    git -C "$HERMES_AGENT_FORK" rev-parse --is-inside-work-tree >/dev/null 2>&1 && {
+      git -C "$HERMES_AGENT_FORK" fetch origin --prune
+      git -C "$HERMES_AGENT_FORK" fetch upstream --prune
+    }
+    if git -C "$HERMES_AGENT_OVERLAY" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git -C "$HERMES_AGENT_OVERLAY" fetch origin --prune
+      git -C "$HERMES_AGENT_OVERLAY" fetch upstream --prune
+    fi
+    git -C "$HERM_TUI_FORK" rev-parse --is-inside-work-tree >/dev/null 2>&1 && {
+      git -C "$HERM_TUI_FORK" fetch origin --prune
+      git -C "$HERM_TUI_FORK" fetch upstream --prune || true
+    }
+    ;;
+  rebase)
+    git -C "$HERMES_AGENT_OVERLAY" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || die "overlay missing: $HERMES_AGENT_OVERLAY"
+    git -C "$HERMES_AGENT_FORK" fetch origin --prune
+    git -C "$HERMES_AGENT_FORK" fetch upstream --prune
+    git -C "$HERMES_AGENT_OVERLAY" fetch origin --prune
+    git -C "$HERMES_AGENT_OVERLAY" fetch upstream --prune
+    ahead_behind="$(git -C "$HERMES_AGENT_FORK" rev-list --left-right --count origin/downstream/main...upstream/main)"
+    behind="${ahead_behind#*$'\t'}"
+    behind="${ahead_behind##*$'\t'}"
+    if [ "${behind:-0}" -gt 200 ]; then
+      die "downstream/main is $behind commits behind upstream/main; do a dedicated catch-up, not this hourly rebase"
+    fi
+    git -C "$HERMES_AGENT_OVERLAY" rebase origin/downstream/main
+    ;;
+esac
+
+print_status "$HERMES_AGENT_FORK" "hermes-agent" upstream/main
+print_status "$HERMES_AGENT_OVERLAY" "hermes-agent-overlay" upstream/main
+print_status "$HERM_TUI_FORK" "herm-tui" upstream/dev

@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# Opt-in Perplexity Search / Agent API wrapper. Stdout is JSON only.
+# Usage: pplx-research --help
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: pplx-research --mode search|ask|research|reason --purpose <why> \
+         (--query TEXT | --query-file PATH|-) [--out FILE] [options]
+
+Opt-in Perplexity research CLI. Default is cheap Search API. Not a pi model.
+
+Modes (cost units against --daily-cap, default 20):
+  search     Search API, low context          1 unit   ~$0.005
+  ask        Agent API preset=fast            2 units  ~$0.006+
+  reason     Agent API preset=medium          5 units  needs --confirm-expensive
+  research   Agent API preset=high           10 units  needs --confirm-expensive
+
+Options:
+  --purpose TEXT          short reason (required except --help/--dry-run smoke)
+  --query TEXT            query string
+  --query-file PATH|-     query from file or stdin
+  --out FILE              also write JSON (mode 0600); stdout still gets JSON
+  --max-results N         Search API only (default 8)
+  --daily-cap N           unit cap for today (env PPLX_DAILY_CAP)
+  --confirm-expensive     required for reason|research
+  --dry-run               emit schema, no network, no cap increment
+  -h, --help
+
+Env:
+  PERPLEXITY_API_KEY   required for live calls (never logged)
+  PPLX_STATE_DIR       default ~/.local/share/pplx-research
+  PPLX_DAILY_CAP       default 20
+  PPLX_ALLOW_HIGH      1 skips --confirm-expensive
+
+Stdout: perplexity-research.v1 JSON. Diagnostics on stderr.
+Do not use for local code, secrets, or Cartesia customer/infra content.
+EOF
+}
+
+die() {
+  printf 'pplx-research: %s\n' "$*" >&2
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "missing $1"
+}
+
+redact_query() {
+  printf '%s' "$1" | sed -E \
+    -e 's/(sk-|pplx-|Bearer[[:space:]])[A-Za-z0-9._-]{8,}/[redacted]/g' \
+    -e 's/(api[_-]?key|token|secret)[=:][[:space:]]*[^[:space:]]+/\1=[redacted]/gI'
+}
+
+query_sha() {
+  printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+}
+
+mode_units() {
+  case "$1" in
+    search) echo 1 ;;
+    ask) echo 2 ;;
+    reason) echo 5 ;;
+    research) echo 10 ;;
+    *) die "unknown mode: $1" ;;
+  esac
+}
+
+mode_preset() {
+  case "$1" in
+    ask) echo fast ;;
+    reason) echo medium ;;
+    research) echo high ;;
+    *) echo "" ;;
+  esac
+}
+
+MODE="search"
+PURPOSE=""
+QUERY=""
+QUERY_FILE=""
+OUT=""
+MAX_RESULTS=8
+DAILY_CAP="${PPLX_DAILY_CAP:-20}"
+DRY_RUN=0
+CONFIRM_EXPENSIVE=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --mode)
+      MODE="${2:-}"
+      shift 2
+      ;;
+    --purpose)
+      PURPOSE="${2:-}"
+      shift 2
+      ;;
+    --query)
+      QUERY="${2:-}"
+      shift 2
+      ;;
+    --query-file)
+      QUERY_FILE="${2:-}"
+      shift 2
+      ;;
+    --out)
+      OUT="${2:-}"
+      shift 2
+      ;;
+    --max-results)
+      MAX_RESULTS="${2:-}"
+      shift 2
+      ;;
+    --daily-cap)
+      DAILY_CAP="${2:-}"
+      shift 2
+      ;;
+    --confirm-expensive) CONFIRM_EXPENSIVE=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+case "$MODE" in
+  search|ask|reason|research) ;;
+  *) die "invalid --mode (search|ask|reason|research)" ;;
+esac
+
+case "$MAX_RESULTS" in
+  ''|*[!0-9]*) die "--max-results must be an integer" ;;
+esac
+case "$DAILY_CAP" in
+  ''|*[!0-9]*) die "--daily-cap must be an integer" ;;
+esac
+
+if [ -n "$QUERY_FILE" ]; then
+  [ -z "$QUERY" ] || die "use --query or --query-file, not both"
+  if [ "$QUERY_FILE" = "-" ]; then
+    QUERY="$(cat)"
+  else
+    [ -f "$QUERY_FILE" ] || die "query file missing: $QUERY_FILE"
+    QUERY="$(cat "$QUERY_FILE")"
+  fi
+fi
+
+[ -n "$QUERY" ] || die "need --query or --query-file"
+[ -n "$PURPOSE" ] || die "need --purpose"
+
+UNITS="$(mode_units "$MODE")"
+PRESET="$(mode_preset "$MODE")"
+if [ "$MODE" = reason ] || [ "$MODE" = research ]; then
+  if [ "$CONFIRM_EXPENSIVE" != 1 ] && [ "${PPLX_ALLOW_HIGH:-0}" != 1 ]; then
+    die "$MODE needs --confirm-expensive (or PPLX_ALLOW_HIGH=1)"
+  fi
+fi
+
+STATE_DIR="${PPLX_STATE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pplx-research}"
+USAGE_DIR="$STATE_DIR/usage"
+TODAY="$(date -u +%Y-%m-%d)"
+USAGE_FILE="$USAGE_DIR/$TODAY.json"
+INVOCATION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+QUERY_SHA="$(query_sha "$QUERY")"
+QUERY_REDACTED="$(redact_query "$QUERY")"
+SESSION_ID="${PI_SESSION_ID:-${TERM_SESSION_ID:-local}}"
+
+need jq
+need shasum
+need uuidgen
+
+mkdir -p "$USAGE_DIR"
+chmod 700 "$STATE_DIR" "$USAGE_DIR" 2>/dev/null || true
+
+if [ ! -f "$USAGE_FILE" ]; then
+  jq -n --arg d "$TODAY" '{date:$d, units:0, calls:[]}' > "$USAGE_FILE"
+  chmod 600 "$USAGE_FILE"
+fi
+
+USED="$(jq -r '.units // 0' "$USAGE_FILE")"
+NEXT=$((USED + UNITS))
+if [ "$DRY_RUN" != 1 ] && [ "$NEXT" -gt "$DAILY_CAP" ]; then
+  die "daily cap $DAILY_CAP exceeded (used=$USED need=$UNITS). raise --daily-cap or wait until UTC tomorrow"
+fi
+
+emit_payload() {
+  local backend="$1" answer="$2" citations_json="$3" usage_json="$4" raw_id="$5"
+  jq -n \
+    --arg ts "$TS" \
+    --arg id "$INVOCATION_ID" \
+    --arg backend "$backend" \
+    --arg mode "$MODE" \
+    --arg preset "$PRESET" \
+    --arg purpose "$PURPOSE" \
+    --arg sha "$QUERY_SHA" \
+    --arg qred "$QUERY_REDACTED" \
+    --arg answer "$answer" \
+    --arg raw_id "$raw_id" \
+    --arg session "$SESSION_ID" \
+    --argjson citations "$citations_json" \
+    --argjson usage "$usage_json" \
+    --argjson units "$UNITS" \
+    --argjson cap "$DAILY_CAP" \
+    --argjson used "$USED" \
+    '{
+      schema_version: "perplexity-research.v1",
+      timestamp: $ts,
+      invocation_id: $id,
+      backend: $backend,
+      mode: $mode,
+      preset: (if $preset == "" then null else $preset end),
+      purpose: $purpose,
+      query_sha256: $sha,
+      query_redacted: $qred,
+      answer_markdown: $answer,
+      citations: $citations,
+      usage: $usage,
+      request_id: (if $raw_id == "" then null else $raw_id end),
+      audit: {
+        kind: "research.perplexity.query",
+        decision: "allow",
+        session_id: $session,
+        tool_name: "pplx-research",
+        units: $units,
+        daily_cap: $cap,
+        daily_used_before: $used
+      }
+    }'
+}
+
+record_usage() {
+  local tmp
+  tmp="$(mktemp "$USAGE_DIR/.tmp.XXXXXX")"
+  jq --arg ts "$TS" --arg id "$INVOCATION_ID" --arg mode "$MODE" \
+    --arg sha "$QUERY_SHA" --arg purpose "$PURPOSE" --argjson units "$UNITS" \
+    '.units += $units | .calls += [{timestamp:$ts, invocation_id:$id, mode:$mode, units:$units, query_sha256:$sha, purpose:$purpose}]' \
+    "$USAGE_FILE" > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$USAGE_FILE"
+}
+
+write_out() {
+  local payload="$1"
+  if [ -n "$OUT" ]; then
+    umask 077
+    printf '%s\n' "$payload" > "$OUT"
+    chmod 600 "$OUT"
+  fi
+  printf '%s\n' "$payload"
+}
+
+if [ "$DRY_RUN" = 1 ]; then
+  printf 'pplx-research: dry-run mode=%s units=%s cap=%s used=%s\n' \
+    "$MODE" "$UNITS" "$DAILY_CAP" "$USED" >&2
+  payload="$(emit_payload "dry-run" "" "[]" "{}" "")"
+  write_out "$payload"
+  exit 0
+fi
+
+[ -n "${PERPLEXITY_API_KEY:-}" ] || die "PERPLEXITY_API_KEY unset"
+
+need curl
+
+AUTH_HEADER="Authorization: Bearer ${PERPLEXITY_API_KEY}"
+RESP_FILE="$(mktemp)"
+trap 'rm -f "$RESP_FILE"' EXIT
+
+if [ "$MODE" = search ]; then
+  BODY="$(jq -n --arg q "$QUERY" --argjson n "$MAX_RESULTS" \
+    '{query:$q, max_results:$n, search_context_size:"low"}')"
+  HTTP="$(curl -sS -o "$RESP_FILE" -w '%{http_code}' \
+    -X POST 'https://api.perplexity.ai/search' \
+    -H "$AUTH_HEADER" \
+    -H 'Content-Type: application/json' \
+    -d "$BODY")" || die "curl failed"
+  if [ "$HTTP" != 200 ]; then
+    die "Search API HTTP $HTTP"
+  fi
+  ANSWER="$(jq -r '[.results[]? | "- [\(.title)](\(.url)): \(.snippet)"] | join("\n")' "$RESP_FILE")"
+  CITE="$(jq '[.results[]? | {url, title, date: (.date // "")}]' "$RESP_FILE")"
+  RID="$(jq -r '.id // empty' "$RESP_FILE")"
+  payload="$(emit_payload "perplexity-search" "$ANSWER" "$CITE" "{}" "$RID")"
+else
+  BODY="$(jq -n --arg preset "$PRESET" --arg q "$QUERY" \
+    '{preset:$preset, input:$q}')"
+  HTTP="$(curl -sS -o "$RESP_FILE" -w '%{http_code}' \
+    -X POST 'https://api.perplexity.ai/v1/agent' \
+    -H "$AUTH_HEADER" \
+    -H 'Content-Type: application/json' \
+    -d "$BODY")" || die "curl failed"
+  if [ "$HTTP" != 200 ]; then
+    die "Agent API HTTP $HTTP"
+  fi
+  ANSWER="$(jq -r '
+    [.output[]? | .content[]? | select(.type=="output_text") | .text]
+    | join("\n")
+  ' "$RESP_FILE")"
+  CITE="$(jq '
+    [.output[]? | .results[]? | {url, title, date: (.date // "")}]
+    | unique_by(.url)
+  ' "$RESP_FILE")"
+  USAGE="$(jq '.usage // {}' "$RESP_FILE")"
+  RID="$(jq -r '.id // empty' "$RESP_FILE")"
+  payload="$(emit_payload "perplexity-agent" "$ANSWER" "$CITE" "$USAGE" "$RID")"
+fi
+
+record_usage
+printf 'pplx-research: mode=%s units=%s used=%s/%s\n' \
+  "$MODE" "$UNITS" "$NEXT" "$DAILY_CAP" >&2
+write_out "$payload"

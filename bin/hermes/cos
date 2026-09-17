@@ -8,4 +8,98 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-exec "$SCRIPT_DIR/agents" up chief-of-staff "$@"
+if [ -f "$SCRIPT_DIR/../agentic-dev/host-env.sh" ]; then
+  # shellcheck source=../agentic-dev/host-env.sh
+  . "$SCRIPT_DIR/../agentic-dev/host-env.sh"
+fi
+if [ -f "$SCRIPT_DIR/fork-env.sh" ]; then
+  # shellcheck source=fork-env.sh
+  . "$SCRIPT_DIR/fork-env.sh"
+fi
+export HERMES_BUSY_INPUT_MODE="${HERMES_BUSY_INPUT_MODE:-steer}"
+
+usage() {
+  cat <<'EOF'
+Launch the personal Chief of Staff (chief-of-staff) herm-tui.
+
+Usage:
+  cos                         default seat from profile YAML (cursor/grok-4.6:fast)
+  cos gpt5.5                  openai-codex/gpt-5.5
+  cos --codex                 same as gpt5.5
+  cos --gpt-5.5               same as gpt5.5
+  cos --grok                  cursor/grok-4.6:fast
+  cos --seat provider/model   explicit seat
+  cos sandbox [args]          personal sandbox-ctl plane
+
+Env:
+  COS_THINKING                thinking level for seat overrides (default: xhigh)
+EOF
+}
+
+export_codex_seat() {
+  export HERMES_AGENT_LLM_PROVIDER=openai-codex
+  export HERMES_AGENT_LLM_MODEL=gpt-5.5
+  export HERMES_AGENT_LLM_THINKING="${COS_THINKING:-xhigh}"
+  export HERMES_INFERENCE_PROVIDER=openai-codex
+  export HERMES_TUI_PROVIDER=openai-codex
+  export HERMES_INFERENCE_MODEL=gpt-5.5
+  export HERMES_MODEL=gpt-5.5
+}
+
+export_grok_seat() {
+  export HERMES_AGENT_LLM_PROVIDER=cursor
+  export HERMES_AGENT_LLM_MODEL=grok-4.6:fast
+  export HERMES_AGENT_LLM_THINKING="${COS_THINKING:-xhigh}"
+  export HERMES_INFERENCE_PROVIDER=cursor
+  export HERMES_TUI_PROVIDER=cursor
+  export HERMES_INFERENCE_MODEL=grok-4.6:fast
+  export HERMES_MODEL=grok-4.6:fast
+}
+
+if [ "${1:-}" = "sandbox" ] && [ -x "$SCRIPT_DIR/sandbox-ctl" ]; then
+  shift
+  exec "$SCRIPT_DIR/sandbox-ctl" --profile chief-of-staff "$@"
+fi
+
+COS_ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    gpt5.5|gpt-5.5|--codex|--gpt-5.5)
+      export_codex_seat
+      shift
+      ;;
+    --grok|--cursor-grok)
+      export_grok_seat
+      shift
+      ;;
+    --seat)
+      [ -n "${2:-}" ] || { echo "cos: --seat needs provider/model" >&2; exit 2; }
+      export HERMES_AGENT_LLM_PROVIDER="${2%%/*}"
+      export HERMES_AGENT_LLM_MODEL="${2#*/}"
+      export HERMES_INFERENCE_PROVIDER="$HERMES_AGENT_LLM_PROVIDER"
+      export HERMES_TUI_PROVIDER="$HERMES_AGENT_LLM_PROVIDER"
+      export HERMES_INFERENCE_MODEL="$HERMES_AGENT_LLM_MODEL"
+      export HERMES_MODEL="$HERMES_AGENT_LLM_MODEL"
+      shift 2
+      ;;
+    --)
+      shift
+      COS_ARGS+=("--" "$@")
+      break
+      ;;
+    *)
+      COS_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -n "${HERMES_AGENT_LLM_PROVIDER:-}" ]; then
+  echo "cos: seat ${HERMES_AGENT_LLM_PROVIDER}/${HERMES_AGENT_LLM_MODEL}" >&2
+fi
+
+exec "$SCRIPT_DIR/agents" up chief-of-staff "${COS_ARGS[@]+"${COS_ARGS[@]}"}"

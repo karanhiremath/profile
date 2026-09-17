@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Launch the steward-linear Hermes profile (host-native).
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+if [ -f "$SCRIPT_DIR/../agentic-dev/host-env.sh" ]; then
+  # shellcheck source=../agentic-dev/host-env.sh
+  . "$SCRIPT_DIR/../agentic-dev/host-env.sh"
+fi
+
+TOKEN_FILE="${LINEAR_TOKEN_FILE:-$HOME/.local/share/fleet/linear-token-steward}"
+if [ -f "$TOKEN_FILE" ]; then
+  export LINEAR_TOKEN_FILE="$TOKEN_FILE"
+  LINEAR_API_KEY="$(tr -d '\r\n' < "$TOKEN_FILE")"
+  export LINEAR_API_KEY
+fi
+
+export HERMES_AGENT_TERMINAL_BACKEND="${HERMES_AGENT_TERMINAL_BACKEND:-local}"
+export TERMINAL_ENV="${TERMINAL_ENV:-local}"
+if [ -z "${TERMINAL_CWD:-}" ] && [ -d "${HOME}/src/karan.hiremath" ]; then
+  export TERMINAL_CWD="${HOME}/src/karan.hiremath"
+fi
+
+exec "$SCRIPT_DIR/agents" up steward-linear --host "$@"

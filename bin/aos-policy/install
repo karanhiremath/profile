@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Install aos-policy CLI and link the aos policy facade.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/aos-policy/install [--help]
+
+Installs aos-policy to ~/.local/bin and keeps `aos policy` on the aos facade.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+esac
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+chmod 755 "$SCRIPT_DIR/aos-policy" "$SCRIPT_DIR/install" "$PROFILE_DIR/bin/aos"
+mkdir -p "$HOME/.local/bin"
+ln -fns "$SCRIPT_DIR/aos-policy" "$HOME/.local/bin/aos-policy"
+ln -fns "$PROFILE_DIR/bin/aos" "$HOME/.local/bin/aos"
+printf 'aos-policy=%s\n' "$HOME/.local/bin/aos-policy"

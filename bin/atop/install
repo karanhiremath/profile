@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Install the atop fleet TUI into ~/.local/bin (or $AGENTIC_PREFIX/bin).
+# Usage: install [--help] [--rebuild]
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/atop/install [--rebuild]
+
+Resolve the atop crate and install the binary. Host class gates work trees:
+
+  ATOP_SRC
+  ~/src/atop
+  work class only:
+    $KH_DIR/agentic/telemetry/atop
+    ~/src/karan.hiremath/agentic/telemetry/atop
+    ~/src/karan.hiremath/.worktrees/atop-rust-thin-20260902/agentic/telemetry/atop
+
+Rust TUI lands at ~/.local/bin/atop-tui. ~/.local/bin/atop is the
+wrapper (vi / tty / pass-through). If no crate is found, keep an
+existing atop-tui (or migrate a Mach-O ~/.local/bin/atop) unless
+--rebuild is set.
+
+Sandbox: set AGENTIC_PREFIX to install under <prefix>/bin instead of ~/.local/bin.
+EOF
+}
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+APP_BIN="${APP_BIN:-$PROFILE_DIR/bin}"
+
+REBUILD=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --rebuild) REBUILD=1; shift ;;
+    *)
+      echo "atop/install: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -f "$APP_BIN/agentic-dev/host-env.sh" ]; then
+  # shellcheck source=../agentic-dev/host-env.sh
+  . "$APP_BIN/agentic-dev/host-env.sh"
+fi
+
+if [ -f "$APP_BIN/sh/shell_fns" ]; then
+  # shellcheck source=../sh/shell_fns
+  . "$APP_BIN/sh/shell_fns" --source-only
+fi
+
+DEST_DIR="${AGENTIC_PREFIX:-$HOME/.local}/bin"
+if [ -n "${AGENTIC_PREFIX:-}" ]; then
+  DEST_DIR="${AGENTIC_PREFIX}/bin"
+fi
+DEST="$DEST_DIR/atop-tui"
+WRAPPER_SRC="$PROFILE_DIR/bin/a-top"
+
+is_script() {
+  [ -f "$1" ] && IFS= read -r first <"$1" && [ "${first#\#!}" != "$first" ]
+}
+
+install_wrapper() {
+  mkdir -p "$DEST_DIR"
+  chmod 755 "$WRAPPER_SRC" "$PROFILE_DIR/bin/atop/vi" "$PROFILE_DIR/bin/atop/tty-eval" "$PROFILE_DIR/bin/aos" 2>/dev/null || true
+  ln -fns "$WRAPPER_SRC" "$DEST_DIR/atop"
+  ln -fns "$WRAPPER_SRC" "$DEST_DIR/a-top"
+  ln -fns "$PROFILE_DIR/bin/aos" "$DEST_DIR/aos"
+}
+
+install_aos_buf() {
+  local src="$PROFILE_DIR/bin/aos-buf"
+  [[ -f "$src/Cargo.toml" ]] || return 0
+  command -v cargo >/dev/null 2>&1 || return 0
+  cargo build --release --manifest-path "$src/Cargo.toml"
+  cp "$src/target/release/aos-buf" "$DEST_DIR/aos-buf"
+  chmod 755 "$DEST_DIR/aos-buf"
+  echo "installed $DEST_DIR/aos-buf"
+}
+
+migrate_rust_atop() {
+  local cand="$DEST_DIR/atop"
+  if [ -x "$cand" ] && ! is_script "$cand"; then
+    cp "$cand" "$DEST"
+    chmod 755 "$DEST"
+    echo "migrated rust TUI $cand -> $DEST"
+  fi
+}
+
+resolve_atop_src() {
+  local cand class="${AGENTIC_HOST_CLASS:-personal}"
+  local -a cands=()
+  [ -n "${ATOP_SRC:-}" ] && cands+=("$ATOP_SRC")
+  cands+=("$HOME/src/atop" "$HOME/src/atop/atop")
+  if [ "$class" = work ]; then
+    cands+=(
+      "${KH_DIR:-$HOME/src/karan.hiremath}/agentic/telemetry/atop"
+      "$HOME/src/karan.hiremath/agentic/telemetry/atop"
+      "$HOME/src/karan.hiremath/.worktrees/atop-rust-thin-20260902/agentic/telemetry/atop"
+    )
+  fi
+  for cand in "${cands[@]}"; do
+    [ -n "$cand" ] || continue
+    if [ -f "$cand/Cargo.toml" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+install_messages start atop 2>/dev/null || true
+
+src=""
+if src="$(resolve_atop_src)"; then
+  command -v cargo >/dev/null 2>&1 || {
+    echo "atop/install: cargo not found; run just cargo (or install rustup)" >&2
+    exit 1
+  }
+  echo "Building atop from $src"
+  cargo build --release --manifest-path "$src/Cargo.toml"
+  mkdir -p "$DEST_DIR"
+  cp "$src/target/release/atop" "$DEST"
+  chmod 755 "$DEST"
+  echo "installed $DEST"
+  install_aos_buf
+  install_wrapper
+elif [ -x "$DEST" ] && [ "$REBUILD" -eq 0 ]; then
+  echo "atop crate not found; keeping existing $DEST"
+  migrate_rust_atop
+  install_wrapper
+elif [ -x "$HOME/.local/bin/atop-tui" ] && [ "$DEST" != "$HOME/.local/bin/atop-tui" ] && [ "$REBUILD" -eq 0 ]; then
+  mkdir -p "$DEST_DIR"
+  ln -fns "$HOME/.local/bin/atop-tui" "$DEST"
+  echo "atop crate not found; linked host TUI -> $DEST"
+  install_wrapper
+elif [ -x "$HOME/.local/bin/atop" ] && ! is_script "$HOME/.local/bin/atop" && [ "$REBUILD" -eq 0 ]; then
+  mkdir -p "$DEST_DIR"
+  cp "$HOME/.local/bin/atop" "$DEST"
+  chmod 755 "$DEST"
+  echo "atop crate not found; migrated rust TUI -> $DEST"
+  install_wrapper
+else
+  echo "atop/install: crate not found and no existing binary at $DEST" >&2
+  echo "  personal: set ATOP_SRC or keep a binary at ~/.local/bin/atop-tui" >&2
+  echo "  work: fetch the atop-rust-thin worktree or set ATOP_SRC" >&2
+  exit 2
+fi
+
+install_aos_buf || true
+install_messages end atop 2>/dev/null || true

@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""aos policy — filter + policy engine CLI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+from acl import actor_from_ctx, add_jit_grant, allowed, require  # noqa: E402
+from compile import ADAPTERS, compile_adapter, write_compiled  # noqa: E402
+from engine import (  # noqa: E402
+    StreamState,
+    apply_edge,
+    apply_introspect,
+    apply_stream,
+    context_from_env,
+    filter_catalog,
+    public_status,
+    transform_text,
+)
+from voice import dump as voice_dump  # noqa: E402
+from voice import filter_transcript, timeout_speech, world_brief  # noqa: E402
+from schema import default_bundle_root, default_home, load_bundle, load_yaml_file, normalize_policy  # noqa: E402
+
+
+def _dump(data: object) -> None:
+    json.dump(data, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+
+def _read_input(args: argparse.Namespace) -> str:
+    if getattr(args, "file", None):
+        return Path(args.file).read_text(encoding="utf-8")
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    return ""
+
+
+def _items(raw: str) -> list[object]:
+    if not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+    if isinstance(data, dict) and "items" in data:
+        data = data["items"]
+    if isinstance(data, list):
+        return data
+    return [data]
+
+
+def cmd_list(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    rows = []
+    for policy in bundle.get("policies") or []:
+        rows.append(
+            {
+                "id": policy["id"],
+                "priority": policy["priority"],
+                "enabled": policy["enabled"],
+                "mode": policy["mode"],
+                "surfaces": policy.get("surfaces") or [],
+            }
+        )
+    if args.json:
+        _dump({"schema": "aos.policy.list.v1", "policies": rows, "status": public_status(bundle, ctx)})
+    else:
+        for row in rows:
+            print(f"{row['id']}\t{row['priority']}\t{row['mode']}\t{','.join(row['surfaces'])}")
+    return 0
+
+
+def cmd_show(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    for policy in bundle.get("policies") or []:
+        if policy["id"] == args.id:
+            _dump(policy)
+            return 0
+    print(f"aos-policy: unknown policy {args.id}", file=sys.stderr)
+    return 1
+
+
+def cmd_status(bundle: dict, ctx: dict, _args: argparse.Namespace) -> int:
+    _dump(public_status(bundle, ctx))
+    return 0
+
+
+def cmd_eval(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    raw = _read_input(args)
+    surface = args.surface
+    if surface.startswith("catalog."):
+        kept = filter_catalog(bundle, surface, _items(raw), ctx)
+        _dump({"schema": "aos.policy.eval.v1", "surface": surface, "items": kept})
+        return 0
+    if surface == "graph.edge":
+        print(apply_edge(bundle, raw, ctx, src=args.src or "", dst=args.dst or ""), end="")
+        return 0
+    if surface == "graph.node.introspect":
+        print(apply_introspect(bundle, raw, ctx, node=args.node or ""), end="")
+        return 0
+    print(transform_text(bundle, surface, raw, ctx), end="")
+    return 0
+
+
+def cmd_filter(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    state = StreamState()
+    surface = args.surface
+    while True:
+        chunk = sys.stdin.read(4096)
+        if not chunk:
+            result = apply_stream(bundle, surface, "", ctx, state, final=True)
+            sys.stdout.write(result.emit)
+            return 0
+        result = apply_stream(bundle, surface, chunk, ctx, state)
+        sys.stdout.write(result.emit)
+        state.hold = result.hold
+
+
+def cmd_compile(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    adapters = [args.adapter] if args.adapter else list(ADAPTERS)
+    if args.stdout and args.adapter:
+        _dump(compile_adapter(bundle, args.adapter, ctx))
+        return 0
+    dest = write_compiled(bundle, ctx, dest=Path(args.out) if args.out else None, adapters=adapters)
+    print(f"compiled={dest}")
+    return 0
+
+
+def cmd_apply(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    dest = write_compiled(bundle, ctx, dest=Path(args.out) if args.out else None)
+    print(f"applied={dest}")
+    return 0
+
+
+def cmd_grants(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    grants = (bundle.get("acl") or {}).get("grants") or []
+    _dump({"schema": "aos.acl.list.v1", "grants": grants})
+    return 0
+
+
+def cmd_grant(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    actor = actor_from_ctx(ctx)
+    grant = add_jit_grant(
+        actor=actor,
+        bundle=bundle,
+        agent=args.agent,
+        capability=args.capability,
+        policies=args.policy or ["*"],
+        ttl=args.ttl,
+        home=Path(args.home) if args.home else None,
+    )
+    _dump(grant)
+    return 0
+
+
+def cmd_put(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    actor = actor_from_ctx(ctx)
+    raw = load_yaml_file(Path(args.file))
+    policy = normalize_policy(raw, source=args.file)
+    require(bundle, actor, "policy.write", policy["id"])
+    overlay = Path(bundle["overlay"])
+    overlay.mkdir(parents=True, exist_ok=True)
+    dest = overlay / f"{policy['id']}.yaml"
+    dest.write_text(Path(args.file).read_text(encoding="utf-8"), encoding="utf-8")
+    dest.chmod(0o600)
+    print(f"wrote={dest}")
+    return 0
+
+
+def cmd_voice(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    action = args.voice_cmd
+    if action == "brief":
+        sys.stdout.write(voice_dump(world_brief()))
+        return 0
+    if action == "timeout":
+        sys.stdout.write(voice_dump(timeout_speech(reason=getattr(args, "reason", None) or "empty")))
+        return 0
+    raw = _read_input(args)
+    tick = filter_transcript(raw, ctx=ctx, bundle=bundle)
+    if getattr(args, "json", False) or action == "tick":
+        sys.stdout.write(voice_dump(tick))
+        return 0
+    sys.stdout.write(tick["speech"])
+    if not tick["speech"].endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
+
+
+def cmd_can(bundle: dict, ctx: dict, args: argparse.Namespace) -> int:
+    actor = actor_from_ctx(ctx)
+    ok = allowed(bundle, actor, args.capability, args.policy or "*")
+    _dump({"ok": ok, "actor": actor, "capability": args.capability, "policy": args.policy or "*"})
+    return 0 if ok else 1
+
+
+def _common() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--root", help="bundled policy root")
+    common.add_argument("--home", help="runtime overlay / compiled home")
+    common.add_argument("--wrapper", help="AOS_WRAPPER")
+    common.add_argument("--provider", help="AOS_PROVIDER")
+    common.add_argument("--class", dest="cls", help="profile class")
+    common.add_argument("--actor", help="calling fleet agent identity")
+    common.add_argument("--bridge-tools", dest="bridge_tools", help="comma-separated exposed bridge tools")
+    return common
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="aos-policy", description="AOS filter + policy engine")
+    common = _common()
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_list = sub.add_parser("list", help="list bundled + overlay policies", parents=[common])
+    p_list.add_argument("--json", action="store_true")
+    p_list.set_defaults(func=cmd_list)
+
+    p_show = sub.add_parser("show", help="print one policy document", parents=[common])
+    p_show.add_argument("id")
+    p_show.set_defaults(func=cmd_show)
+
+    p_status = sub.add_parser("status", help="active policy count (silent bodies omitted)", parents=[common])
+    p_status.set_defaults(func=cmd_status)
+
+    p_eval = sub.add_parser("eval", help="apply filters/transforms to a catalog or text", parents=[common])
+    p_eval.add_argument("--surface", required=True)
+    p_eval.add_argument("--file")
+    p_eval.add_argument("--src")
+    p_eval.add_argument("--dst")
+    p_eval.add_argument("--node")
+    p_eval.set_defaults(func=cmd_eval)
+
+    p_filter = sub.add_parser("filter", help="stream stdin through a text surface", parents=[common])
+    p_filter.add_argument("--surface", default="stream.outbound")
+    p_filter.set_defaults(func=cmd_filter)
+
+    p_compile = sub.add_parser("compile", help="emit harness-native permission sidecars", parents=[common])
+    p_compile.add_argument("--adapter", choices=ADAPTERS)
+    p_compile.add_argument("--out")
+    p_compile.add_argument("--stdout", action="store_true")
+    p_compile.set_defaults(func=cmd_compile)
+
+    p_apply = sub.add_parser("apply", help="compile + write AOS_POLICY_HOME/compiled", parents=[common])
+    p_apply.add_argument("--out")
+    p_apply.set_defaults(func=cmd_apply)
+
+    p_grants = sub.add_parser("grants", help="list ACL/JIT grants", parents=[common])
+    p_grants.set_defaults(func=cmd_grants)
+
+    p_grant = sub.add_parser("grant", help="attach a JIT grant", parents=[common])
+    p_grant.add_argument("--agent", required=True)
+    p_grant.add_argument("--capability", required=True)
+    p_grant.add_argument("--policy", action="append")
+    p_grant.add_argument("--ttl", default="2h")
+    p_grant.set_defaults(func=cmd_grant)
+
+    p_put = sub.add_parser("put", help="write an overlay policy (ACL gated)", parents=[common])
+    p_put.add_argument("--file", required=True)
+    p_put.set_defaults(func=cmd_put)
+
+    p_voice = sub.add_parser("voice", help="TTS filter + a-top world brief (no local LLM)", parents=[common])
+    vsub = p_voice.add_subparsers(dest="voice_cmd", required=True)
+    p_vf = vsub.add_parser("filter", help="rewrite a TTS transcript", parents=[common])
+    p_vf.add_argument("--file")
+    p_vf.add_argument("--json", action="store_true")
+    p_vf.set_defaults(func=cmd_voice)
+    p_vt = vsub.add_parser("tick", help="one realtime voice turn (JSON)", parents=[common])
+    p_vt.add_argument("--file")
+    p_vt.set_defaults(func=cmd_voice)
+    p_vb = vsub.add_parser("brief", help="deterministic a-top / a-top vi snapshot", parents=[common])
+    p_vb.set_defaults(func=cmd_voice)
+    p_vo = vsub.add_parser("timeout", help="continuation when Cos/voice turn is empty", parents=[common])
+    p_vo.add_argument("--reason", default="empty")
+    p_vo.set_defaults(func=cmd_voice)
+
+    p_can = sub.add_parser("can", help="check an ACL capability", parents=[common])
+    p_can.add_argument("--capability", required=True)
+    p_can.add_argument("--policy")
+    p_can.set_defaults(func=cmd_can)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    extra = {}
+    if getattr(args, "wrapper", None):
+        extra["wrapper"] = args.wrapper
+    if getattr(args, "provider", None):
+        extra["provider"] = args.provider
+    if getattr(args, "cls", None):
+        extra["class"] = args.cls
+    if getattr(args, "actor", None):
+        extra["agent"] = args.actor
+    if getattr(args, "bridge_tools", None):
+        extra["bridge_tools"] = [p.strip() for p in args.bridge_tools.split(",") if p.strip()]
+    ctx = context_from_env(extra=extra)
+    if not ctx.get("agent") and not ctx.get("class"):
+        ctx["class"] = ctx.get("class") or "implementor"
+    root = Path(args.root) if args.root else default_bundle_root()
+    home = Path(args.home) if args.home else default_home()
+    bundle = load_bundle(root, home)
+    try:
+        return args.func(bundle, ctx, args)
+    except PermissionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

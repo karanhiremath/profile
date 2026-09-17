@@ -1,0 +1,9 @@
+schema: aos.policy.adapter.v1
+id: pi
+target: ~/.local/share/aos/policy/compiled/pi.json
+native: setActiveTools + silent stream strip
+notes: In-process via config/pi/packages/aos-policy-engine.
+merge:
+  activeTools: catalog.tools.allow
+  denyTools: catalog.tools.deny
+  silentPatterns: stream.outbound.strip

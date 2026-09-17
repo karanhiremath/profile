@@ -1,0 +1,58 @@
+schema: aos.acl.v1
+description: >
+  Who may read or mutate AOS filter/policy documents. Overlay writes and
+  JIT grants require policy.write / policy.grant. Bundled policies stay
+  in-repo; fleet edits land under AOS_POLICY_HOME/overlay.
+grants:
+  - id: orchestrators
+    principal:
+      class: orchestrator
+    capabilities:
+      - policy.read
+      - policy.write
+      - policy.apply
+      - policy.compile
+      - policy.grant
+    policies:
+      - "*"
+  - id: orchestrator-agents
+    principal:
+      agent:
+        - cos
+        - cosw
+        - pm
+        - pl
+        - fleet-designer
+    capabilities:
+      - policy.read
+      - policy.write
+      - policy.apply
+      - policy.compile
+      - policy.grant
+    policies:
+      - "*"
+  - id: aos-policy-editor
+    principal:
+      agent: aos-policy-editor
+    capabilities:
+      - policy.read
+      - policy.write
+      - policy.apply
+      - policy.compile
+      - policy.grant
+    policies:
+      - "*"
+  - id: implementors-read
+    principal:
+      class: implementor
+    capabilities:
+      - policy.read
+    policies:
+      - "*"
+  - id: reviewers-read
+    principal:
+      class: reviewer
+    capabilities:
+      - policy.read
+    policies:
+      - "*"

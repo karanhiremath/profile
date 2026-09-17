@@ -10,86 +10,31 @@ all: mise git tmux nvim pc dev
 install:
     ./install.sh
 
-# Stand up the full coding-dev environment in one command (idempotent):
-# mise (-> node, pnpm, uv, neovim) then the coding CLIs (claude, pi,
-# copilot-cli, hermes). mise runs FIRST so the CLI installers find node/pnpm/uv.
-# Resilient: a failing installer is reported and the rest still run; a summary
-# prints at the end and `just dev` exits non-zero if any step failed.
-# Usage: just dev [--help]
+# Stand up every agentic toolkit (host mode default). Includes atop.
+# Sandbox: just agentic-dev --mode sandbox --project krop-tf
+# Usage: just dev [--help] [--mode host|sandbox] [--project NAME] [--class personal|work]
 dev *FLAGS:
     #!/usr/bin/env bash
-    # NOTE: intentionally NOT `set -e` — this recipe must continue past a single
-    # installer failure. Each step's rc is captured explicitly instead.
     set -uo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/agentic-dev/install {{FLAGS}}
 
-    case "{{FLAGS}}" in
-        --help|-h)
-            cat <<'EOF'
-    just dev — stand up the full coding-dev environment (idempotent).
+# Alias for just dev — host or sandbox agentic install + CosW provision
+agentic-dev *FLAGS:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/agentic-dev/install {{FLAGS}}
 
-    Runs, in order:
-      1. bin/mise/install         mise + node, pnpm, uv, neovim
-      2. bin/claude/install       Claude Code CLI       (pnpm global)
-      3. bin/pi/install           pi coding agent       (pnpm global)
-      4. bin/copilot-cli/install  GitHub Copilot CLI
-      5. bin/hermes/install       Hermes isolated toolchain (uses mise's uv)
-
-    mise runs first so the CLI installers find node/pnpm/uv on PATH.
-    Resilient: a failing step is reported and the rest continue; a summary
-    prints at the end and the recipe exits non-zero if any step failed.
-    EOF
-            exit 0
-            ;;
-        "") : ;;
-        *)
-            echo "just dev: unknown argument '{{FLAGS}}' (try: just dev --help)" >&2
-            exit 2
-            ;;
-    esac
-
-    step_names=()
-    step_rcs=()
-    run_step() {
-        local label="$1"; shift
-        echo ""
-        echo "=== ${label} ==="
-        if "$@"; then
-            step_names+=("$label"); step_rcs+=(0)
-        else
-            local rc=$?
-            step_names+=("$label"); step_rcs+=("$rc")
-            echo "!! ${label} FAILED (rc=${rc}); continuing with remaining installers..." >&2
-        fi
-    }
-
-    # mise MUST run first: it provides node/pnpm/uv used by every CLI installer.
-    run_step "mise"        ./bin/mise/install
-    run_step "claude"      ./bin/claude/install
-    run_step "pi"          ./bin/pi/install
-    run_step "copilot-cli" ./bin/copilot-cli/install
-    run_step "hermes"      ./bin/hermes/install
-
-    echo ""
-    echo "=== coding-dev environment summary ==="
-    failed=0
-    for i in "${!step_names[@]}"; do
-        if [ "${step_rcs[$i]}" -eq 0 ]; then
-            printf '  ok    %s\n' "${step_names[$i]}"
-        else
-            printf '  FAIL  %s (rc=%s)\n' "${step_names[$i]}" "${step_rcs[$i]}"
-            failed=1
-        fi
-    done
-
-    if [ "$failed" -ne 0 ]; then
-        echo "" >&2
-        echo "One or more installers failed; see logs above." >&2
-        exit 1
-    fi
-    echo ""
-    echo "✓ coding-dev environment ready"
+# Provision CosW / project registries for this host class (no CLI installs)
+provision *FLAGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/agentic-dev/provision {{FLAGS}}
 
 # Install Ansible dependencies without mutating profile state
 ansible-bootstrap:
@@ -240,6 +185,40 @@ nvim:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/nvim/install
 
+# Build and install atop (agent-fleet TUI)
+atop *FLAGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/atop/install {{FLAGS}}
+
+# krop-tf / krop-infra / krop-ai checkouts (personal host only)
+krop *FLAGS:
+    ./bin/krop {{FLAGS}}
+
+# Cursor / Claude / Codex spend ledger (CAI-AOS)
+aos-spend *FLAGS:
+    ./bin/aos-spend {{FLAGS}}
+
+# Install aos-policy (filter + policy engine)
+aos-policy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/aos-policy/install
+
+# Build and install aos-buf (catalog / get / queued apply)
+aos-buf:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd bin/aos-buf && cargo build --release
+    mkdir -p "$HOME/.local/bin"
+    cp target/release/aos-buf "$HOME/.local/bin/aos-buf"
+    chmod 755 "$(pwd)/../aos" "$HOME/.local/bin/aos-buf"
+    ln -fns "$(pwd)/../aos" "$HOME/.local/bin/aos"
+
 # Build and install pc (pi-code session manager)
 pc:
     #!/usr/bin/env bash
@@ -254,7 +233,11 @@ pc:
         mkdir -p "$HOME/.pi/agent/skills"
         for skill in "$(pwd)"/skills/pi/*; do
             [ -d "$skill" ] || continue
-            ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
+            dest="$HOME/.pi/agent/skills/$(basename "$skill")"
+            if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+                rm -rf "$dest"
+            fi
+            ln -fns "$skill" "$dest"
         done
         echo "✓ Linked profile Pi skills"
     fi
@@ -264,6 +247,14 @@ pc:
         ln -fns "$(pwd)/extensions/datadog-mcp.ts" "$HOME/.pi/agent/extensions/datadog-mcp.ts"
         echo "✓ Linked Datadog MCP extension"
     fi
+
+# Linear Work on issue → Custom script (pc workspace + prompt template)
+linear:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/linear/install
 
 obsidian:
     #!/usr/bin/env bash
@@ -355,6 +346,18 @@ pi:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/pi/install
 
+# Install/upgrade oh-my-pi (omp) + profile-managed personal/work agent
+omp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/omp/install
+
+# Sync pi/herm profiles, extensions, skills, packages (personal atop toolkit)
+atop-harness-sync *FLAGS:
+    ./bin/atop/harness-sync {{FLAGS}}
+
 # Link profile-managed Pi skills into ~/.pi/agent/skills
 pi-skills:
     #!/usr/bin/env bash
@@ -362,8 +365,13 @@ pi-skills:
     mkdir -p "$HOME/.pi/agent/skills"
     for skill in "$(pwd)"/skills/pi/*; do
         [ -d "$skill" ] || continue
-        ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
+        dest="$HOME/.pi/agent/skills/$(basename "$skill")"
+        if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+            rm -rf "$dest"
+        fi
+        ln -fns "$skill" "$dest"
     done
+    ./bin/atop/resolve-skill-conflicts
 
 # Link Codex.app CLI for shell/tmux use
 codex:
@@ -478,6 +486,10 @@ hermes-doctor:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/hermes/doctor
 
+# Status of karanhiremath/hermes-agent + herm forks vs upstream
+hermes-fork-sync *FLAGS:
+    ./bin/hermes/fork-sync {{FLAGS}}
+
 # Install/upgrade Helm
 helm:
     #!/usr/bin/env bash
@@ -557,6 +569,14 @@ alt-tab:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/alt-tab/install
+
+# Install/upgrade Vorssaint (macOS menu bar toolkit)
+vorssaint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/vorssaint/install
 
 # Install/upgrade DockDoor (macOS window peeking utility)
 dockdoor:

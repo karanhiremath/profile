@@ -1,0 +1,8 @@
+schema: aos.policy.adapter.v1
+id: hermes
+target: ~/.local/share/aos/policy/compiled/hermes.json
+native: Hermes tool allowlist
+notes: Isolated HERMES_HOME seats read the compiled allow/deny lists.
+merge:
+  tools.allow: catalog.tools.allow
+  tools.deny: catalog.tools.deny

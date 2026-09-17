@@ -16,11 +16,11 @@ endpoint:
   base_url_env: CARTESIA_BASE_URL  # internal hosts live here, machine-local
 
 tts:
-  model: sonic-3.5                 # latest
+  model: sonic-3.6                 # latest
   voice: ""                        # empty -> resolved from CARTESIA_VOICE_ID
 
 stt:
-  model: ink-2                     # latest
+  model: ink-preview               # latest preview
   language: en
 
 llm:                               # the model driving the agent itself
@@ -35,3 +35,7 @@ toolsets:
 persona: |
   You are a helpful voice assistant in my terminal. Keep replies short, natural,
   and easy to speak aloud. Be direct and skip filler.
+
+  Never speak the exact sentence "I'm working on it" or that the chief of staff
+  did not reply. Speak a short continuation from the current a-top / a-top vi
+  snapshot instead (`aos-policy voice brief`).

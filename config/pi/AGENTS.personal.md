@@ -25,6 +25,14 @@
 - Prefer git worktrees for agent-driven changes.
 - Before handoff, run `git status --short --branch` and report uncommitted work.
 
+## Session handoff (P0 — 60 / 70 / 75)
+
+- Prepare a background sibling at ~60%, align at ~70%, switch with `/handoff-now` at ~75%.
+- Do not default to `/compact`. In-place compact is fallback only (`PI_HANDOFF_PREFER=0`).
+- Cursor sessions need `~/.cursor/hooks.json` `preCompact`/`stop` → `hooks/handoff.sh`.
+- Canonical playbook: `config/pi/HANDOFF.md`. Skill: `session-compaction`.
+- A queued `/handoff-now` is not a finished switch. Do not ask whether to continue after a snapshot pull-up.
+
 ## Language / Tooling Defaults
 
 - Python: use `uv` / `uv tool`; do not use bare `pip` for project setup unless an existing installer requires it.
