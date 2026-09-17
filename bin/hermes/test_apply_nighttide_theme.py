@@ -18,6 +18,8 @@ class HostThemeTests(unittest.TestCase):
         self.assertEqual(mod.host_cos_theme("karans-macbook-pro-1"), "nighttide-violet")
         self.assertEqual(mod.host_cos_theme("khire-mac-mini"), "nighttide-teal")
         self.assertEqual(mod.host_cos_theme("personal-mini"), "nighttide-teal")
+        self.assertEqual(mod.host_cos_theme("khire-mbp-13"), "nighttide-blue")
+        self.assertEqual(mod.host_cos_theme("home-mbp-13"), "nighttide-blue")
         self.assertEqual(mod.host_cos_theme("mac-mbp-13"), "nighttide-blue")
         self.assertEqual(mod.host_cos_theme("omarchy-mbp-13"), "nighttide-amber")
         self.assertEqual(mod.host_cos_theme("qemu-omarchy"), "nighttide-green")

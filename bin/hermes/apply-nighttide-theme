@@ -7,7 +7,7 @@ the host/profile identity cue:
 
   this MBP Cos          nighttide-violet
   home-mac-mini Cos     nighttide-teal
-  mac-mbp-13 Cos        nighttide-blue
+  khire-mbp-13 Cos      nighttide-blue
   omarchy-mbp-13 Cos    nighttide-amber
   qemu / omarchy Cos    nighttide-green
   work / cosw           nighttide-ember  (mac + tc2 share this profile)
@@ -181,6 +181,8 @@ COS_HOST_PREFIXES: tuple[tuple[str, str], ...] = (
     ("khire-mac-mini", "nighttide-teal"),
     ("home-mac-mini", "nighttide-teal"),
     ("personal-mini", "nighttide-teal"),
+    ("khire-mbp-13", "nighttide-blue"),
+    ("home-mbp-13", "nighttide-blue"),
     ("mac-mbp-13", "nighttide-blue"),
     ("omarchy-mbp-13", "nighttide-amber"),
     ("omarchy-qemu", "nighttide-green"),
