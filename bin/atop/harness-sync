@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# Sync pi/herm harness profiles, extensions, skills, and packages across hosts.
+# Usage: harness-sync [status|apply|pull|diff-host <ssh>]
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: harness-sync [status|apply|pull [--all] [ssh-host]|diff-host <ssh-host>]
+
+  status     host class, herm fork, missing packages/extensions/skills
+  apply      link personal skills/extensions, merge packages, wrap herm
+  pull       merge personal-safe toolkit from a peer host (any class)
+             default: work → home-mac-mini; personal requires a host
+             --all   full extensions/skills/agents from the peer (any class)
+                     default source: tc2 if no host is passed
+  diff-host  compare this host's pi extension names to an SSH host
+
+Never reads or writes auth.json. apply still strips work packages from
+personal settings.json. --all is not class-gated.
+EOF
+}
+
+log() { printf 'harness-sync: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+MANIFEST="${HARNESS_MANIFEST:-$PROFILE_DIR/config/pi/harness-manifest.yaml}"
+PI_AGENT="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+SETTINGS="$PI_AGENT/settings.json"
+
+host_class() {
+  local hn
+  hn="$(hostname -s 2>/dev/null || uname -n)"
+  # Mini DHCP sometimes renames to unknown*.attlocal.net
+  if [ "$(uname -s)" = Darwin ] && [ ! -d "$HOME/src/karan.hiremath" ]; then
+    printf 'personal\n'
+    return
+  fi
+  case "$hn" in
+    khire-mac-mini|home-mac-mini) printf 'personal\n' ;;
+    cxis-devlarge-2|tc2) printf 'work\n' ;;
+    karans-macbook-pro*|karans-mbp*) printf 'work\n' ;;
+    *)
+      if [ -d "$HOME/src/karan.hiremath" ]; then
+        printf 'work\n'
+      else
+        printf 'personal\n'
+      fi
+      ;;
+  esac
+}
+
+herm_target() {
+  if [ -x "$HOME/.local/bin/herm" ] && grep -q "$HOME/src/herm/src/index.tsx" "$HOME/.local/bin/herm" 2>/dev/null; then
+    printf 'fork\n'
+  elif [ -x "$HOME/src/herm/src/index.tsx" ]; then
+    printf 'fork-unshimmed\n'
+  else
+    printf 'missing\n'
+  fi
+}
+
+list_ext() {
+  local dir="$1"
+  [ -d "$dir" ] || return 0
+  find "$dir" -maxdepth 2 \( -name '*.ts' -o -name 'index.ts' \) \( -type f -o -type l \) \
+    | sed "s#^$dir/##" | sort
+}
+
+remote_exists() {
+  local host="$1" path="$2"
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "test -e $path"
+}
+
+pull_tree() {
+  local host="$1" remote="$2" dest="$3"
+  shift 3
+  remote_exists "$host" "$remote" || return 0
+  mkdir -p "$dest"
+  rsync -a --exclude node_modules --exclude .git --exclude auth.json "$@" \
+    "${host}:${remote}" "$dest"
+}
+
+pull_file() {
+  local host="$1" remote="$2" dest="$3"
+  remote_exists "$host" "$remote" || return 0
+  mkdir -p "$(dirname "$dest")"
+  rsync -a "${host}:${remote}" "$dest"
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+  -h|--help|help) usage; exit 0 ;;
+esac
+
+CLASS="$(host_class)"
+case "$cmd" in
+  status)
+    printf 'host=%s\n' "$(hostname -s 2>/dev/null || uname -n)"
+    printf 'class=%s\n' "$CLASS"
+    printf 'pi_agent=%s\n' "$PI_AGENT"
+    printf 'herm=%s\n' "$(herm_target)"
+    if [ -f "$SETTINGS" ]; then
+      python3 - "$SETTINGS" <<'PY'
+import json, sys
+d=json.loads(open(sys.argv[1]).read())
+print("packages=")
+for p in d.get("packages") or []:
+    print(f"  {p}")
+print(f"defaultProvider={d.get('defaultProvider','')}")
+PY
+    else
+      printf 'packages=missing-settings\n'
+    fi
+    printf 'extensions=\n'
+    list_ext "$PI_AGENT/extensions" | sed 's/^/  /'
+    printf 'skills=\n'
+    if [ -d "$PI_AGENT/skills" ]; then
+      ls -1 "$PI_AGENT/skills" | sed 's/^/  /'
+    fi
+    if [ "$CLASS" = personal ]; then
+      python3 - "$SETTINGS" <<'PY' || true
+import json, sys
+from pathlib import Path
+p=Path(sys.argv[1])
+if not p.exists():
+    raise SystemExit(0)
+d=json.loads(p.read_text())
+bad=[]
+for x in d.get("packages") or []:
+    s=str(x)
+    if "pi-csec" in s or "karan.hiremath" in s or "cdev/session" in s:
+        bad.append(s)
+if bad:
+    print("forbidden_packages=")
+    for b in bad:
+        print(f"  {b}")
+else:
+    print("forbidden_packages=none")
+PY
+    fi
+    ;;
+
+  apply)
+    mkdir -p "$PI_AGENT/extensions" "$PI_AGENT/skills" "$HOME/.pi/agent/local-packages"
+    if [ -d "$PROFILE_DIR/config/pi/packages/pi-profile-management" ]; then
+      rsync -a --delete --exclude node_modules \
+        "$PROFILE_DIR/config/pi/packages/pi-profile-management/" \
+        "$HOME/.pi/agent/local-packages/pi-profile-management/"
+    fi
+    if [ -d "$PROFILE_DIR/skills/pi" ]; then
+      for skill in "$PROFILE_DIR/skills/pi"/*; do
+        [ -d "$skill" ] || continue
+        dest="$PI_AGENT/skills/$(basename "$skill")"
+        # macOS ln -fns into a real directory nests instead of replacing.
+        if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+          rm -rf "$dest"
+        fi
+        ln -fns "$skill" "$dest"
+      done
+      if [ -x "$PROFILE_DIR/bin/atop/resolve-skill-conflicts" ]; then
+        "$PROFILE_DIR/bin/atop/resolve-skill-conflicts"
+      fi
+    fi
+    if [ -d "$PROFILE_DIR/config/pi/extensions" ]; then
+      mkdir -p "$PI_AGENT/extensions/lib" "$PI_AGENT/extensions/subagent"
+      if [ "$CLASS" = work ]; then
+        ln -fns "$PROFILE_DIR/config/pi/extensions/harness-sync.ts" "$PI_AGENT/extensions/harness-sync.ts"
+      else
+        for ext in "$PROFILE_DIR/config/pi/extensions"/*.ts; do
+          [ -f "$ext" ] || continue
+          ln -fns "$ext" "$PI_AGENT/extensions/$(basename "$ext")"
+        done
+      fi
+      # Pointer-handoff stack: copy, do not symlink. Bun resolves relative
+      # imports from the real path; spawn needs ~/.pi/agent/extensions/subagent/*.
+      for name in handoff.ts compact-handoff.ts job-bus.ts; do
+        if [ -f "$PROFILE_DIR/config/pi/extensions/$name" ]; then
+          rm -f "$PI_AGENT/extensions/$name"
+          cp -p "$PROFILE_DIR/config/pi/extensions/$name" "$PI_AGENT/extensions/$name"
+        fi
+      done
+      if [ -d "$PROFILE_DIR/config/pi/extensions/lib" ]; then
+        for f in "$PROFILE_DIR/config/pi/extensions/lib"/compact-snapshot*.ts \
+          "$PROFILE_DIR/config/pi/extensions/lib"/handoff-*.ts \
+          "$PROFILE_DIR/config/pi/extensions/lib"/job-bus*.ts; do
+          [ -f "$f" ] || continue
+          case "$(basename "$f")" in *.test.ts) continue ;; esac
+          rm -f "$PI_AGENT/extensions/lib/$(basename "$f")"
+          cp -p "$f" "$PI_AGENT/extensions/lib/$(basename "$f")"
+        done
+      fi
+      JOB_BUS_JSON="$PI_AGENT/job-bus.json"
+      if [ ! -f "$JOB_BUS_JSON" ]; then
+        if [ "$CLASS" = personal ]; then
+          JOB_BUS_TMPL="$PROFILE_DIR/config/pi/templates/job-bus.personal.json"
+        else
+          JOB_BUS_TMPL="$PROFILE_DIR/config/pi/templates/job-bus.work.json"
+        fi
+        if [ -f "$JOB_BUS_TMPL" ]; then
+          cp -p "$JOB_BUS_TMPL" "$JOB_BUS_JSON"
+          chmod 0600 "$JOB_BUS_JSON"
+        fi
+      fi
+      if [ -f "$PROFILE_DIR/config/pi/extensions/subagent/pi-invocation.ts" ]; then
+        rm -f "$PI_AGENT/extensions/subagent/pi-invocation.ts"
+        cp -p "$PROFILE_DIR/config/pi/extensions/subagent/pi-invocation.ts" \
+          "$PI_AGENT/extensions/subagent/pi-invocation.ts"
+      fi
+    fi
+    if [ -d "$PROFILE_DIR/config/cursor" ]; then
+      mkdir -p "$HOME/.cursor/hooks"
+      if [ -f "$PROFILE_DIR/config/cursor/hooks/handoff.sh" ]; then
+        ln -fns "$PROFILE_DIR/config/cursor/hooks/handoff.sh" "$HOME/.cursor/hooks/handoff.sh"
+        chmod +x "$HOME/.cursor/hooks/handoff.sh"
+      fi
+      if [ -f "$PROFILE_DIR/config/cursor/hooks/handoff-lane.mjs" ]; then
+        cp -p "$PROFILE_DIR/config/cursor/hooks/handoff-lane.mjs" "$HOME/.cursor/hooks/handoff-lane.mjs"
+        chmod +x "$HOME/.cursor/hooks/handoff-lane.mjs"
+      fi
+      python3 - "$PROFILE_DIR/config/cursor/hooks.json" "$HOME/.cursor/hooks.json" <<'PY'
+import json, sys
+from pathlib import Path
+src, dest = Path(sys.argv[1]), Path(sys.argv[2])
+want = json.loads(src.read_text())
+have = json.loads(dest.read_text()) if dest.exists() else {"version": 1, "hooks": {}}
+have.setdefault("version", 1)
+have.setdefault("hooks", {})
+for event, entries in (want.get("hooks") or {}).items():
+    cur = list(have["hooks"].get(event) or [])
+    cmds = {str(x.get("command")) for x in cur if isinstance(x, dict)}
+    for entry in entries:
+        cmd = str(entry.get("command") or "")
+        if cmd and cmd not in cmds:
+            cur.append(entry)
+            cmds.add(cmd)
+    have["hooks"][event] = cur
+dest.write_text(json.dumps(have, indent=2) + "\n")
+PY
+    fi
+    TRACKED="$PROFILE_DIR/config/pi/packages/pi-profile-management"
+    LOCAL_CURSOR_SDK="$HOME/src/pi-cursor-sdk"
+    python3 - "$SETTINGS" "$TRACKED" "$CLASS" "$LOCAL_CURSOR_SDK" <<'PY'
+import json, sys
+from pathlib import Path
+settings, tracked, klass, local_sdk = Path(sys.argv[1]), sys.argv[2], sys.argv[3], Path(sys.argv[4])
+settings.parent.mkdir(parents=True, exist_ok=True)
+data = json.loads(settings.read_text()) if settings.exists() else {}
+pkgs = [str(x) for x in (data.get("packages") or [])]
+def has(suffix):
+    return any(suffix in p or p.endswith(suffix) for p in pkgs)
+if local_sdk.is_dir() and (local_sdk / "package.json").is_file():
+    local = str(local_sdk)
+    pkgs = [p for p in pkgs if p != "npm:pi-cursor-sdk" and not p.endswith("/pi-cursor-sdk") and "pi-cursor-sdk" not in Path(p).name]
+    pkgs.insert(0, local)
+elif "npm:pi-cursor-sdk" not in pkgs and not has("pi-cursor-sdk"):
+    pkgs.append("npm:pi-cursor-sdk")
+if not has("pi-profile-management"):
+    pkgs.append(tracked)
+if klass == "personal":
+    pkgs = [p for p in pkgs if "pi-csec" not in p and "karan.hiremath" not in p and "cdev/session" not in p]
+data["packages"] = pkgs
+settings.write_text(json.dumps(data, indent=2) + "\n")
+print("packages=")
+for p in pkgs:
+    print(f"  {p}")
+PY
+    if [ -f "$HOME/.pi/agent/local-packages/pi-cursor-sdk-overlay/apply.mjs" ] \
+      && [ -f "$HOME/.pi/agent/npm/node_modules/pi-cursor-sdk/package.json" ] \
+      && [ ! -d "$HOME/src/pi-cursor-sdk" ]; then
+      node "$HOME/.pi/agent/local-packages/pi-cursor-sdk-overlay/apply.mjs" || log "overlay apply skipped"
+    fi
+    if [ -x "$HOME/src/herm/src/index.tsx" ] && [ -x "$HOME/.local/bin/herm" ]; then
+      for dest in \
+        "$HOME/.local/share/hermes-toolchain/pnpm/bin/herm" \
+        "$HOME/.local/share/hermes-toolchain/npm/bin/herm" \
+        "$HOME/.local/share/pnpm/bin/herm"
+      do
+        [ -e "$dest" ] || [ -L "$dest" ] || continue
+        [ "$dest" = "$HOME/.local/bin/herm" ] && continue
+        rm -f "$dest"
+        cp "$HOME/.local/bin/herm" "$dest"
+        chmod 0755 "$dest"
+      done
+    fi
+    log "applied class=$CLASS"
+    ;;
+
+  pull)
+    all=0
+    src_host=""
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --all) all=1; shift ;;
+        -h|--help|help) usage; exit 0 ;;
+        *) src_host="$1"; shift ;;
+      esac
+    done
+    case "$src_host" in
+      mini) src_host="home-mac-mini" ;;
+    esac
+    if [ -z "$src_host" ]; then
+      if [ -n "${HARNESS_SOURCE_HOST:-}" ]; then
+        src_host="$HARNESS_SOURCE_HOST"
+      elif [ "$all" = 1 ]; then
+        src_host="tc2"
+      elif [ "$CLASS" = work ]; then
+        src_host="home-mac-mini"
+      else
+        die "pull: pass a host (e.g. pull tc2). Personal hosts have no default peer."
+      fi
+    fi
+    mkdir -p "$PI_AGENT/extensions" "$PI_AGENT/skills" "$PI_AGENT/agents" \
+      "$HOME/.pi/agent/local-packages" "$PROFILE_DIR/bin/atop" \
+      "$PROFILE_DIR/config/pi/packages" "$PROFILE_DIR/skills/pi"
+
+    pull_tree "$src_host" "src/profile/bin/atop/" "$PROFILE_DIR/bin/atop/"
+    pull_tree "$src_host" "src/profile/config/pi/" "$PROFILE_DIR/config/pi/"
+    pull_tree "$src_host" "src/profile/skills/pi/" "$PROFILE_DIR/skills/pi/"
+    pull_tree "$src_host" ".pi/agent/local-packages/pi-profile-management/" \
+      "$HOME/.pi/agent/local-packages/pi-profile-management/"
+    pull_tree "$src_host" ".pi/agent/local-packages/pi-profile-management/" \
+      "$PROFILE_DIR/config/pi/packages/pi-profile-management/"
+    pull_tree "$src_host" ".pi/agent/local-packages/pi-cursor-sdk-overlay/" \
+      "$HOME/.pi/agent/local-packages/pi-cursor-sdk-overlay/"
+    pull_tree "$src_host" ".pi/agent/local-packages/pi-cursor-sdk-overlay/" \
+      "$PROFILE_DIR/config/pi/packages/pi-cursor-sdk-overlay/"
+    if [ ! -d "$HOME/src/pi-cursor-sdk/.git" ]; then
+      pull_tree "$src_host" "src/pi-cursor-sdk/" "$HOME/src/pi-cursor-sdk/"
+    fi
+
+    if [ "$all" = 1 ]; then
+      pull_tree "$src_host" ".pi/agent/extensions/" "$PI_AGENT/extensions/"
+      pull_tree "$src_host" ".pi/agent/skills/" "$PI_AGENT/skills/"
+      pull_tree "$src_host" ".pi/agent/agents/" "$PI_AGENT/agents/"
+    else
+      # Merge Mini/personal files only. Do not clobber work handoff/job-bus/csec.
+      pull_file "$src_host" ".pi/agent/extensions/harness-sync.ts" \
+        "$PI_AGENT/extensions/harness-sync.ts"
+      pull_file "$src_host" ".pi/agent/extensions/local-llm-lab.ts" \
+        "$PI_AGENT/extensions/local-llm-lab.ts"
+      for skill in herdr-pane-management herm-tui-profiles obsidian-fleet \
+        idle-steer session-compaction live-proposal-pages codex-cli-helper \
+        supacode-cli; do
+        pull_tree "$src_host" ".pi/agent/skills/${skill}/" "$PI_AGENT/skills/${skill}/"
+      done
+    fi
+    log "pulled from $src_host all=$all class=$CLASS"
+    "$0" apply
+    ;;
+
+  diff-host)
+    remote="${2:?usage: harness-sync diff-host <ssh-host>}"
+    tmp="$(mktemp)"
+    ssh -o BatchMode=yes "$remote" 'find ~/.pi/agent/extensions -maxdepth 2 \( -name "*.ts" -o -name index.ts \) -type f | sed "s#.*/extensions/##" | sort' >"$tmp"
+    printf 'local_only=\n'
+    comm -23 <(list_ext "$PI_AGENT/extensions") "$tmp" | sed 's/^/  /'
+    printf 'remote_only=\n'
+    comm -13 <(list_ext "$PI_AGENT/extensions") "$tmp" | sed 's/^/  /'
+    rm -f "$tmp"
+    ;;
+
+  *)
+    die "unknown command: $cmd (try --help)"
+    ;;
+esac

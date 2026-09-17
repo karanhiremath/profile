@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "intervalMs": 2000,
+  "autoSteer": true,
+  "steerCursor": false,
+  "steerHeartbeats": false,
+  "scope": "session",
+  "jobsDir": "",
+  "subscriptions": [],
+  "implementorSid": ""
+}
