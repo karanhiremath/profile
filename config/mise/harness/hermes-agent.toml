@@ -1,0 +1,10 @@
+# Toolchain for the karanhiremath/hermes-agent fork + timeout-free overlay.
+[tools]
+node = "lts"
+pnpm = "latest"
+uv = "latest"
+
+[env]
+HARNESS_NAME = "hermes-agent"
+HERMES_AGENT_FORK = "~/src/hermes-agent"
+HERMES_AGENT_OVERLAY = "~/src/hermes-agent-worktrees/timeout-free-cursor-sdk"

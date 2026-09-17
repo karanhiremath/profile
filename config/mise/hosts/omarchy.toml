@@ -1,0 +1,34 @@
+# Copy/link as a project's mise.toml on omarchy / qemu desktop sandboxes.
+min_version = "2024.1.0"
+
+[tools]
+node = "lts"
+pnpm = "latest"
+uv = "latest"
+
+[env]
+HERMES_MACHINE_PROFILE = "omarchy"
+HERMES_HARNESS_HOST_CLASS = "omarchy"
+HARNESS_LIVE_SEAT = "cursor/grok-4.6:fast"
+HARNESS_COT_SEAT = "openai-codex/gpt-5.5"
+PROFILE_DIR = "~/src/profile"
+
+[tasks.validate]
+description = "Unit + pin/fork validate (no live LLM)"
+run = "bin/hermes/harness validate --skip-sandbox"
+dir = "{{env.PROFILE_DIR}}"
+
+[tasks.eval]
+description = "Live grok-4.6:fast smoke in sandbox"
+run = "bin/hermes/harness eval --seat cursor/grok-4.6:fast --sandbox"
+dir = "{{env.PROFILE_DIR}}"
+
+[tasks.eval-cot]
+description = "gpt-5.5 CoT failure-mode probe"
+run = "bin/hermes/harness eval --failure-mode cot --sandbox"
+dir = "{{env.PROFILE_DIR}}"
+
+[tasks.nightly]
+description = "ff-pull origin/main + stale stamp"
+run = "bin/hermes/harness nightly"
+dir = "{{env.PROFILE_DIR}}"

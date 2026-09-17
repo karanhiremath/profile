@@ -21,7 +21,10 @@ bin/hermes/cos           # launch personal Chief of Staff profile
 bin/hermes/cosw          # launch work Chief of Staff profile
 bin/hermes/pm <project>  # attach/start a registered project-manager tmux/TUI
 bin/hermes/pl <project>  # attach a registered project-lead implementation session
+bin/hermes/fork-sync     # status|validate|promote|nightly (never force-push trunks)
 ```
+
+Harness fork land path: candidate → `fork-sync validate` (cosw sandbox pytest) → `origin/validated/main` → `fork-sync promote` (ff-only `origin/main` + `downstream/main`). Hosts run `fork-sync nightly` (LaunchAgent 03:15) and write `~/.local/share/hermes-harness/state.json` for a stale TUI toast.
 
 ## CoS / PM / PL command model
 

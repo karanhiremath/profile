@@ -1,0 +1,8 @@
+# Toolchain for the oh-my-pi checksum pin + profile overlay.
+# Binary pin stays in bin/omp/install (mise ls-remote lags GitHub v18.1.2).
+[tools]
+node = "lts"
+
+[env]
+HARNESS_NAME = "omp"
+OMP_PIN_TAG = "v18.1.2"

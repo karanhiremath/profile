@@ -1,0 +1,7 @@
+# Toolchain for the pi coding-agent pin + profile overlay.
+[tools]
+node = "lts"
+pnpm = "latest"
+
+[env]
+HARNESS_NAME = "pi"

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Umbrella for every registered agent harness (forks + pins).
+# Forks: candidate → sandbox pytest → origin/validated/main → ff origin/main.
+# Pins: installer present + overlay dir. Live eval is grok-4.6:fast unless --failure-mode cot.
+# Usage: harness [status|validate|promote|eval|nightly|stale|install-nightly]
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: harness <command> [flags]
+
+  status              registry + fork-sync status
+  validate [--name N] [--skip-sandbox]
+                      pin path checks + fork-sync validate
+  promote [--dry-run] ff-only validated/main → origin/main (forks only)
+  eval [--seat P/M] [--failure-mode cot] [--sandbox] [--live] [--dry-run]
+                      live-cred eval. Default seat: cursor/grok-4.6:fast
+  nightly             fork-sync nightly + pin stamp
+  stale               JSON stale stamp
+  install-nightly     LaunchAgent 03:15 → harness nightly
+
+Never force-push. Nightly never promotes. See config/harness/registry.toml.
+USAGE
+}
+
+log() { printf 'harness: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REGISTRY_PY="$SCRIPT_DIR/harness-registry.py"
+FORK_SYNC="$SCRIPT_DIR/fork-sync"
+EVAL="$SCRIPT_DIR/harness-eval"
+
+CMD="${1:-status}"
+shift || true
+NAME=""
+SKIP_SANDBOX=0
+DRY_RUN=0
+LIVE=0
+SANDBOX=0
+SEAT=""
+FAILURE_MODE=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --name) NAME="${2:?}"; shift 2 ;;
+    --skip-sandbox) SKIP_SANDBOX=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --live) LIVE=1; shift ;;
+    --sandbox) SANDBOX=1; shift ;;
+    --seat) SEAT="${2:?}"; shift 2 ;;
+    --failure-mode) FAILURE_MODE="${2:?}"; shift 2 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+
+case "$CMD" in
+  -h|--help|help) usage; exit 0 ;;
+  status|validate|promote|eval|nightly|stale|install-nightly) ;;
+  *) die "unknown command: $CMD" ;;
+esac
+
+[ -x "$REGISTRY_PY" ] || chmod +x "$REGISTRY_PY"
+[ -x "$FORK_SYNC" ] || chmod +x "$FORK_SYNC"
+
+validate_pins() {
+  python3 - "$PROFILE_DIR" "$NAME" <<'PY'
+import json, sys, tomllib
+from pathlib import Path
+root = Path(sys.argv[1])
+only = sys.argv[2]
+data = tomllib.loads((root / "config/harness/registry.toml").read_text())
+errors = []
+for name, spec in sorted((data.get("harness") or {}).items()):
+    if only and name != only:
+        continue
+    if spec.get("kind") != "pin":
+        continue
+    install = spec.get("install")
+    if install and not (root / install).exists():
+        errors.append(f"{name}: missing install {install}")
+    overlay = spec.get("overlay")
+    if overlay and not (root / overlay).is_dir():
+        errors.append(f"{name}: missing overlay {overlay}")
+    mise = spec.get("mise")
+    if mise and not (root / mise).exists():
+        errors.append(f"{name}: missing mise {mise}")
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    sys.exit(1)
+print("pins_ok")
+PY
+}
+
+case "$CMD" in
+  status)
+    python3 "$REGISTRY_PY" --section policy
+    python3 "$REGISTRY_PY" --section hosts
+    "$FORK_SYNC" status
+    ;;
+  validate)
+    validate_pins
+    fs_args=(validate)
+    [ "$SKIP_SANDBOX" -eq 1 ] && fs_args+=(--skip-sandbox)
+    if [ -z "$NAME" ] || [ "$NAME" = "hermes-agent" ] || [ "$NAME" = "herm" ]; then
+      "$FORK_SYNC" "${fs_args[@]}"
+    fi
+    ;;
+  promote)
+    [ "$DRY_RUN" -eq 1 ] && exec "$FORK_SYNC" promote --dry-run
+    exec "$FORK_SYNC" promote
+    ;;
+  eval)
+    ev_args=()
+    [ -n "$SEAT" ] && ev_args+=(--seat "$SEAT")
+    [ -n "$FAILURE_MODE" ] && ev_args+=(--failure-mode "$FAILURE_MODE")
+    [ "$SANDBOX" -eq 1 ] && ev_args+=(--sandbox)
+    [ "$LIVE" -eq 1 ] && ev_args+=(--live)
+    [ "$DRY_RUN" -eq 1 ] && ev_args+=(--dry-run)
+    [ -n "$NAME" ] && ev_args+=(--name "$NAME")
+    exec "$EVAL" "${ev_args[@]}"
+    ;;
+  nightly)
+    "$FORK_SYNC" nightly
+    validate_pins || true
+    ;;
+  stale)
+    exec "$FORK_SYNC" stale
+    ;;
+  install-nightly)
+    exec "$FORK_SYNC" install-nightly
+    ;;
+esac

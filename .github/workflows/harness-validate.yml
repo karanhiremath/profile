@@ -1,0 +1,59 @@
+name: harness-validate
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+    paths:
+      - "bin/hermes/**"
+      - "config/harness/**"
+      - "config/mise/**"
+      - ".github/workflows/harness-validate.yml"
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "Run live grok-4.6:fast eval (needs secrets)"
+        type: boolean
+        default: false
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+        host_class: [work-devbox, work-mbp]
+        exclude:
+          - os: ubuntu-24.04
+            host_class: work-mbp
+          - os: macos-14
+            host_class: work-devbox
+    runs-on: ${{ matrix.os }}
+    env:
+      HERMES_HARNESS_HOST_CLASS: ${{ matrix.host_class }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+      - name: registry unit tests
+        run: python3 bin/hermes/test_harness_registry.py
+      - name: pin + installer paths
+        run: python3 bin/hermes/harness-registry.py --section pins >/dev/null && bin/hermes/harness validate --skip-sandbox || bin/hermes/harness validate --skip-sandbox
+      - name: eval plan (no live)
+        run: python3 bin/hermes/harness-eval --dry-run
+
+  live:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.live }}
+    needs: unit
+    runs-on: ubuntu-24.04
+    env:
+      HERMES_HARNESS_HOST_CLASS: work-devbox
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+      - name: live grok-4.6:fast smoke
+        run: python3 bin/hermes/harness-eval --live --seat cursor/grok-4.6:fast

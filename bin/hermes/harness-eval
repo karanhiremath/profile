@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Live-cred harness eval. Stdout JSON only; never print secrets.
+
+Default seat: cursor/grok-4.6:fast (all host classes).
+--failure-mode cot switches to openai-codex/gpt-5.5 for herm-tui CoT probes.
+--live actually invokes the seat. Without --live this is a plan/dry check.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+PROFILE_DIR = Path(__file__).resolve().parents[2]
+REGISTRY = PROFILE_DIR / "config" / "harness" / "registry.toml"
+SANDBOX_CTL = Path(os.environ.get("SANDBOX_CTL", PROFILE_DIR / "bin/hermes/sandbox-ctl"))
+
+
+def _registry() -> dict:
+    return tomllib.loads(REGISTRY.read_text(encoding="utf-8"))
+
+
+def _cred_present(seat: str) -> dict[str, bool]:
+    provider = seat.split("/", 1)[0]
+    keys = {
+        "cursor": ["CURSOR_API_KEY"],
+        "openai-codex": ["OPENAI_API_KEY", "CODEX_API_KEY"],
+    }.get(provider, [])
+    return {k: bool(os.environ.get(k, "").strip()) for k in keys}
+
+
+def _run_live(seat: str, failure_mode: str) -> dict:
+    provider, _, model = seat.partition("/")
+    env = os.environ.copy()
+    env["HERMES_AGENT_LLM_PROVIDER"] = provider
+    env["HERMES_AGENT_LLM_MODEL"] = model
+    env["HERMES_MODEL"] = model
+    overlay = Path.home() / "src/hermes-agent-worktrees/timeout-free-cursor-sdk"
+    if failure_mode == "cot":
+        probe = overlay / "tests/agent/test_cursor_sdk_client.py"
+        if not probe.exists():
+            return {"ok": False, "error": "cot probe tests missing", "path": str(probe)}
+        proc = subprocess.run(
+            ["uv", "run", "--with", "pytest", "pytest", str(probe), "-q"],
+            cwd=overlay,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "exit": proc.returncode,
+            "stderr_tail": (proc.stderr or "")[-400:],
+        }
+    # Smoke: adapter import + timeout helper, no network if not --live cursor prompt.
+    client = overlay / "agent/cursor_sdk_client.py"
+    if not client.exists():
+        return {"ok": False, "error": "cursor_sdk_client missing"}
+    marker = "_operator_run_timeout_seconds" in client.read_text(encoding="utf-8", errors="replace")
+    messages = "run.messages()" in client.read_text(encoding="utf-8", errors="replace")
+    return {"ok": marker and messages, "timeout_free": marker, "streams_thinking": messages}
+
+
+def main(argv: list[str] | None = None) -> int:
+    data = _registry()
+    policy = data.get("policy") or {}
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    p.add_argument("--seat", default=os.environ.get("HARNESS_LIVE_SEAT") or policy.get("default_live_seat"))
+    p.add_argument("--failure-mode", choices=["", "cot"], default="")
+    p.add_argument("--name", default="")
+    p.add_argument("--sandbox", action="store_true")
+    p.add_argument("--live", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    args = p.parse_args(argv)
+
+    seat = args.seat
+    if args.failure_mode == "cot":
+        seat = os.environ.get("HARNESS_COT_SEAT") or policy.get("failure_mode_cot_seat")
+    host = os.environ.get("HERMES_HARNESS_HOST_CLASS") or os.environ.get("HERMES_MACHINE_PROFILE") or "unknown"
+    creds = _cred_present(seat)
+    plan = {
+        "host_class": host,
+        "seat": seat,
+        "failure_mode": args.failure_mode or "smoke",
+        "sandbox": bool(args.sandbox),
+        "live": bool(args.live),
+        "cred_present": creds,
+        "harness": args.name or "all-in-scope",
+    }
+    if args.dry_run or not args.live:
+        json.dump({"plan": plan, "ran": False}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+    if not any(creds.values()) if creds else True:
+        json.dump({"plan": plan, "ran": False, "error": "no live creds in env"}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 2
+    if args.sandbox and policy.get("live_eval_requires_sandbox"):
+        if not SANDBOX_CTL.exists():
+            json.dump({"plan": plan, "ran": False, "error": "sandbox-ctl missing"}, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+            return 2
+        inner = [sys.executable, str(PROFILE_DIR / "bin/hermes/harness-eval"), "--live", "--seat", seat]
+        if args.failure_mode:
+            inner.extend(["--failure-mode", args.failure_mode])
+        if args.name:
+            inner.extend(["--name", args.name])
+        profile = os.environ.get("HERMES_FORK_VALIDATE_SANDBOX_PROFILE", "chief-of-staff-work")
+        proc = subprocess.run([str(SANDBOX_CTL), "--profile", profile, "exec", "--", *inner], check=False)
+        return proc.returncode
+    result = _run_live(seat, args.failure_mode)
+    json.dump({"plan": plan, "ran": True, "result": result}, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

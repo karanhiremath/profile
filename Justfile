@@ -737,3 +737,10 @@ test-verbose: podman
 validate-apps *APPS:
     # Validate that specific apps are installed correctly
     ./bin/test/validate-apps.sh {{APPS}}
+
+# Candidate → sandbox → validated/main → ff origin/main. Nightly host refresh.
+hermes-fork-sync *FLAGS:
+    ./bin/hermes/fork-sync {{FLAGS}}
+
+hermes-fork-nightly-install:
+    ./bin/hermes/fork-sync install-nightly

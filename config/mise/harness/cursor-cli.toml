@@ -1,0 +1,6 @@
+[tools]
+node = "lts"
+pnpm = "latest"
+
+[env]
+HARNESS_NAME = "cursor-cli"

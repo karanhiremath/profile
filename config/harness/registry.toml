@@ -1,0 +1,136 @@
+# Harness registry — source of truth for validate / nightly / live eval.
+# Pins (pi, omp, …) bump here + profile overlays. Git forks use validated/main.
+# A project/devbox copies config/mise/hosts/<class>.toml as its mise.toml.
+
+schema = 1
+
+[policy]
+default_live_seat = "cursor/grok-4.6:fast"
+failure_mode_cot_seat = "openai-codex/gpt-5.5"
+promote_requires = "origin/validated/main"
+live_eval_requires_sandbox = true
+nightly_promotes = false
+
+# Host classes. Live eval: grok-4.6:fast on every class first.
+# gpt-5.5 only for explicit --failure-mode cot (herm-tui CoT/tools).
+[hosts.work-mbp]
+mise = "config/mise/hosts/work-mbp.toml"
+ci_image = "macos-14"
+live_eval = true
+
+[hosts.tc2]
+mise = "config/mise/hosts/tc2.toml"
+ci_image = "ubuntu-24.04"
+live_eval = true
+
+[hosts.work-devbox]
+mise = "config/mise/hosts/work-devbox.toml"
+ci_image = "ubuntu-24.04"
+live_eval = true
+
+[hosts.personal-mini]
+mise = "config/mise/hosts/personal-mini.toml"
+ci_image = "macos-14"
+live_eval = true
+
+[hosts.omarchy]
+mise = "config/mise/hosts/omarchy.toml"
+ci_image = "ubuntu-24.04"
+live_eval = true
+
+[harness.pi]
+kind = "pin"
+just = "pi"
+package = "@earendil-works/pi-coding-agent"
+install = "bin/pi/install"
+overlay = "config/pi"
+mise = "config/mise/harness/pi.toml"
+eval_scope = ["smoke"]
+
+[harness.omp]
+kind = "pin"
+just = "omp"
+upstream = "can1357/oh-my-pi"
+pin_tag = "v18.1.2"
+install = "bin/omp/install"
+overlay = "config/omp"
+mise = "config/mise/harness/omp.toml"
+eval_scope = ["smoke"]
+
+[harness.hermes-agent]
+kind = "fork"
+just = "hermes"
+origin = "karanhiremath/hermes-agent"
+upstream = "NousResearch/hermes-agent"
+trunk = "downstream/main"
+checkout = "~/src/hermes-agent"
+overlay = "~/src/hermes-agent-worktrees/timeout-free-cursor-sdk"
+mise = "config/mise/harness/hermes-agent.toml"
+eval_scope = ["smoke", "cot"]
+
+[harness.herm]
+kind = "fork"
+just = "hermes"
+origin = "karanhiremath/herm"
+upstream = "liftaris/herm"
+trunk = "downstream/dev"
+checkout = "~/src/herm"
+mise = "config/mise/harness/herm.toml"
+eval_scope = ["smoke", "cot"]
+
+[harness.herdr]
+kind = "pin"
+just = "herdr"
+upstream = "ogulcancelik/herdr"
+install = "bin/herdr/install"
+mise = "config/mise/harness/herdr.toml"
+eval_scope = ["smoke"]
+
+[harness.cursor-cli]
+kind = "pin"
+just = "cursor-cli"
+install = "bin/cursor-cli/install"
+mise = "config/mise/harness/cursor-cli.toml"
+eval_scope = ["smoke"]
+
+[harness.claude]
+kind = "pin"
+just = "claude"
+install = "bin/claude/install"
+eval_scope = ["smoke"]
+
+[harness.codex]
+kind = "pin"
+just = "codex"
+install = "bin/codex/install"
+eval_scope = ["smoke"]
+
+[harness.copilot-cli]
+kind = "pin"
+just = "copilot-cli"
+install = "bin/copilot-cli/install"
+eval_scope = ["smoke"]
+
+[harness.gemini-cli]
+kind = "pin"
+just = "gemini-cli"
+install = "bin/gemini-cli/install"
+eval_scope = ["smoke"]
+
+[harness.cmux]
+kind = "pin"
+just = "cmux"
+install = "bin/cmux/install"
+eval_scope = ["smoke"]
+
+[harness.devin]
+kind = "pin"
+just = "devin"
+install = "bin/devin/install"
+eval_scope = ["smoke"]
+
+[harness.omnigent]
+kind = "pin"
+just = "omnigent"
+install = "bin/omnigent/install"
+eval_scope = ["smoke"]
