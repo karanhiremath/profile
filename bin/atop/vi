@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# Coordinate via a live nvim prompt buffer. Never tmux send-keys.
+# Usage: atop vi [session-id] [list|get|set]
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: atop vi | a-top vi | bin/atop/vi [open|list|catalog|get|set|tty] [session-id] [--file PATH]
+
+Default (no args): open a NEW nvim with a coordinator buffer + telescope
+menu of prompt buffers from every harness (herm, pi, claude, codex, cursor, …).
+Never send-keys. Prompt text is file/JSON data, not interpolated into Lua.
+
+  open                 new nvim + telescope (default; needs a TTY)
+  tty                  same picker, captured on a PTY (agent eval)
+  list                 print harness catalog
+  catalog              write catalog JSON to stdout
+  <id>                 same as: <id> get
+  <id> get             print live buffer text
+  <id> set --file PATH replace live buffer from file and :write
+  <id> snapshot        JSON snapshot (pid, path, sha256, lines)
+
+<id> matches herm-<ms>, pi-editor prompt, claude-prompt-*, basename, path, or nvim pid.
+EOF
+}
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+HELPER="$SCRIPT_DIR/vi-request.lua"
+CATALOG_PY="$SCRIPT_DIR/catalog.py"
+NVIM_BIN="${NVIM_BIN:-nvim}"
+
+die() { printf 'atop-vi: %s\n' "$*" >&2; exit 1; }
+
+[[ -f "$HELPER" ]] || die "missing helper $HELPER"
+command -v "$NVIM_BIN" >/dev/null || die "nvim not on PATH"
+
+SESSION=""
+OP="open"
+FILE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --file)
+      [[ $# -ge 2 ]] || die "--file needs a path"
+      FILE="$2"
+      shift 2
+      ;;
+    list|get|set|snapshot|open|catalog|tty)
+      OP="$1"
+      shift
+      ;;
+    *)
+      if [[ -z "$SESSION" ]]; then
+        SESSION="$1"
+        shift
+        [[ "$OP" == open ]] && OP=get
+      else
+        die "unknown argument: $1"
+      fi
+      ;;
+  esac
+done
+
+if [[ "$OP" == set && -z "$FILE" ]]; then
+  die "set requires --file PATH"
+fi
+if [[ "$OP" != list && "$OP" != open && "$OP" != catalog && "$OP" != tty && -z "$SESSION" ]]; then
+  die "session id required for $OP"
+fi
+if [[ -n "$FILE" && "$FILE" != /* ]]; then
+  FILE="$(pwd)/$FILE"
+fi
+
+TMPDIR_REAL="${TMPDIR:-/tmp}"
+REQDIR="$(mktemp -d "${TMPDIR_REAL%/}/atop-vi.XXXXXX")"
+chmod 700 "$REQDIR"
+cleanup() { rm -rf "$REQDIR"; }
+trap cleanup EXIT
+
+owner_ok() {
+  local sock="$1" dir mode
+  dir="$(dirname "$sock")"
+  [[ -S "$sock" && -O "$sock" && -O "$dir" ]] || return 1
+  mode="$(stat -f '%OLp' "$dir" 2>/dev/null || stat -c '%a' "$dir")"
+  [[ "$mode" == "700" ]]
+}
+
+list_sockets() {
+  local root
+  for root in \
+    "${TMPDIR_REAL%/}/nvim.${USER}" \
+    "/var/folders/"*/*/*/T/nvim.${USER} \
+    "/private/var/folders/"*/*/*/T/nvim.${USER}
+  do
+    [[ -d "$root" ]] || continue
+    find "$root" -name 'nvim.*' -type s 2>/dev/null || true
+  done
+}
+
+rpc() {
+  local sock="$1" req="$2"
+  # Vim list ['a','b'] — not a dict. Paths are data; never interpolate prompt text.
+  "$NVIM_BIN" --server "$sock" --remote-expr \
+    "luaeval(\"dofile(_A[1]).request(_A[2])\", ['${HELPER}', '${req}'])"
+}
+
+# Collect socket inventory
+INVENTORY="$REQDIR/inventory.jsonl"
+: > "$INVENTORY"
+while IFS= read -r sock; do
+  [[ -n "$sock" ]] || continue
+  owner_ok "$sock" || continue
+  req="$REQDIR/list-$(basename "$(dirname "$sock")").json"
+  out="$REQDIR/list-$(basename "$(dirname "$sock")").out.json"
+  python3 - "$req" "$out" <<'PY'
+import json, sys
+json.dump({"op": "list", "output_path": sys.argv[2]}, open(sys.argv[1], "w"))
+open(sys.argv[1], "a").write("\n")
+PY
+  if ! expr_out="$(rpc "$sock" "$req" 2>/dev/null)"; then
+    continue
+  fi
+  python3 - "$sock" "$out" "$INVENTORY" <<'PY'
+import json, sys
+sock, outp, inv = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    rec = json.loads(open(outp).read())
+except Exception:
+    sys.exit(0)
+if rec.get("status") == "error":
+    sys.exit(0)
+rec["socket"] = sock
+with open(inv, "a") as f:
+    f.write(json.dumps(rec) + "\n")
+PY
+done < <(list_sockets | sort -u)
+
+CATALOG="$REQDIR/catalog.json"
+python3 "$CATALOG_PY" --inventory "$INVENTORY" --out "$CATALOG"
+
+print_catalog() {
+  python3 - "$CATALOG" <<'PY'
+import json, sys
+data = json.loads(open(sys.argv[1]).read())
+for e in data.get("entries") or []:
+    live = "live" if e.get("live") else "disk"
+    pid = e.get("pid")
+    pid_s = f"pid={pid}" if pid is not None else "pid=-"
+    print(f"{e.get('harness')}\t{live}\t{e.get('id')}\t{pid_s}\t{e.get('path')}")
+PY
+}
+
+if [[ "$OP" == catalog ]]; then
+  cat "$CATALOG"
+  exit 0
+fi
+
+if [[ "$OP" == list && -z "$SESSION" ]]; then
+  print_catalog
+  exit 0
+fi
+
+if [[ "$OP" == tty ]]; then
+  exec "$SCRIPT_DIR/tty-eval" --plain --settle-ms "${ATOP_VI_SETTLE_MS:-3500}" -- "$SCRIPT_DIR/vi" open
+fi
+
+if [[ "$OP" == open ]]; then
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    print_catalog
+    printf 'atop-vi: open needs a TTY; catalog printed. Run `atop vi` from a real terminal, or `atop vi tty`.\n' >&2
+    exit 0
+  fi
+  STABLE="${TMPDIR_REAL%/}/atop-vi.${USER}.catalog.json"
+  cp "$CATALOG" "$STABLE"
+  chmod 600 "$STABLE"
+  COORD="${ATOP_VI_COORD:-${TMPDIR_REAL%/}/atop-vi.${USER}.md}"
+  if [[ ! -f "$COORD" ]]; then
+    cat > "$COORD" <<'EOF'
+# atop-vi
+
+Telescope: prompt buffers for herm / pi / claude / codex / cursor / others.
+<CR> edit   <leader>fv reopen picker   :q leaves this coordinator buffer
+
+Coordinate via `atop vi atop-vi get|set --file`. Ghostty is the outer host only.
+EOF
+    chmod 600 "$COORD"
+  fi
+  LISTEN_DIR="${TMPDIR_REAL%/}/nvim.${USER}/atop-vi"
+  mkdir -p "$LISTEN_DIR"
+  chmod 700 "$LISTEN_DIR"
+  LISTEN="$LISTEN_DIR/nvim.$$.0"
+  export ATOP_VI_CATALOG="$STABLE"
+  export ATOP_VI_COORD="$COORD"
+  export ATOP_VI="$SCRIPT_DIR/vi"
+  exec "$NVIM_BIN" --listen "$LISTEN" \
+    -c "lua require('kh.telescope-atop-vi').open()"
+fi
+
+# Resolve session → socket + path
+RESOLVED="$(python3 - "$INVENTORY" "$SESSION" <<'PY'
+import json, os, sys
+inv, sid = sys.argv[1], sys.argv[2]
+sid = sid.rstrip("/")
+want = sid
+if want.startswith("herm-") and want.endswith(".md"):
+    pass
+elif want.isdigit():
+    pass
+matches = []
+for line in open(inv):
+    rec = json.loads(line)
+    sock = rec.get("socket", "")
+    pid = rec.get("pid")
+    for b in rec.get("buffers") or []:
+        path = b.get("path") or ""
+        name = os.path.basename(path)
+        stem = name[:-3] if name.endswith(".md") else name
+        keys = {name, stem, path, str(pid), str(b.get("buffer"))}
+        if want in keys or want == stem.removeprefix("herm-") or path.endswith("/" + want) or want in path:
+            matches.append((sock, path, b.get("buffer"), pid))
+if not matches:
+    sys.exit(2)
+# prefer herm-*.md
+matches.sort(key=lambda m: (0 if os.path.basename(m[1]).startswith("herm-") else 1, m[1]))
+sock, path, buf, pid = matches[0]
+print(f"{sock}\t{path}\t{buf}\t{pid}")
+PY
+)" || die "no open prompt buffer matching '$SESSION'"
+
+IFS=$'\t' read -r SOCK PATH_BUF BUF PID <<<"$RESOLVED"
+[[ -n "$SOCK" && -n "$PATH_BUF" ]] || die "failed to resolve $SESSION"
+
+case "$OP" in
+  list)
+    printf '%s\tpid=%s\tbuf=%s\t%s\n' "$(basename "$PATH_BUF")" "$PID" "$BUF" "$PATH_BUF"
+    ;;
+  get|snapshot)
+    req="$REQDIR/snap-req.json"
+    out="$REQDIR/snap-out.json"
+    python3 - "$req" "$out" "$PATH_BUF" "$BUF" <<'PY'
+import json, sys
+req, out, path, buf = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+json.dump({"op": "snapshot", "path": path, "buffer": buf, "output_path": out}, open(req, "w"))
+open(req, "a").write("\n")
+PY
+    rpc "$SOCK" "$req" >/dev/null
+    if [[ "$OP" == get ]]; then
+      python3 - "$out" <<'PY'
+import json, sys
+rec = json.loads(open(sys.argv[1]).read())
+if rec.get("status") == "error":
+    raise SystemExit(rec.get("error") or "snapshot failed")
+lines = rec.get("lines") or []
+sys.stdout.write("\n".join(lines))
+if lines:
+    sys.stdout.write("\n")
+PY
+    else
+      python3 - "$out" <<'PY'
+import json, sys
+rec = json.loads(open(sys.argv[1]).read())
+# drop full lines in snapshot stdout? user asked get vs snapshot
+print(json.dumps(rec, indent=2))
+PY
+    fi
+    ;;
+  set)
+    [[ -f "$FILE" ]] || die "missing file $FILE"
+    req="$REQDIR/write-req.json"
+    out="$REQDIR/write-out.json"
+    python3 - "$req" "$out" "$PATH_BUF" "$BUF" "$FILE" "$PID" <<'PY'
+import json, sys
+req, out, path, buf, file, pid = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], int(sys.argv[6])
+json.dump({
+    "op": "write",
+    "path": path,
+    "buffer": buf,
+    "file": file,
+    "expected_pid": pid,
+    "output_path": out,
+}, open(req, "w"))
+open(req, "a").write("\n")
+PY
+    rpc "$SOCK" "$req" >/dev/null
+    python3 - "$out" <<'PY'
+import json, sys
+rec = json.loads(open(sys.argv[1]).read())
+if rec.get("status") == "error":
+    raise SystemExit(rec.get("error") or "write failed")
+print(f"wrote {rec.get('path')} pid={rec.get('pid')} buf={rec.get('buffer')} sha256={rec.get('sha256')}")
+PY
+    ;;
+esac
