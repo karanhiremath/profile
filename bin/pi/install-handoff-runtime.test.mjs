@@ -47,3 +47,18 @@ test('telemetry redacts the whole recognized value, not just its prefix', async(
   const result=redactSummary('token=opaque-fixture sk-fixture123 ghp_fixture456 xoxb-fixture789 Bearer opaque-fixture2');
   for(const value of ['opaque-fixture','fixture123','fixture456','fixture789']) assert.ok(!result.includes(value));
 });
+test('cursor-abort-retry and job-bus components install missing files only', t=>{
+  const root=fixture(t), dest=join(root,'extensions');
+  const abort=installRuntime(source,dest,true,['cursor-abort-retry']);
+  assert.ok(abort.files.some(f=>f.name==='cursor-abort-retry.ts' && f.action==='install'));
+  assert.ok(existsSync(join(dest,'cursor-abort-retry.ts')));
+  assert.ok(existsSync(join(dest,'lib/cursor-abort-retry.ts')));
+  const bus=installRuntime(source,dest,true,['job-bus']);
+  assert.ok(bus.files.some(f=>f.name==='job-bus.ts' && f.action==='install'));
+  assert.ok(existsSync(join(dest,'job-bus.ts')));
+  writeFileSync(join(dest,'job-bus.ts'),'operator override');
+  const again=installRuntime(source,dest,true,['job-bus']);
+  assert.equal(again.files.find(f=>f.name==='job-bus.ts').action,'preserved_override');
+  assert.equal(readFileSync(join(dest,'job-bus.ts'),'utf8'),'operator override');
+  assert.throws(()=>installRuntime(source,dest,true,['not-a-component']));
+});

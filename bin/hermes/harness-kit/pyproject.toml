@@ -1,0 +1,13 @@
+[project]
+name = "hermes-harness-kit"
+version = "0.1.0"
+description = "Evidence-based harness inventory and compatibility gates"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+harness = "harness_kit.cli:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
