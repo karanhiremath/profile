@@ -1,0 +1,17 @@
+{
+  // profile = dev tooling, dotfiles. Mirrors ~/.claude/ behavior for Devin sessions.
+  // Repo rules: see CLAUDE.md (auto-loaded by Devin as AGENTS-equivalent).
+  "read_config_from": {
+    "claude": true,
+    "cursor": true,
+    "windsurf": true
+  },
+  "permissions": {
+    "allow": [
+      "Exec(just)",
+      "Exec(git)",
+      "Exec(gh)",
+      "Read(**)"
+    ]
+  }
+}

@@ -68,10 +68,26 @@ local_version() {
     fi
 }
 
+link_helpers() {
+    mkdir -p "${INSTALL_DIR}"
+    for helper in remote-loop focus-agent open-url; do
+        src="${APP_BIN}/herdr/${helper}"
+        [ -x "$src" ] || continue
+        case "$helper" in
+            remote-loop) bin="herdr-remote" ;;
+            focus-agent) bin="herdr-focus-agent" ;;
+            open-url) bin="herdr-open-url" ;;
+            *) bin="herdr-${helper}" ;;
+        esac
+        ln -sf "$src" "${INSTALL_DIR}/${bin}"
+    done
+}
+
 if command -v herdr >/dev/null 2>&1; then
     have="$(local_version)"
     want="$(latest_version)"
     if [ -n "$have" ] && [ -n "$want" ] && [ "v${have#v}" = "v${want#v}" ]; then
+        link_helpers
         echo "✓ herdr ${have} already up to date"
         exit 0
     fi
@@ -100,6 +116,7 @@ fi
 
 chmod +x "${TMP}/herdr"
 mv "${TMP}/herdr" "${INSTALL_DIR}/herdr"
+link_helpers
 
 # PATH check
 case ":${PATH}:" in

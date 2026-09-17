@@ -1,6 +1,6 @@
 -- telescope-pc: pi-code project picker & tmux pi-pane controls
 -- Keybinds:
---   <leader>fp  — telescope project picker (launch/attach/kill sessions)
+--   <leader>cp  — telescope project picker (launch/attach/kill sessions)
 --   <leader>pt  — toggle focus between nvim and pi pane
 --   <leader>ps  — send current file path to pi pane
 --   <leader>pk  — restart pi in the right pane
@@ -220,7 +220,7 @@ end
 
 -- ── Keymaps ────────────────────────────────────────────
 function M.setup()
-  vim.keymap.set("n", "<leader>fp", M.pick_project, { desc = "Pi: pick project" })
+  vim.keymap.set("n", "<leader>cp", M.pick_project, { desc = "Pi: pick project" })
   vim.keymap.set("n", "<leader>pt", M.toggle_pi_pane, { desc = "Pi: toggle pi pane" })
   vim.keymap.set("n", "<leader>pz", M.toggle_zsh_pane, { desc = "Pi: toggle zsh pane" })
   vim.keymap.set("n", "<leader>ps", M.send_file_to_pi, { desc = "Pi: send file to pi" })

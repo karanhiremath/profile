@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+# fleet-layout — tmux layout presets for multi-agent fleet operations
+#
+# Usage:
+#   fleet-layout monitor              Grid of all agent panes + status bar
+#   fleet-layout steer [project]      Focused agent + waiting queue sidebar
+#   fleet-layout review [project]     Git diff viewer + agent output
+#   fleet-layout coding [project]     Classic: nvim + agent + zsh (multi-type)
+#   fleet-layout dashboard            Fleet dashboard: summary + watch + telemetry
+#   fleet-layout --help               Show help
+#
+# These layouts are designed to minimize human wait time by:
+# 1. Surfacing agents that need attention (waiting) prominently
+# 2. Showing real-time change visibility across worktrees
+# 3. Grouping related information to reduce context switching
+
+set -euo pipefail
+
+BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'; CYAN='\033[36m'
+
+SRC_DIR="${HOME}/src"
+CDEV="${HOME}/src/karan.hiremath/scripts/csec/cdev"
+FLEET_LAYOUT_DIR="${HOME}/.config/fleet/layouts"
+
+usage() {
+    cat <<EOF
+fleet-layout — tmux layout presets for multi-agent fleet operations
+
+Usage: fleet-layout <preset> [args...]
+
+Presets:
+  monitor              Grid of all active agent panes + status summary
+  steer [project]      Focused agent pane + sidebar listing waiting agents
+  review [project]     Side-by-side: git diff viewer + agent output
+  coding [project]     Classic layout: nvim (left) + agent (right) + zsh (bottom)
+  dashboard            Fleet dashboard: summary + change watcher + telemetry
+
+Options:
+  --help, -h           Show this help
+
+Layout versioning:
+  Layouts are saved to ~/.config/fleet/layouts/ for reproducibility.
+  Each layout save includes a timestamp and the preset used.
+
+Examples:
+  fleet-layout monitor                # See all agents at a glance
+  fleet-layout steer bifrost          # Focus on bifrost, see queue
+  fleet-layout coding bifrost         # Classic dev layout for bifrost
+  fleet-layout dashboard              # Full operational dashboard
+EOF
+}
+
+# Save layout metadata for reproducibility
+save_layout_meta() {
+    local preset="$1" session="$2"
+    mkdir -p "$FLEET_LAYOUT_DIR"
+    local ts
+    ts=$(date -Iseconds)
+    cat > "${FLEET_LAYOUT_DIR}/${session}-${preset}.json" <<ENDJSON
+{
+  "preset": "${preset}",
+  "session": "${session}",
+  "created": "${ts}",
+  "version": "1.0.0"
+}
+ENDJSON
+}
+
+# Get current session or create one
+ensure_session() {
+    local name="${1:-fleet}"
+    if ! tmux has-session -t "$name" 2>/dev/null; then
+        tmux new-session -d -s "$name"
+    fi
+    echo "$name"
+}
+
+# ── monitor: grid of all agent panes ──────────────────
+# Shows every running agent in a grid layout with a summary status bar
+# at the bottom. Optimized for seeing everything at once.
+layout_monitor() {
+    local sess
+    sess=$(ensure_session "fleet-monitor")
+
+    # Start with the fleet status summary in pane 0
+    tmux send-keys -t "${sess}" "watch -n 5 -c '$CDEV fleet ls' 2>/dev/null || $CDEV fleet ls" Enter
+
+    # Discover all agent panes and create splits showing their output
+    local fmt='#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_current_command}\t#{pane_title}\t#{pane_current_path}'
+    local agent_targets=()
+
+    while IFS=$'\t' read -r s w p cmd title path; do
+        local is_agent=false
+        for bin in pi claude codex gemini ollama opencode; do
+            [[ "$cmd" == "$bin" ]] && is_agent=true && break
+        done
+        [[ "$cmd" == "node" ]] && [[ "$title" =~ ^π ]] && is_agent=true
+
+        if $is_agent; then
+            agent_targets+=("${s}:${w}.${p}")
+        fi
+    done < <(tmux list-panes -a -F "$fmt" 2>/dev/null)
+
+    if [[ ${#agent_targets[@]} -eq 0 ]]; then
+        tmux send-keys -t "${sess}" "echo 'No agents running. Use: cdev fleet spawn <type> <project>'" Enter
+    else
+        # Create grid: split for each agent showing live capture
+        local count=0
+        for target in "${agent_targets[@]}"; do
+            if [[ $count -gt 0 ]]; then
+                if (( count % 2 == 0 )); then
+                    tmux split-window -v -t "${sess}"
+                else
+                    tmux split-window -h -t "${sess}"
+                fi
+            fi
+            tmux send-keys -t "${sess}" "watch -n 2 'tmux capture-pane -t ${target} -p 2>/dev/null | tail -30'" Enter
+            ((count++))
+            # Cap at 8 panes to keep things readable
+            [[ $count -ge 8 ]] && break
+        done
+
+        # Even out the layout
+        tmux select-layout -t "${sess}" tiled
+    fi
+
+    # Add fleet watcher in a bottom pane
+    tmux split-window -v -t "${sess}" -l 8
+    tmux send-keys -t "${sess}" "$CDEV fleet watch 3" Enter
+
+    tmux select-pane -t "${sess}.0"
+    save_layout_meta "monitor" "$sess"
+
+    # Attach if not already in tmux
+    if [[ -z "${TMUX:-}" ]]; then
+        tmux attach-session -t "$sess"
+    else
+        tmux switch-client -t "$sess"
+    fi
+
+    echo -e "${GREEN}✓${NC} Monitor layout: ${#agent_targets[@]} agents + watcher"
+}
+
+# ── steer: focused agent + waiting queue ──────────────
+# Left: focused agent pane (largest). Right top: list of waiting agents.
+# Right bottom: git diff for focused project. Designed for rapid steering.
+layout_steer() {
+    local project="${1:-}"
+    local sess
+    sess=$(ensure_session "fleet-steer${project:+-$project}")
+
+    # Main pane: if project specified, cd there
+    if [[ -n "$project" && -d "${SRC_DIR}/${project}" ]]; then
+        tmux send-keys -t "${sess}" "cd ${SRC_DIR}/${project}" Enter
+    fi
+
+    # Right side: split vertically (40% width)
+    tmux split-window -h -t "${sess}" -l '40%'
+
+    # Right top: waiting agents queue (auto-refreshing)
+    tmux send-keys -t "${sess}" "watch -n 3 -c '$CDEV fleet ls 2>/dev/null | grep -E \"⏳|waiting\" || echo \"No agents waiting\"'" Enter
+
+    # Right bottom: change watcher
+    tmux split-window -v -t "${sess}"
+    if [[ -n "$project" && -d "${SRC_DIR}/${project}" ]]; then
+        tmux send-keys -t "${sess}" "watch -n 2 'git -C ${SRC_DIR}/${project} diff --stat 2>/dev/null || echo \"no changes\"'" Enter
+    else
+        tmux send-keys -t "${sess}" "$CDEV fleet watch 3" Enter
+    fi
+
+    # Focus on main pane (left)
+    tmux select-pane -t "${sess}.0"
+    save_layout_meta "steer" "$sess"
+
+    if [[ -z "${TMUX:-}" ]]; then
+        tmux attach-session -t "$sess"
+    else
+        tmux switch-client -t "$sess"
+    fi
+
+    echo -e "${GREEN}✓${NC} Steer layout${project:+ for $project}"
+}
+
+# ── review: diff viewer + agent output ────────────────
+# Left: full git diff (scrollable). Right: agent pane output.
+# Bottom: short summary bar. For reviewing what agents have done.
+layout_review() {
+    local project="${1:-}"
+    local sess
+    sess=$(ensure_session "fleet-review${project:+-$project}")
+
+    if [[ -n "$project" && -d "${SRC_DIR}/${project}" ]]; then
+        # Left: git diff in a pager
+        tmux send-keys -t "${sess}" "cd ${SRC_DIR}/${project} && git diff | less -R" Enter
+    else
+        tmux send-keys -t "${sess}" "echo 'Specify a project: fleet-layout review <project>'" Enter
+    fi
+
+    # Right: agent output capture (find the first agent for this project)
+    tmux split-window -h -t "${sess}" -l '45%'
+    if [[ -n "$project" ]]; then
+        tmux send-keys -t "${sess}" "cd ${SRC_DIR}/${project}" Enter
+    fi
+
+    # Bottom bar: summary stats
+    tmux split-window -v -t "${sess}" -l 6
+    if [[ -n "$project" && -d "${SRC_DIR}/${project}" ]]; then
+        tmux send-keys -t "${sess}" "watch -n 5 'echo \"── ${project} ──\" && git -C ${SRC_DIR}/${project} diff --shortstat 2>/dev/null && echo \"\" && git -C ${SRC_DIR}/${project} log --oneline -5 2>/dev/null'" Enter
+    else
+        tmux send-keys -t "${sess}" "$CDEV fleet ls" Enter
+    fi
+
+    tmux select-pane -t "${sess}.0"
+    save_layout_meta "review" "$sess"
+
+    if [[ -z "${TMUX:-}" ]]; then
+        tmux attach-session -t "$sess"
+    else
+        tmux switch-client -t "$sess"
+    fi
+
+    echo -e "${GREEN}✓${NC} Review layout${project:+ for $project}"
+}
+
+# ── coding: nvim + agent + zsh ────────────────────────
+# The classic pc layout but agent-type-agnostic.
+# Top-left: nvim. Right: agent (specify type). Bottom-left: zsh.
+layout_coding() {
+    local project="${1:-}"
+    local agent_type="${2:-pi}"
+
+    if [[ -z "$project" ]]; then
+        echo "Usage: fleet-layout coding <project> [agent-type]"
+        echo "  agent-type: pi (default), claude, codex, gemini, ollama, opencode"
+        return 1
+    fi
+
+    local dir="${SRC_DIR}/${project}"
+    if [[ ! -d "$dir" ]]; then
+        echo -e "${RED}error:${NC} directory not found: $dir"
+        return 1
+    fi
+
+    local sess="coding-${project}"
+    if tmux has-session -t "$sess" 2>/dev/null; then
+        if [[ -z "${TMUX:-}" ]]; then
+            tmux attach-session -t "$sess"
+        else
+            tmux switch-client -t "$sess"
+        fi
+        return 0
+    fi
+
+    tmux new-session -d -s "$sess" -c "$dir"
+
+    # Pane 0: nvim
+    tmux send-keys -t "${sess}" "nvim ." Enter
+
+    # Pane 1: agent (right side, 35%)
+    tmux split-window -h -t "${sess}" -l '35%' -c "$dir"
+
+    local agent_cmd="${agent_type}"
+    case "$agent_type" in
+        ollama) agent_cmd="ollama run qwen2.5-coder:7b" ;;
+    esac
+    tmux send-keys -t "${sess}" "$agent_cmd" Enter
+
+    # Pane 2: zsh (bottom-left, 25%)
+    tmux select-pane -t "${sess}.0"
+    tmux split-window -v -t "${sess}" -l '25%' -c "$dir"
+
+    # Focus nvim pane
+    tmux select-pane -t "${sess}.0"
+    save_layout_meta "coding" "$sess"
+
+    if [[ -z "${TMUX:-}" ]]; then
+        tmux attach-session -t "$sess"
+    else
+        tmux switch-client -t "$sess"
+    fi
+
+    echo -e "${GREEN}✓${NC} Coding layout: ${project} with ${agent_type}"
+}
+
+# ── dashboard: full fleet operational view ────────────
+# Top-left: fleet ls (auto-refresh). Top-right: change watcher.
+# Bottom-left: telemetry. Bottom-right: zsh for ad-hoc commands.
+layout_dashboard() {
+    local sess
+    sess=$(ensure_session "fleet-dashboard")
+
+    # Pane 0 (top-left): fleet status
+    tmux send-keys -t "${sess}" "watch -n 5 -c '$CDEV fleet ls'" Enter
+
+    # Pane 1 (top-right): change watcher
+    tmux split-window -h -t "${sess}"
+    tmux send-keys -t "${sess}" "$CDEV fleet watch 5" Enter
+
+    # Pane 2 (bottom-left): telemetry
+    tmux select-pane -t "${sess}.0"
+    tmux split-window -v -t "${sess}"
+    tmux send-keys -t "${sess}" "watch -n 30 '$CDEV fleet telemetry 7'" Enter
+
+    # Pane 3 (bottom-right): zsh for commands
+    tmux select-pane -t "${sess}.1"
+    tmux split-window -v -t "${sess}"
+    tmux send-keys -t "${sess}" "echo '── Fleet Command Pane ──' && echo 'cdev fleet spawn <type> <project>' && echo 'cdev fleet steer <target> <msg>'" Enter
+
+    # Even layout
+    tmux select-layout -t "${sess}" tiled
+
+    tmux select-pane -t "${sess}.3"
+    save_layout_meta "dashboard" "$sess"
+
+    if [[ -z "${TMUX:-}" ]]; then
+        tmux attach-session -t "$sess"
+    else
+        tmux switch-client -t "$sess"
+    fi
+
+    echo -e "${GREEN}✓${NC} Dashboard layout"
+}
+
+# ── dispatch ──
+case "${1:-}" in
+    monitor)    shift; layout_monitor "$@" ;;
+    steer)      shift; layout_steer "$@" ;;
+    review)     shift; layout_review "$@" ;;
+    coding)     shift; layout_coding "$@" ;;
+    dashboard)  shift; layout_dashboard "$@" ;;
+    --help|-h|"") usage ;;
+    *) echo "fleet-layout: unknown preset '$1'"; usage; exit 1 ;;
+esac

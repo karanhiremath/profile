@@ -1,0 +1,2 @@
+---
+# Keep Linux defaults minimal. Package-manager specifics stay in bin/<tool>/install until ported.

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Install/upgrade Hermes Agent + herm TUI into an isolated user toolchain.
+#
+# Usage: install [--link-only] [--core-only] [--tui-only] [--no-upgrade] [--help]
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Install/upgrade Hermes Agent + herm TUI into an isolated user toolchain.
+
+Usage: install [--link-only] [--core-only] [--tui-only] [--no-upgrade] [--help]
+EOF
+}
+
+link_only=0
+core=1
+tui=1
+upgrade=1
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --link-only) link_only=1 ;;
+    --core-only) tui=0 ;;
+    --tui-only) core=0 ;;
+    --no-upgrade) upgrade=0 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) echo "install: unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  export PROFILE_DIR="$(cd -- "${script_dir}/../.." && pwd)"
+fi
+
+app_name="hermes"
+toolchain="${HERMES_TOOLCHAIN:-${HERMES_TOOLCHAIN_HOME:-${HOME}/.local/share/hermes-toolchain}}"
+install_dir="${HERMES_INSTALL_DIR:-${HOME}/.local/bin}"
+venv_dir="${toolchain}/venv"
+npm_prefix="${toolchain}/npm"
+bun_dir="${toolchain}/bun"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+write_launcher() {
+  local name="$1"
+  local target="$2"
+  local path="${install_dir}/${name}"
+  rm -f -- "${path}"
+  cat >"${path}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+toolchain="${HERMES_TOOLCHAIN:-${HERMES_TOOLCHAIN_HOME:-${HOME}/.local/share/hermes-toolchain}}"
+export HERMES_TOOLCHAIN_HOME="${toolchain}"
+export HERMES_TOOLCHAIN="${toolchain}"
+export PATH="${toolchain}/bun/bin:${toolchain}/npm/bin:${toolchain}/venv/bin:${PATH}"
+EOF
+  if [ "${name}" = "herm" ]; then
+    cat >>"${path}" <<'EOF'
+# Direct TUI launches should inherit the same Podman sandbox defaults as hs/dream.
+# Respect explicit caller env; opt out with HERMES_NO_SANDBOX_ENV=1.
+if [ "${HERMES_NO_SANDBOX_ENV:-}" != "1" ] && [ -f "${HOME}/src/profile/bin/hermes/sandbox-env.sh" ]; then
+  # shellcheck source=/Users/karanhiremath/src/profile/bin/hermes/sandbox-env.sh
+  . "${HOME}/src/profile/bin/hermes/sandbox-env.sh"
+fi
+EOF
+  fi
+  cat >>"${path}" <<EOF
+exec "\${toolchain}/${target}" "\$@"
+EOF
+  chmod +x "${path}"
+}
+
+write_profile_entrypoint() {
+  local name="$1"
+  local rel="$2"
+  local path="${install_dir}/${name}"
+  rm -f -- "${path}"
+  cat >"${path}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+profile_dir="\${PROFILE_DIR:-\${HOME}/src/profile}"
+exec "\${profile_dir}/${rel}" "\$@"
+EOF
+  chmod +x "${path}"
+}
+
+mkdir -p "${install_dir}" "${toolchain}" "${npm_prefix}" "${bun_dir}/bin"
+
+if [ "${link_only}" -ne 1 ]; then
+  if [ "${core}" -eq 1 ]; then
+    if ! have uv; then
+      echo "ERROR: uv is required to install hermes-agent; install uv first" >&2
+      exit 1
+    fi
+    uv venv --python "${HERMES_PYTHON:-3.12}" "${venv_dir}"
+    if [ "${upgrade}" -eq 1 ]; then
+      uv pip install --python "${venv_dir}/bin/python" --upgrade hermes-agent
+    else
+      uv pip install --python "${venv_dir}/bin/python" hermes-agent
+    fi
+  fi
+
+  if [ "${tui}" -eq 1 ]; then
+    if ! have npm; then
+      echo "ERROR: npm is required to install herm-tui" >&2
+      exit 1
+    fi
+    npm install --global --prefix "${npm_prefix}" herm-tui
+  fi
+fi
+
+write_launcher hermes "venv/bin/hermes"
+write_launcher herm "npm/bin/herm"
+write_profile_entrypoint hs "bin/hermes/hs"
+write_profile_entrypoint dream "bin/hermes/dream"
+
+case ":${PATH}:" in
+  *":${install_dir}:"*) ;;
+  *)
+    echo "WARN: ${install_dir} not in PATH — add: export PATH=\"${install_dir}:\$PATH\"" >&2
+    ;;
+esac
+
+if [ -x "${venv_dir}/bin/hermes" ]; then
+  "${install_dir}/hermes" version 2>/dev/null | head -5 || true
+fi
+if [ -x "${npm_prefix}/bin/herm" ]; then
+  "${install_dir}/herm" --version 2>/dev/null || true
+fi
+
+echo "${app_name} setup complete: ${install_dir}/hermes ${install_dir}/herm ${install_dir}/hs ${install_dir}/dream"

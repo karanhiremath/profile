@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# sys-popup — open a system-inspection tool in a tmux popup
+#
+# Usage (from inside tmux):
+#   sys-popup            # btop in popup (default)
+#   sys-popup btop       # explicit
+#   sys-popup mem        # mem --watch in popup
+#   sys-popup htop       # htop if installed
+#   sys-popup top        # plain top
+#   sys-popup --close    # close any existing sys-popup
+#
+# Suggested tmux bindings (add to tmux.conf):
+#   bind '~' display-popup -E -w 92% -h 90% -T ' btop ' "$HOME/src/profile/bin/tmux/sys-popup btop"
+#   bind 'M' display-popup -E -w 80% -h 70% -T ' mem '  "$HOME/src/profile/bin/tmux/sys-popup mem"
+#
+# Requires tmux >= 3.2 (display-popup).
+
+set -euo pipefail
+
+TOOL="${1:-btop}"
+
+case "$TOOL" in
+  --help|-h) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --close)
+    # Best-effort: if invoked from inside the popup itself, this can't kill its own host.
+    # Mostly useful when bound from outside.
+    tmux display-message "sys-popup: use the popup's own close key (q for btop, ^c for mem)"
+    exit 0
+    ;;
+  btop)
+    exec /opt/homebrew/bin/btop --utf-force
+    ;;
+  mem)
+    exec "$HOME/src/profile/bin/sys/mem" --watch
+    ;;
+  htop)
+    command -v htop >/dev/null || { echo "htop not installed: brew install htop"; sleep 2; exit 1; }
+    exec htop
+    ;;
+  top)
+    exec top -o mem -stats pid,command,cpu,rsize,vsize,state
+    ;;
+  *)
+    echo "unknown tool: $TOOL"
+    echo "valid: btop | mem | htop | top"
+    sleep 2
+    exit 1
+    ;;
+esac

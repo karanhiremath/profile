@@ -43,6 +43,7 @@ bindkey  "^[[3~"  delete-char
 source "${PROFILE_DIR}"/.iterm2_shell_integration.zsh
 
 # Add stuff to path
+path=("$HOME/.local/bin" "$HOME/bin" $path)
 path+=('~/.cargo/bin')
 export PATH
 

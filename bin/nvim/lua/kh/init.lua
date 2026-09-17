@@ -4,6 +4,9 @@ require("kh.lazy")
 require("kh.set")
 require("kh.remap")
 require("kh.telescope-pc").setup()
+require("kh.fleet").setup()
+require("kh.harpoon-fleet").setup()
+require("kh.fleet_tui").setup()
 
 
 local augroup = vim.api.nvim_create_augroup

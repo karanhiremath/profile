@@ -1,0 +1,39 @@
+---
+- name: Manage profile workstation state
+  hosts: profile_hosts
+  gather_facts: true
+
+  pre_tasks:
+    - name: Refuse non-local Ansible connections without explicit remote opt-in
+      ansible.builtin.assert:
+        that:
+          - ansible_connection == 'local' or profile_allow_remote_host_mutation | bool
+        fail_msg: >-
+          Refusing non-local profile management without explicit opt-in.
+          Use profile_allow_remote_host_mutation=true only for intentional remote setup.
+      tags: [always, safety]
+
+    - name: Require explicit mutation opt-in outside check mode
+      ansible.builtin.assert:
+        that:
+          - profile_allow_host_mutation | bool
+        fail_msg: >-
+          Refusing to mutate host. First run `just ansible-plan`; then set
+          PROFILE_ALLOW_HOST_MUTATION=1 for apply.
+      when: not ansible_check_mode
+      tags: [always, safety]
+
+  roles:
+    - role: bootstrap
+      tags: [bootstrap]
+    - role: shell
+      tags: [shell]
+    - role: dotfiles
+      tags: [dotfiles]
+    - role: ssh_authorized_keys
+      tags: [ssh_authorized_keys, ssh]
+    - role: cli_tools
+      tags: [cli_tools]
+    - role: mac_apps
+      when: ansible_system == 'Darwin'
+      tags: [mac_apps]

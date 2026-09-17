@@ -1,0 +1,11 @@
+---
+- name: Install selected profile tools via existing leaf installers
+  ansible.builtin.command: "{{ profile_app_bin }}/{{ item }}/install"
+  environment:
+    PROFILE_DIR: "{{ profile_repo_dir }}"
+    APP_BIN: "{{ profile_app_bin }}"
+  args:
+    chdir: "{{ profile_repo_dir }}"
+  loop: "{{ profile_tools }}"
+  when: profile_install_tools | bool
+  changed_when: true

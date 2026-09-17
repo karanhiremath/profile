@@ -2,6 +2,10 @@
 
 Dotfiles and development environment setup, managed with [just](https://github.com/casey/just).
 
+## Direction
+
+Ansible is the environment-aware control plane. Defaults are local-only, check-first, and explicit-mutation to limit blast radius. Agentic/dev workflows should run in containers or isolated worktrees by default; see [Containerized Agentic Workflows SOP](docs/containerized-agentic-workflows.md).
+
 ## Quick Start
 
 ```bash
@@ -17,6 +21,30 @@ After install, reload your shell:
 ```bash
 source ~/.zshrc
 ```
+
+## Hermes sandbox entrypoint
+
+`hs` is the short Hermes Sandbox entrypoint for personal project agent sessions.
+It resolves the current repo, a project under `~/src`, or an explicit path, then
+launches a sandboxed `herdr` session with disposable `HOME` and isolated
+`HERMES_HOME`/`HERMES_PROFILE` state. Sandbox state lives under `~/.hs/<slug>/home`
+with compact slugs to avoid macOS Herdr socket path limits.
+
+```bash
+hs                 # sandbox current repo and launch herdr
+hs hermes          # sandbox ~/src/hermes
+hs --shell foo     # sandbox ~/src/foo, shell only
+hs --clean foo     # recreate foo's disposable sandbox HOME
+hs --container-shell foo  # container shell: repo + disposable HOME mounted only
+```
+
+The default local `hs` sandbox isolates Hermes/herdr state and HOME-relative
+files; it does not block absolute host paths. It bootstraps a minimal zsh setup
+inside the disposable HOME that sources this repo's `zsh_profile.sh`/`myprofile.sh`
+without sourcing the host `~/.zshrc`, so shell functions like `hs`, `mac`, and
+profile PATH defaults are available without copying host secrets. Use
+`hs --container-shell` for filesystem isolation. Build that image first with
+`just agent-container-build`.
 
 ## Available Recipes
 
@@ -53,16 +81,29 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 | Recipe | Description |
 |--------|-------------|
 | `just claude` | Claude Code |
+| `just codex` | Codex CLI from Codex.app |
 | `just cmux` | cmux (Claude multiplexer) |
 | `just copilot` | GitHub Copilot CLI |
 | `just cursor-cli` | Cursor Agent CLI |
 | `just devin` | Devin for Terminal |
 | `just gemini-cli` | Gemini CLI |
-| `just herdr` | herdr (agent multiplexer; runs inside tmux) |
+| `just herdr` | herdr (agent multiplexer; runs inside tmux) + `herdr-remote` low-bandwidth SSH loop |
 | `just ollama` | Ollama |
 | `just lmstudio` | LM Studio |
 | `just huggingface` | Hugging Face CLI |
 | `just vllm` | vLLM |
+
+### Remote Herdr loop
+
+`just herdr` installs `herdr-remote`, a low-bandwidth SSH control loop for remote Herdr sessions:
+
+```bash
+herdr-remote <ssh-target> status
+herdr-remote <ssh-target> -s <session> agents
+herdr-remote <ssh-target> -s <session> read focused --lines 80
+herdr-remote <ssh-target> -s <session> steer focused "state/evidence/blockers/next"
+herdr-remote <ssh-target> -s <session> attach
+```
 
 ### Kubernetes Toolkit
 

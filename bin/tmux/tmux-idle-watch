@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# tmux-idle-watch — notify when tmux panes are idle (awaiting input)
+#
+# Usage:
+#   tmux-idle-watch                     # start watching (foreground)
+#   tmux-idle-watch --daemon            # start as background daemon
+#   tmux-idle-watch --stop              # stop the daemon
+#   tmux-idle-watch --status            # check if daemon is running
+#   tmux-idle-watch --help              # show help
+#
+# Configuration (env vars):
+#   TMUX_IDLE_THRESHOLD    Seconds before a pane is "idle" (default: 120)
+#   TMUX_IDLE_INTERVAL     Polling interval in seconds (default: 30)
+#   TMUX_IDLE_SLACK_WEBHOOK  Slack incoming webhook URL (optional)
+#   TMUX_IDLE_NOTIFY_ONCE  If "1", only notify once per idle period (default: 1)
+#   TMUX_IDLE_IGNORE       Regex of session names to ignore (default: "^$")
+#
+# How it works:
+#   Polls tmux panes. A pane is "idle" when:
+#   1. The pane's active command is a shell (bash/zsh/fish)
+#   2. The pane has been idle (no output) for > TMUX_IDLE_THRESHOLD seconds
+#   3. The pane is NOT the currently focused pane
+#
+# Notifications:
+#   - macOS: native notification via osascript
+#   - Slack: POST to incoming webhook (if TMUX_IDLE_SLACK_WEBHOOK is set)
+
+set -euo pipefail
+
+THRESHOLD="${TMUX_IDLE_THRESHOLD:-120}"
+INTERVAL="${TMUX_IDLE_INTERVAL:-30}"
+SLACK_WEBHOOK="${TMUX_IDLE_SLACK_WEBHOOK:-}"
+NOTIFY_ONCE="${TMUX_IDLE_NOTIFY_ONCE:-1}"
+IGNORE_PATTERN="${TMUX_IDLE_IGNORE:-^$}"
+PIDFILE="${TMPDIR:-/tmp}/tmux-idle-watch.pid"
+NOTIFIED_FILE="${TMPDIR:-/tmp}/tmux-idle-watch.notified"
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# //'; }
+
+notify_macos() {
+    local title="$1" body="$2"
+    osascript -e "display notification \"$body\" with title \"$title\" sound name \"Glass\"" 2>/dev/null || true
+}
+
+notify_slack() {
+    local title="$1" body="$2"
+    [[ -z "$SLACK_WEBHOOK" ]] && return
+    local payload
+    payload=$(printf '{"text":"*%s*\n%s"}' "$title" "$body")
+    curl -s -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK" >/dev/null 2>&1 || true
+}
+
+notify() {
+    local title="$1" body="$2"
+    notify_macos "$title" "$body"
+    notify_slack "$title" "$body"
+}
+
+was_notified() {
+    local pane_id="$1"
+    [[ -f "$NOTIFIED_FILE" ]] && grep -qF "$pane_id" "$NOTIFIED_FILE"
+}
+
+mark_notified() {
+    local pane_id="$1"
+    echo "$pane_id" >> "$NOTIFIED_FILE"
+}
+
+clear_notified() {
+    local pane_id="$1"
+    [[ -f "$NOTIFIED_FILE" ]] && sed -i '' "/$pane_id/d" "$NOTIFIED_FILE" 2>/dev/null || true
+}
+
+is_shell() {
+    local cmd="$1"
+    [[ "$cmd" =~ ^(bash|zsh|fish|-bash|-zsh|-fish|sh)$ ]]
+}
+
+check_panes() {
+    local now
+    now=$(date +%s)
+
+    # Get the active pane so we don't notify for what you're looking at
+    local active_pane=""
+    active_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null) || true
+
+    # Format: session_name|window_index|pane_id|pane_command|activity_timestamp
+    tmux list-panes -a -F '#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{pane_activity}' 2>/dev/null | \
+    while IFS='|' read -r session window pane_id cmd activity; do
+        # Skip ignored sessions
+        if [[ "$session" =~ $IGNORE_PATTERN ]]; then
+            continue
+        fi
+
+        # Skip the currently focused pane
+        if [[ "$pane_id" == "$active_pane" ]]; then
+            clear_notified "$pane_id"
+            continue
+        fi
+
+        # Only care about shell prompts (idle at shell)
+        if ! is_shell "$cmd"; then
+            clear_notified "$pane_id"
+            continue
+        fi
+
+        # Check idle time
+        local idle_seconds=$(( now - activity ))
+        if (( idle_seconds >= THRESHOLD )); then
+            # Notify once per idle period
+            if [[ "$NOTIFY_ONCE" == "1" ]] && was_notified "$pane_id"; then
+                continue
+            fi
+
+            local idle_min=$(( idle_seconds / 60 ))
+            local body="Session '$session' window $window — idle ${idle_min}m"
+            notify "🟡 tmux pane idle" "$body"
+            mark_notified "$pane_id"
+        else
+            clear_notified "$pane_id"
+        fi
+    done
+}
+
+cmd_run() {
+    echo "tmux-idle-watch: polling every ${INTERVAL}s, threshold ${THRESHOLD}s"
+    [[ -n "$SLACK_WEBHOOK" ]] && echo "  Slack notifications: enabled"
+    echo "  Ignoring sessions matching: $IGNORE_PATTERN"
+
+    while true; do
+        check_panes
+        sleep "$INTERVAL"
+    done
+}
+
+cmd_daemon() {
+    if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "Already running (PID $(cat "$PIDFILE"))"
+        exit 0
+    fi
+
+    nohup "$0" > "${TMPDIR:-/tmp}/tmux-idle-watch.log" 2>&1 &
+    echo $! > "$PIDFILE"
+    echo "Started (PID $!)"
+}
+
+cmd_stop() {
+    if [[ -f "$PIDFILE" ]]; then
+        local pid
+        pid=$(cat "$PIDFILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            echo "Stopped (PID $pid)"
+        else
+            echo "Stale PID file (process $pid not running)"
+        fi
+        rm -f "$PIDFILE" "$NOTIFIED_FILE"
+    else
+        echo "Not running"
+    fi
+}
+
+cmd_status() {
+    if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "Running (PID $(cat "$PIDFILE"))"
+        [[ -f "$NOTIFIED_FILE" ]] && echo "Currently notified panes:" && cat "$NOTIFIED_FILE"
+    else
+        echo "Not running"
+    fi
+}
+
+# --- Main ---
+case "${1:-}" in
+    -h|--help|help)       usage ;;
+    -d|--daemon|daemon)   cmd_daemon ;;
+    -s|--stop|stop)       cmd_stop ;;
+    --status|status)      cmd_status ;;
+    *)                    cmd_run ;;
+esac

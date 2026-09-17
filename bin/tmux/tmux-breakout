@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# tmux-breakout — break the current pane into a new named session
+#
+# Usage:
+#   tmux-breakout <session-name>    # break active pane to new session
+#   tmux-breakout                   # interactive prompt via fzf
+#   tmux-breakout --help            # show help
+#
+# Bind in tmux.conf:
+#   bind B command-prompt -p "Break pane to session:" \
+#     "run-shell 'tmux-breakout \"%%\"'"
+
+set -euo pipefail
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# //'; }
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+esac
+
+SESSION_NAME="${1:-}"
+
+if [[ -z "$SESSION_NAME" ]]; then
+    read -rp "Session name: " SESSION_NAME
+    [[ -z "$SESSION_NAME" ]] && { echo "Aborted."; exit 0; }
+fi
+
+if tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
+    tmux display-message "Session '$SESSION_NAME' already exists!"
+    exit 1
+fi
+
+# Capture current pane before doing anything
+PANE_ID=$(tmux display-message -p '#{pane_id}')
+
+# Create a detached session (this makes a throwaway window :0)
+tmux new-session -d -s "$SESSION_NAME"
+
+# Move our pane into the new session (joins as a pane in :0)
+tmux join-pane -s "$PANE_ID" -t "${SESSION_NAME}:0"
+
+# The original empty pane from new-session is now pane .0; our pane is .1
+# Select our pane, then kill the empty one
+tmux select-pane -t "${SESSION_NAME}:0.1" 2>/dev/null || true
+tmux kill-pane -t "${SESSION_NAME}:0.0" 2>/dev/null || true
+
+# Switch to the new session
+tmux switch-client -t "$SESSION_NAME"
+
+tmux display-message "Pane broken out to session: $SESSION_NAME"

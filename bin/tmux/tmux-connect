@@ -72,6 +72,42 @@ cmd_list() {
     done
 }
 
+remote_tmux_sessions() {
+    local ssh_target="$1"
+    local -a targets=()
+    local target output
+
+    IFS=',' read -r -a targets <<< "$ssh_target"
+    for target in "${targets[@]}"; do
+        if output=$(ssh -o ConnectTimeout=2 -o BatchMode=yes "$target" "tmux list-sessions -F '#S' 2>/dev/null" 2>/dev/null); then
+            printf '%s\n' "$output"
+            return 0
+        fi
+    done
+    return 1
+}
+
+connect_remote() {
+    local ssh_target="$1" session="$2"
+    local -a targets=()
+    local target status remote_cmd
+
+    remote_cmd="tmux new-session -A -s $(printf '%q' "$session")"
+    IFS=',' read -r -a targets <<< "$ssh_target"
+    for target in "${targets[@]}"; do
+        if [[ "${#targets[@]}" -gt 1 ]]; then
+            echo "Trying SSH target: $target"
+        fi
+        ssh -o ConnectTimeout="${TMUX_CONNECT_CONNECT_TIMEOUT:-5}" -t "$target" "$remote_cmd"
+        status=$?
+        if [[ "$status" -eq 0 ]]; then
+            return 0
+        fi
+        echo "SSH target failed ($target, exit $status)" >&2
+    done
+    return "${status:-1}"
+}
+
 cmd_status() {
     echo "  Checking host status..."
     echo ""
@@ -87,8 +123,7 @@ cmd_status() {
                 sessions=$(tmux list-sessions -F '#S' 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
                 printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
             else
-                if ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" 2>/dev/null; then
-                    sessions=$(ssh -o ConnectTimeout=2 -o BatchMode=yes "$ssh" "tmux list-sessions -F '#S' 2>/dev/null" | tr '\n' ', ' | sed 's/,$//')
+                if sessions=$(remote_tmux_sessions "$ssh" | tr '\n' ', ' | sed 's/,$//'); then
                     printf "  %-16s %-8s %s\n" "$name" "✅" "${sessions:-none}"
                 else
                     printf "  %-16s %-8s %s\n" "$name" "⬚" "-"
@@ -133,8 +168,9 @@ connect_host() {
             fi
         fi
     else
-        # Remote: SSH with tmux attach-or-create
-        exec ssh -t "$ssh_target" "tmux new-session -A -s ${session}"
+        # Remote: SSH with tmux attach-or-create.
+        # Comma-separated ssh targets are tried in order for fallback paths.
+        connect_remote "$ssh_target" "$session"
     fi
 }
 

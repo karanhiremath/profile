@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# fleet-watch — real-time file change monitor across all agent worktrees
+#
+# Usage:
+#   fleet-watch                    # Default: poll every 5s
+#   fleet-watch --interval 3       # Custom interval
+#   fleet-watch --project bifrost  # Filter to one project
+#   fleet-watch --compact          # One-line-per-project mode
+#   fleet-watch --once             # Single snapshot, no loop
+#   fleet-watch --help             # Show help
+#
+# How it works:
+#   1. Scans tmux for all running agent panes (pi, claude, codex, gemini, ollama, opencode)
+#   2. Discovers git worktrees under each agent's working directory
+#   3. Shows git diff --stat for every directory with uncommitted changes
+#   4. Highlights new changes since last poll
+#
+# Designed to run in a tmux pane (e.g., via fleet-layout dashboard or monitor)
+
+set -euo pipefail
+
+# Colors
+BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'; CYAN='\033[36m'; MAGENTA='\033[35m'; BLUE='\033[34m'
+
+# Agent registry (matches agent_registry.lua and cdev)
+declare -A AGENT_ICONS=( [pi]="π" [claude]="C" [codex]="X" [gemini]="G" [ollama]="O" [opencode]="E" )
+declare -A AGENT_COLORS=( [pi]="$MAGENTA" [claude]="$CYAN" [codex]="$GREEN" [gemini]="$BLUE" [ollama]="$YELLOW" [opencode]="$RED" )
+AGENT_CMDS=( pi claude codex gemini ollama opencode )
+
+# Config
+INTERVAL=5
+PROJECT_FILTER=""
+COMPACT=false
+ONCE=false
+PREV_HASH_FILE="${TMPDIR:-/tmp}/fleet-watch-prev.$$"
+trap 'rm -f "$PREV_HASH_FILE"' EXIT
+
+usage() {
+    sed -n '2,14p' "$0" | sed 's/^# //'
+}
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --interval|-i) INTERVAL="${2:?interval required}"; shift 2 ;;
+        --project|-p)  PROJECT_FILTER="${2:?project required}"; shift 2 ;;
+        --compact|-c)  COMPACT=true; shift ;;
+        --once|-1)     ONCE=true; shift ;;
+        --help|-h)     usage; exit 0 ;;
+        *)             echo "Unknown: $1"; usage; exit 1 ;;
+    esac
+done
+
+# Identify agent type from command + title
+identify_agent() {
+    local cmd="$1" title="$2"
+    for bin in "${AGENT_CMDS[@]}"; do
+        if [[ "$cmd" == "$bin" ]]; then
+            echo "$bin"
+            return
+        fi
+    done
+    # pi runs as node
+    if [[ "$cmd" == "node" ]]; then
+        if [[ "$title" =~ ^π ]] || [[ "$title" =~ ^✳ ]] || [[ "$title" =~ ^pi: ]]; then
+            echo "pi"
+            return
+        fi
+    fi
+    echo ""
+}
+
+# Discover all agent working directories and their worktrees
+discover_dirs() {
+    local fmt='#{pane_current_command}\t#{pane_title}\t#{pane_current_path}'
+    declare -A seen
+
+    while IFS=$'\t' read -r cmd title path; do
+        local agent
+        agent=$(identify_agent "$cmd" "$title")
+        [[ -z "$agent" ]] && continue
+
+        local project
+        project=$(echo "$path" | grep -oE '/src/([^/]+)$' | sed 's|/src/||')
+        [[ -z "$project" ]] && project=$(basename "$path")
+
+        # Apply project filter
+        if [[ -n "$PROJECT_FILTER" && "$project" != "$PROJECT_FILTER" ]]; then
+            continue
+        fi
+
+        # Main directory
+        if [[ -z "${seen[$path]:-}" ]]; then
+            seen["$path"]="$agent"
+            echo "${agent}|${project}|${path}"
+        fi
+
+        # Worktrees
+        while IFS= read -r wt_path; do
+            [[ -z "$wt_path" || "$wt_path" == "$path" ]] && continue
+            if [[ -z "${seen[$wt_path]:-}" ]]; then
+                seen["$wt_path"]="$agent"
+                local wt_branch
+                wt_branch=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "detached")
+                echo "${agent}|${project}/${wt_branch}|${wt_path}"
+            fi
+        done < <(git -C "$path" worktree list --porcelain 2>/dev/null | grep "^worktree " | sed 's/^worktree //')
+
+    done < <(tmux list-panes -a -F "$fmt" 2>/dev/null)
+}
+
+# Hash of current change state (for detecting new changes between polls)
+compute_hash() {
+    local dir="$1"
+    git -C "$dir" diff --shortstat 2>/dev/null | md5sum 2>/dev/null | cut -d' ' -f1 || echo ""
+}
+
+# Single poll cycle
+poll() {
+    local ts
+    ts=$(date +"%H:%M:%S")
+    local found_changes=false
+    local dir_count=0
+    local changed_count=0
+
+    while IFS='|' read -r agent project dir; do
+        ((dir_count++))
+
+        local stat
+        stat=$(git -C "$dir" diff --shortstat 2>/dev/null)
+        local staged_stat
+        staged_stat=$(git -C "$dir" diff --cached --shortstat 2>/dev/null)
+        local untracked
+        untracked=$(git -C "$dir" ls-files --others --exclude-standard 2>/dev/null | wc -l | tr -d ' ')
+
+        # Skip if nothing happening
+        [[ -z "$stat" && -z "$staged_stat" && "$untracked" == "0" ]] && continue
+
+        ((changed_count++))
+        found_changes=true
+
+        local icon="${AGENT_ICONS[$agent]:-?}"
+        local color="${AGENT_COLORS[$agent]:-}"
+        local branch
+        branch=$(git -C "$dir" branch --show-current 2>/dev/null || echo "?")
+
+        # Check if this is new since last poll
+        local current_hash
+        current_hash=$(compute_hash "$dir")
+        local prev_hash=""
+        [[ -f "$PREV_HASH_FILE" ]] && prev_hash=$(grep "^${dir}=" "$PREV_HASH_FILE" 2>/dev/null | cut -d= -f2)
+        local new_marker=""
+        if [[ -n "$prev_hash" && "$current_hash" != "$prev_hash" ]]; then
+            new_marker=" ${YELLOW}● NEW${NC}"
+        fi
+
+        # Store current hash for next cycle
+        if [[ -f "$PREV_HASH_FILE" ]]; then
+            grep -v "^${dir}=" "$PREV_HASH_FILE" > "${PREV_HASH_FILE}.tmp" 2>/dev/null || true
+            mv "${PREV_HASH_FILE}.tmp" "$PREV_HASH_FILE"
+        fi
+        echo "${dir}=${current_hash}" >> "$PREV_HASH_FILE"
+
+        if $COMPACT; then
+            # One line per project
+            echo -e "  ${DIM}${ts}${NC}  ${color}${icon}${NC} %-18s ${DIM}(${branch})${NC} ${stat}${staged_stat:+ staged: ${staged_stat}}${untracked:+${untracked:- 0} untracked}${new_marker}" "$project"
+        else
+            echo -e "  ${color}${icon}${NC} ${BOLD}${project}${NC} ${DIM}(${branch})${NC}${new_marker}"
+
+            # Unstaged changes
+            if [[ -n "$stat" ]]; then
+                echo -e "    ${stat}"
+                git -C "$dir" diff --name-only 2>/dev/null | head -8 | while read -r fname; do
+                    echo -e "      ${DIM}M ${fname}${NC}"
+                done
+                local total
+                total=$(git -C "$dir" diff --name-only 2>/dev/null | wc -l | tr -d ' ')
+                [[ $total -gt 8 ]] && echo -e "      ${DIM}… and $((total - 8)) more${NC}"
+            fi
+
+            # Staged changes
+            if [[ -n "$staged_stat" ]]; then
+                echo -e "    ${GREEN}staged:${NC} ${staged_stat}"
+            fi
+
+            # Untracked files
+            if [[ "$untracked" -gt 0 ]]; then
+                echo -e "    ${YELLOW}${untracked} untracked${NC}"
+                git -C "$dir" ls-files --others --exclude-standard 2>/dev/null | head -3 | while read -r fname; do
+                    echo -e "      ${DIM}? ${fname}${NC}"
+                done
+            fi
+        fi
+    done < <(discover_dirs)
+
+    if ! $found_changes; then
+        echo -ne "\r  ${DIM}${ts}  ${dir_count} dirs monitored — no changes${NC}        "
+    else
+        echo -e "\n  ${DIM}${ts}  ${changed_count}/${dir_count} dirs with changes${NC}"
+    fi
+}
+
+# ── Main ──
+echo -e "${BOLD}Fleet Change Watcher${NC} v1.0.0"
+echo -e "${DIM}Polling every ${INTERVAL}s${PROJECT_FILTER:+ (project: $PROJECT_FILTER)}${NC}"
+echo ""
+
+if $ONCE; then
+    poll
+else
+    while true; do
+        # Clear screen but keep header
+        tput clear 2>/dev/null || true
+        echo -e "${BOLD}Fleet Change Watcher${NC} ${DIM}(${INTERVAL}s interval)${NC}"
+        echo ""
+        poll
+        sleep "$INTERVAL"
+    done
+fi

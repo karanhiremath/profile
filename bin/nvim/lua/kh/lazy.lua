@@ -75,7 +75,8 @@ require("lazy").setup({
             vim.keymap.set("n", "<leader>a", mark.add_file)
             vim.keymap.set("n", "<C-e>", ui.toggle_quick_menu)
 
-            vim.keymap.set("n", "<C-h>", function() ui.nav_file(1) end)
+            -- <C-h> is now the fleet prefix (see kh.harpoon-fleet)
+            -- Use <C-e> for harpoon menu, <C-j/k/l> for files 2-4
             vim.keymap.set("n", "<C-j>", function() ui.nav_file(2) end)
             vim.keymap.set("n", "<C-k>", function() ui.nav_file(3) end)
             vim.keymap.set("n", "<C-l>", function() ui.nav_file(4) end)

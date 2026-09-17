@@ -15,7 +15,14 @@ window-save-state = always
 window-new-tab-position = end
 
 # Pi session picker — ⌘⇧P opens new tab with pc (fzf project picker)
-keybind = super+shift+p=new_tab:pc
+# Pi session picker — TODO: needs same fix as cluster connect
+# keybind = super+shift+p=new_tab + text:pc
+
+# Cluster connect — TODO: ctrl+s>c/t/i to open cluster tabs
+# See agentic/memory/projects/devlarge-agent-platform.md for research
+# Ghostty 1.3.1 can't chain new_tab+text on same keybind (second overrides first)
+# Scripts ready at ~/.local/bin/ghostty-tc and ghostty-ic
+# Needs: either Ghostty update with new_tab:command support, or AppleScript assistive access
 
 # Pane navigation — opt+shift+hjkl
 keybind = alt+shift+h=goto_split:left

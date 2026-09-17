@@ -1,0 +1,43 @@
+name: ghostty
+# Matches ~/src/profile/bin/ghostty/config terminal palette.
+description: Ghostty terminal palette from profile repo
+
+colors:
+  banner_border: "#4d7ab5"
+  banner_title: "#64ba9a"
+  banner_accent: "#e5c843"
+  banner_dim: "#559f84"
+  banner_text: "#eceff0"
+  ui_accent: "#64ba9a"
+  ui_label: "#559f84"
+  ui_ok: "#5eae63"
+  ui_error: "#cd5244"
+  ui_warn: "#e4c843"
+  prompt: "#64ba9a"
+  input_rule: "#4d7ab5"
+  response_border: "#559f84"
+  status_bar_bg: "#2e3d4e"
+  status_bar_text: "#bec2c5"
+  status_bar_strong: "#64ba9a"
+  status_bar_dim: "#559f84"
+  status_bar_good: "#5eae63"
+  status_bar_warn: "#e4c843"
+  status_bar_bad: "#e0a13b"
+  status_bar_critical: "#cd5244"
+  session_label: "#64ba9a"
+  session_border: "#4d7ab5"
+  voice_status_bg: "#2e3d4e"
+  selection_bg: "#8347a6"
+  completion_menu_bg: "#2e3d4e"
+  completion_menu_current_bg: "#8347a6"
+  completion_menu_meta_bg: "#2e3d4e"
+  completion_menu_meta_current_bg: "#8239a9"
+
+branding:
+  agent_name: "Hermes"
+  response_label: " Hermes "
+  prompt_symbol: "❯"
+  help_header: "Hermes commands"
+  goodbye: "done"
+
+tool_prefix: "┊"

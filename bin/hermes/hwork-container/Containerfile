@@ -1,0 +1,25 @@
+# hwork cockpit image. Build from our reviewed local Hermes sandbox base,
+# not from an arbitrary upstream Docker Hub runtime image.
+ARG HERMES_SANDBOX_BASE=localhost/hermes-agent/python-node:dev
+FROM ${HERMES_SANDBOX_BASE}
+
+USER root
+ENV NPM_CONFIG_PREFIX=/usr/local \
+    PATH=/usr/local/bin:/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin
+RUN mkdir -p /usr/local/bin /usr/local/lib \
+ && npm install -g bun hermes-agent herm-tui
+
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; *) echo "unsupported arch: $arch"; exit 1 ;; esac; \
+    curl -fsSL --retry 3 "https://github.com/ogulcancelik/herdr/releases/latest/download/herdr-linux-${arch}" -o /usr/local/bin/herdr; \
+    chmod +x /usr/local/bin/herdr
+
+COPY entrypoint.sh /usr/local/bin/hwork-entrypoint
+RUN chmod 0755 /usr/local/bin/hwork-entrypoint \
+ && mkdir -p /hwork-home /hwork-profile \
+ && chown -R hermes:hermes /hwork-home /hwork-profile
+
+USER hermes
+WORKDIR /workspace/src/karan.hiremath
+ENTRYPOINT ["/usr/local/bin/hwork-entrypoint"]

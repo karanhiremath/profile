@@ -1,0 +1,18 @@
+---
+profile_hosts:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_host: localhost
+      # Optional: install SSH authorized_keys from 1Password.
+      # The referenced field should contain newline-separated public keys.
+      # profile_op_account: my.1password.com
+      # profile_ssh_authorized_keys_enabled: true
+      # profile_ssh_authorized_keys_op_ref: "op://<vault>/<item>/public_keys"
+  children:
+    personal:
+      hosts:
+        localhost:
+    mac:
+      hosts:
+        localhost:

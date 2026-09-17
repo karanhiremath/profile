@@ -1,0 +1,56 @@
+---
+- name: Validate ssh_authorized_keys configuration
+  ansible.builtin.assert:
+    that:
+      - profile_ssh_authorized_keys_op_ref | length > 0 or profile_ssh_authorized_keys | length > 0
+    fail_msg: >-
+      profile_ssh_authorized_keys_enabled=true requires either
+      profile_ssh_authorized_keys_op_ref or profile_ssh_authorized_keys.
+  when: profile_ssh_authorized_keys_enabled | bool
+
+- name: Read authorized SSH public keys from 1Password
+  ansible.builtin.command:
+    argv:
+      - "{{ profile_op_cli }}"
+      - read
+      - "{{ profile_ssh_authorized_keys_op_ref }}"
+  delegate_to: localhost
+  environment:
+    OP_ACCOUNT: "{{ profile_op_account }}"
+  changed_when: false
+  check_mode: false
+  register: profile_ssh_authorized_keys_op_read
+  no_log: true
+  when:
+    - profile_ssh_authorized_keys_enabled | bool
+    - profile_ssh_authorized_keys_op_ref | length > 0
+
+- name: Build authorized SSH public key list
+  ansible.builtin.set_fact:
+    profile_ssh_authorized_keys_resolved: >-
+      {{
+        (
+          profile_ssh_authorized_keys
+          + (
+              profile_ssh_authorized_keys_op_read.stdout_lines
+              | default([])
+              | reject('match', '^\\s*$')
+              | reject('match', '^\\s*#')
+              | list
+            )
+        ) | unique | list
+      }}
+  no_log: true
+  when: profile_ssh_authorized_keys_enabled | bool
+
+- name: Install authorized SSH public keys
+  ansible.posix.authorized_key:
+    user: "{{ profile_ssh_authorized_keys_user }}"
+    key: "{{ profile_ssh_authorized_keys_resolved | default([]) | join('\n') }}"
+    state: present
+    exclusive: "{{ profile_ssh_authorized_keys_exclusive | bool }}"
+    manage_dir: true
+  no_log: true
+  when:
+    - profile_ssh_authorized_keys_enabled | bool
+    - profile_ssh_authorized_keys_resolved | default([]) | length > 0

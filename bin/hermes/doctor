@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Diagnose local Hermes/herm/profile entrypoint setup without printing secrets.
+#
+# Usage: doctor [--help]
+
+set -euo pipefail
+
+case "${1:-}" in
+  -h|--help|help)
+    cat <<'EOF'
+Diagnose local Hermes/herm/profile entrypoint setup without printing secrets.
+
+Usage: doctor [--help]
+EOF
+    exit 0
+    ;;
+esac
+
+status=0
+toolchain="${HERMES_TOOLCHAIN:-${HERMES_TOOLCHAIN_HOME:-${HOME}/.local/share/hermes-toolchain}}"
+install_dir="${HERMES_INSTALL_DIR:-${HOME}/.local/bin}"
+
+check_cmd() {
+  local name="$1"
+  if command -v "$name" >/dev/null 2>&1; then
+    printf 'ok: %s: %s\n' "$name" "$(command -v "$name")"
+  else
+    printf 'fail: %s: missing\n' "$name"
+    status=1
+  fi
+}
+
+check_file() {
+  local label="$1"
+  local path="$2"
+  if [ -e "$path" ]; then
+    printf 'ok: %s: %s\n' "$label" "$path"
+  else
+    printf 'fail: %s: missing: %s\n' "$label" "$path"
+    status=1
+  fi
+}
+
+printf 'hermes_setup:\n'
+printf '  toolchain: %s\n' "$toolchain"
+printf '  install_dir: %s\n' "$install_dir"
+
+check_file venv-hermes "${toolchain}/venv/bin/hermes"
+check_file npm-herm "${toolchain}/npm/bin/herm"
+check_file launcher-hermes "${install_dir}/hermes"
+check_file launcher-herm "${install_dir}/herm"
+check_file launcher-hs "${install_dir}/hs"
+check_file launcher-dream "${install_dir}/dream"
+
+check_cmd hermes
+check_cmd herm
+check_cmd hs
+check_cmd dream
+check_cmd herdr
+
+if command -v hermes >/dev/null 2>&1; then
+  printf 'hermes_version:\n'
+  hermes version 2>/dev/null | sed 's/^/  /' || status=1
+fi
+if command -v herm >/dev/null 2>&1; then
+  printf 'herm_version: '
+  herm --version 2>/dev/null || status=1
+fi
+if command -v hs >/dev/null 2>&1; then
+  printf 'hs_status_sample:\n'
+  hs --status "${HOME}/src/hermes" 2>/dev/null | sed 's/^/  /' || true
+fi
+
+exit "$status"

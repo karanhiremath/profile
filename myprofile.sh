@@ -131,12 +131,78 @@ function local_tmux ()
 {
     local sessionname="${1:-local}"
     echo "Connecting to local session name: ${sessionname}"
-    tmux has-session -t "${sessionname}" && tmux attach-session -t "${sessionname}" || exec tmux new -s "${sessionname}"
+    tmux has-session -t "=${sessionname}" && tmux attach-session -t "=${sessionname}" || exec tmux new -s "${sessionname}"
 }
+function hermes_sandbox_env ()
+{
+    local sandbox_env="${PROFILE_DIR:-${HOME}/src/profile}/bin/hermes/sandbox-env.sh"
+    if [ -r "${sandbox_env}" ]; then
+        # shellcheck source=/dev/null
+        source "${sandbox_env}"
+    else
+        echo "warning: Hermes sandbox env not found: ${sandbox_env}" >&2
+    fi
+}
+
+# hs — Hermes sandbox entrypoint.
+# Usage: hs [project-or-path], hs --shell [project], hs --container-shell [project]
+function hs ()
+{
+    local hs_bin="${PROFILE_DIR:-${HOME}/src/profile}/bin/hermes/hs"
+    if [ ! -x "${hs_bin}" ]; then
+        echo "hs: entrypoint not executable: ${hs_bin}" >&2
+        return 1
+    fi
+    "${hs_bin}" "$@"
+}
+
 function mac ()
 {
     local sessionname="${1:-mac}"
-    echo "Connecting to local session name: ${sessionname}"
+    hermes_sandbox_env
+
+    if [ "${1:-}" = "status" ]; then
+        local target_session="${2:-mac}"
+        local tmux_status="missing"
+        local herdr_status="missing"
+        if command -v tmux >/dev/null 2>&1; then
+            if tmux has-session -t "=${target_session}" 2>/dev/null; then
+                tmux_status="exists"
+            else
+                tmux_status="not-running"
+            fi
+        fi
+        if command -v herdr >/dev/null 2>&1; then
+            herdr_status="available: $(command -v herdr)"
+        fi
+        cat <<EOF
+mac_status:
+  session: ${target_session}
+  tmux_session: ${tmux_status}
+  herdr: ${herdr_status}
+  HERMES_SANDBOX_PROFILE: ${HERMES_SANDBOX_PROFILE:-herm-sandbox}
+  HERMES_HOME: ${HERMES_HOME:-${HOME}/.hermes/profiles/${HERMES_SANDBOX_PROFILE:-herm-sandbox}}
+  HERMES_PROFILE: ${HERMES_PROFILE:-${HERMES_SANDBOX_PROFILE:-herm-sandbox}}
+  HERMES_TOOLCHAIN: ${HERMES_TOOLCHAIN:-${HOME}/.local/share/hermes-toolchain}
+  TERMINAL_ENV: ${TERMINAL_ENV:-unset}
+  TERMINAL_DOCKER_EXTRA_ARGS: ${TERMINAL_DOCKER_EXTRA_ARGS:-unset}
+  DOCKER_HOST: ${DOCKER_HOST:-unset}
+  gateway_identity: unset
+  mobile_boundary: disabled-or-unset
+EOF
+        return 0
+    fi
+
+    if command -v tmux >/dev/null 2>&1; then
+        tmux set-environment -g HERMES_SANDBOX_PROFILE "${HERMES_SANDBOX_PROFILE:-herm-sandbox}" 2>/dev/null || true
+        tmux set-environment -g HERMES_HOME "${HERMES_HOME:-${HOME}/.hermes/profiles/${HERMES_SANDBOX_PROFILE:-herm-sandbox}}" 2>/dev/null || true
+        tmux set-environment -g HERMES_PROFILE "${HERMES_PROFILE:-${HERMES_SANDBOX_PROFILE:-herm-sandbox}}" 2>/dev/null || true
+        tmux set-environment -g HERMES_TOOLCHAIN "${HERMES_TOOLCHAIN:-${HOME}/.local/share/hermes-toolchain}" 2>/dev/null || true
+        tmux set-environment -g TERMINAL_ENV "${TERMINAL_ENV:-docker}" 2>/dev/null || true
+        tmux set-environment -g TERMINAL_DOCKER_EXTRA_ARGS "${TERMINAL_DOCKER_EXTRA_ARGS:-}" 2>/dev/null || true
+        tmux set-environment -g DOCKER_HOST "${DOCKER_HOST:-}" 2>/dev/null || true
+    fi
+    echo "Connecting to local session name: ${sessionname} (Hermes sandbox: ${HERMES_HOME})"
     local_tmux "${sessionname}"
 }
 
@@ -174,6 +240,17 @@ alias nvim="~/.local/share/bob/nvim-bin/nvim"
 # pi-code session manager (tmux + nvim + pi)
 # Binary built from profile/bin/pc (Rust). Install: just pc
 function pc() { "$HOME/.local/bin/pc" "$@"; }
+
+# kh — pi agent fleet launcher
+# Wraps pc with sane defaults. Inside nvim, use <C-h> prefix for fleet nav.
+# Usage: kh [project] [-- pi-args...]   e.g. kh bifrost -- -c
+function kh() {
+  if [[ $# -eq 0 ]]; then
+    pc
+  else
+    pc "$@"
+  fi
+}
 
 # pc completions — projects, subcommands, pi flags
 _pc_completions() {

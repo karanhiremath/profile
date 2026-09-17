@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# mem — macOS memory + agent pressure dashboard
+#
+# Usage:
+#   mem                  # one-shot dashboard (default)
+#   mem --watch          # refresh every 2s until ^C
+#   mem --compact        # one-line summary (good for piping/scripts)
+#   mem --statusline     # tmux status-right friendly format (very short)
+#   mem --json           # machine-readable
+#   mem --top N          # also print top N RSS processes (default 0)
+#   mem --help
+#
+# Buckets explained:
+#   wired       — kernel/drivers/locked. Can't reclaim.
+#   active      — recently-used app pages. Reclaim by quitting apps.
+#   inactive    — older app pages. Kernel drops on pressure.
+#   compressor  — physical RAM holding LZ4-compressed inactive pages.
+#                 The headline "GB used" mostly lives here under load.
+#   free        — unallocated.
+#
+# What to watch:
+#   - macOS reports "free percentage" via memory_pressure. <30% is real pressure.
+#   - swap GROWING = compressor + inactive can't hold the working set.
+#   - agent_paused = SIGSTOP'd claude/pi processes (their RSS shrinks over time).
+
+set -euo pipefail
+
+MODE="oneshot"
+TOP=0
+
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --watch)      MODE="watch"; shift ;;
+    --compact)    MODE="compact"; shift ;;
+    --statusline) MODE="statusline"; shift ;;
+    --json)       MODE="json"; shift ;;
+    --top)        TOP="$2"; shift 2 ;;
+    --help|-h)    usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; usage; exit 1 ;;
+  esac
+done
+
+readonly PAGE_SIZE=16384
+readonly GB=$((1024 * 1024 * 1024))
+PHYS_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+
+snapshot() {
+  # Single vm_stat call; emit shell-eval'able KEY=value pairs in bytes.
+  vm_stat | awk -v ps=$PAGE_SIZE '
+    function clean(x) { gsub(/\./, "", x); return x }
+    /Pages free/                   { free=clean($3) }
+    /Pages active/                 { active=clean($3) }
+    /Pages inactive/               { inactive=clean($3) }
+    /Pages wired/                  { wired=clean($4) }
+    /Pages purgeable/              { purge=clean($3) }
+    /Pages occupied by compressor/ { compocc=clean($5) }
+    /Pages stored in compressor/   { compstore=clean($5) }
+    /Anonymous pages/              { anon=clean($3) }
+    /File-backed pages/            { fb=clean($3) }
+    END {
+      printf "FREE=%d ACTIVE=%d INACTIVE=%d WIRED=%d PURGE=%d COMPOCC=%d COMPSTORE=%d ANON=%d FB=%d\n",
+        free*ps, active*ps, inactive*ps, wired*ps, purge*ps, compocc*ps, compstore*ps, anon*ps, fb*ps
+    }'
+}
+
+swap_usage() {
+  # Output: "<used_bytes> <total_bytes>". sysctl shows e.g. "total = 7168.00M  used = 5556.75M  free = 1611.25M  (encrypted)".
+  sysctl -n vm.swapusage 2>/dev/null | awk '
+    function to_bytes(v,   n,u,mult) {
+      n = v + 0
+      u = substr(v, length(v), 1)
+      mult = 1
+      if (u == "G") mult = 1024*1024*1024
+      else if (u == "M") mult = 1024*1024
+      else if (u == "K") mult = 1024
+      return n * mult
+    }
+    {
+      total_v=""; used_v=""
+      for (i=1;i<=NF;i++) {
+        if ($i=="total") total_v=$(i+2)
+        if ($i=="used")  used_v=$(i+2)
+      }
+      printf "%d %d\n", to_bytes(used_v), to_bytes(total_v)
+    }'
+}
+
+pressure_pct() {
+  # Output line ends with "%", which my FS treats as a separator — so the number is $(NF-1).
+  memory_pressure 2>/dev/null | awk -F'[ %]+' '/free percentage/ {print $(NF-1); exit}'
+}
+
+agent_counts() {
+  # paused + running counts and RSS sums for claude/pi
+  ps -A -o pid,stat,rss,command | awk '
+    NR > 1 {
+      stat=$2; rss=$3; cmd=$4
+      if (cmd == "claude" || cmd == "pi") {
+        if (stat ~ /^T/) { paused_n++; paused_rss += rss }
+        else             { running_n++; running_rss += rss }
+      }
+    }
+    END {
+      printf "%d %d %d %d\n", paused_n+0, paused_rss*1024+0, running_n+0, running_rss*1024+0
+    }'
+}
+
+fmt_gb() { awk -v b="$1" 'BEGIN{printf "%.2f", b/'"$GB"'}'; }
+fmt_gb1() { awk -v b="$1" 'BEGIN{printf "%.1f", b/'"$GB"'}'; }
+
+render_full() {
+  eval "$(snapshot)"
+  read -r SWAP_USED SWAP_TOTAL <<<"$(swap_usage)"
+  PCT=$(pressure_pct)
+  read -r PAUSE_N PAUSE_RSS RUN_N RUN_RSS <<<"$(agent_counts)"
+  USED=$((WIRED + ACTIVE + INACTIVE + COMPOCC))
+  TOTAL=$((USED + FREE))
+
+  cat <<EOF
+$(date '+%Y-%m-%d %H:%M:%S')   pressure: ${PCT:-?}% free   swap: $(fmt_gb1 $SWAP_USED) / $(fmt_gb1 $SWAP_TOTAL) GB used
+─────────────────────────────────────────────────────────────────────
+wired       $(fmt_gb $WIRED) GB    (kernel + drivers, unreclaimable)
+active      $(fmt_gb $ACTIVE) GB    (recent app pages)
+inactive    $(fmt_gb $INACTIVE) GB    (older pages, reclaimable on pressure)
+compressor  $(fmt_gb $COMPOCC) GB    (= $(fmt_gb $COMPSTORE) GB virtual, ratio $(awk -v s=$COMPSTORE -v o=$COMPOCC 'BEGIN{if(o>0)printf "%.1fx",s/o; else print "—"}'))
+free        $(fmt_gb $FREE) GB
+─────────────────────────────────────────────────────────────────────
+used $(fmt_gb $USED) / $(fmt_gb $PHYS_BYTES) GB physical    agents: $RUN_N running ($(fmt_gb $RUN_RSS) GB) · $PAUSE_N paused ($(fmt_gb $PAUSE_RSS) GB)
+EOF
+
+  if [ "$TOP" -gt 0 ]; then
+    echo "─── top $TOP RSS (running) ─────────────────────────────────────────"
+    ps -A -o rss,pid,command | awk 'NR>1 {print}' | sort -k1 -nr | head -"$TOP" | \
+      awk '{rss_mb=$1/1024; cmd=""; for (i=3;i<=NF && i<=4;i++) cmd=cmd" "$i; printf "%7.0f MB  pid=%-6s %s\n", rss_mb, $2, cmd}'
+  fi
+}
+
+render_compact() {
+  eval "$(snapshot)"
+  read -r SWAP_USED SWAP_TOTAL <<<"$(swap_usage)"
+  PCT=$(pressure_pct)
+  read -r PAUSE_N _ RUN_N _ <<<"$(agent_counts)"
+  USED=$((WIRED + ACTIVE + INACTIVE + COMPOCC))
+  printf 'mem %s/%sG (pressure %s%% free) swap %sG comp %sG agents %dR/%dP\n' \
+    "$(fmt_gb1 $USED)" "$(fmt_gb1 $PHYS_BYTES)" "${PCT:-?}" "$(fmt_gb1 $SWAP_USED)" \
+    "$(fmt_gb1 $COMPOCC)" "$RUN_N" "$PAUSE_N"
+}
+
+render_statusline() {
+  eval "$(snapshot)"
+  read -r SWAP_USED _ <<<"$(swap_usage)"
+  read -r PAUSE_N _ RUN_N _ <<<"$(agent_counts)"
+  USED=$((WIRED + ACTIVE + INACTIVE + COMPOCC))
+  # Color hint via tmux #[fg=...] if running under tmux
+  USED_PCT=$(awk -v u=$USED -v t=$PHYS_BYTES 'BEGIN{if(t>0)printf "%d", (u*100)/t; else print 0}')
+  if [ -n "${TMUX:-}" ]; then
+    if   [ "$USED_PCT" -ge 92 ]; then C='#[fg=red,bold]'
+    elif [ "$USED_PCT" -ge 85 ]; then C='#[fg=yellow]'
+    else                              C='#[fg=default]'
+    fi
+    printf '%sm:%sG sw:%sG a:%dR/%dP#[default]' \
+      "$C" "$(fmt_gb1 $USED)" "$(fmt_gb1 $SWAP_USED)" "$RUN_N" "$PAUSE_N"
+  else
+    printf 'm:%sG sw:%sG a:%dR/%dP' "$(fmt_gb1 $USED)" "$(fmt_gb1 $SWAP_USED)" "$RUN_N" "$PAUSE_N"
+  fi
+}
+
+render_json() {
+  eval "$(snapshot)"
+  read -r SWAP_USED SWAP_TOTAL <<<"$(swap_usage)"
+  PCT=$(pressure_pct)
+  read -r PAUSE_N PAUSE_RSS RUN_N RUN_RSS <<<"$(agent_counts)"
+  USED=$((WIRED + ACTIVE + INACTIVE + COMPOCC))
+  printf '{"ts":"%s","pressure_free_pct":%s,"wired":%d,"active":%d,"inactive":%d,"compressor":%d,"compressor_virtual":%d,"free":%d,"used":%d,"swap_used":%d,"swap_total":%d,"agents":{"running":{"n":%d,"rss":%d},"paused":{"n":%d,"rss":%d}}}\n' \
+    "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "${PCT:-0}" \
+    "$WIRED" "$ACTIVE" "$INACTIVE" "$COMPOCC" "$COMPSTORE" "$FREE" "$USED" \
+    "$SWAP_USED" "$SWAP_TOTAL" "$RUN_N" "$RUN_RSS" "$PAUSE_N" "$PAUSE_RSS"
+}
+
+main() {
+  case "$MODE" in
+    oneshot)    render_full ;;
+    compact)    render_compact ;;
+    statusline) render_statusline ;;
+    json)       render_json ;;
+    watch)
+      while true; do
+        clear
+        render_full
+        sleep 2
+      done
+      ;;
+  esac
+}
+
+main

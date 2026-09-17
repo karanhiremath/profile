@@ -1,0 +1,403 @@
+#!/usr/bin/env bash
+# herdr-remote — low-bandwidth remote control loop for Herdr sessions over SSH.
+# Usage: herdr-remote <ssh-target> [--session NAME] <status|sessions|summary|workspaces|agents|panes|read|steer|attach|tmux> [...]
+set -euo pipefail
+
+usage() {
+  sed -n '2,3p' "$0" | sed 's/^# //'
+  cat <<'USAGE'
+
+Commands:
+  status                         Host load + tmux sessions + Herdr summary
+  sessions                       List Herdr session sockets
+  summary                        Workspace/agent summary for selected/all sessions
+  workspaces                     Workspace table for --session
+  agents                         Agent table for --session
+  panes                          Pane table for --session
+  read <target|focused>          Read recent pane text (default: focused)
+  steer <target|focused> <msg>   Send message to an agent via Herdr API
+  attach                         Attach Herdr TUI via `herdr --remote`
+  tmux [session]                 Attach/create remote tmux session
+
+Options:
+  --session, -s NAME             Herdr session name
+  --lines N                      Lines for read (default: 120)
+  --source NAME                  visible|recent|recent-unwrapped (default)
+  --json                         Emit raw JSON where applicable
+  --ssh-option OPT               Extra ssh option, repeatable
+
+Examples:
+  herdr-remote devbox status
+  herdr-remote devbox -s work agents
+  herdr-remote devbox -s work read focused --lines 80
+  herdr-remote devbox -s work steer focused "please summarize state/blockers/next"
+USAGE
+}
+
+if [[ $# -lt 1 ]]; then usage; exit 2; fi
+case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
+
+TARGET="$1"; shift
+SESSION=""
+LINES="120"
+SOURCE="recent-unwrapped"
+JSON_OUT=0
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=2)
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --session|-s) SESSION="${2:?missing session}"; shift 2 ;;
+    --lines) LINES="${2:?missing lines}"; shift 2 ;;
+    --source) SOURCE="${2:?missing source}"; shift 2 ;;
+    --json) JSON_OUT=1; shift ;;
+    --ssh-option) SSH_OPTS+=(-o "${2:?missing ssh option}"); shift 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) break ;;
+  esac
+done
+
+CMD="${1:-status}"
+[[ $# -gt 0 ]] && shift
+
+if [[ "$CMD" == "read" ]]; then
+  rest=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --lines) LINES="${2:?missing lines}"; shift 2 ;;
+      --source) SOURCE="${2:?missing source}"; shift 2 ;;
+      --json) JSON_OUT=1; shift ;;
+      *) rest+=("$1"); shift ;;
+    esac
+  done
+  set -- "${rest[@]}"
+fi
+
+case "$CMD" in
+  status|sessions|summary|workspaces|agents|panes|read|steer) ;;
+  attach)
+    if [[ -n "$SESSION" ]]; then exec herdr --remote "$TARGET" --session "$SESSION"; fi
+    exec herdr --remote "$TARGET"
+    ;;
+  tmux)
+    tmux_session="${1:-home}"
+    exec ssh -t "$TARGET" "tmux new-session -A -s $(printf '%q' "$tmux_session")"
+    ;;
+  --help|-h|help) usage; exit 0 ;;
+  *) echo "error: unknown command: $CMD" >&2; usage >&2; exit 2 ;;
+esac
+
+python_payload() {
+  cat <<'PY'
+import argparse
+import json
+import os
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+
+def eprint(*args):
+    print(*args, file=sys.stderr)
+
+
+def recv_json(sock):
+    chunks = []
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if b"\n" in chunk:
+            break
+    if not chunks:
+        raise RuntimeError("empty response")
+    return json.loads(b"".join(chunks).split(b"\n", 1)[0].decode("utf-8"))
+
+
+def request(sock_path, method, params=None):
+    params = params or {}
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    sock.connect(str(sock_path))
+    req = {"id": "cdev", "method": method, "params": params}
+    sock.sendall((json.dumps(req, separators=(",", ":")) + "\n").encode("utf-8"))
+    data = recv_json(sock)
+    sock.close()
+    if "error" in data:
+        raise RuntimeError(f"{method}: {data['error']}")
+    return data.get("result", {})
+
+
+def session_sockets(wanted=None):
+    home = Path.home()
+    candidates = []
+    if wanted:
+        candidates.append((wanted, home / ".config" / "herdr" / "sessions" / wanted / "herdr.sock"))
+        candidates.append((wanted, home / ".config" / "herdr" / f"{wanted}.sock"))
+    else:
+        default = home / ".config" / "herdr" / "herdr.sock"
+        if default.exists():
+            candidates.append(("default", default))
+        base = home / ".config" / "herdr" / "sessions"
+        if base.exists():
+            for child in sorted(base.iterdir()):
+                candidates.append((child.name, child / "herdr.sock"))
+    seen = set()
+    out = []
+    for name, path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((name, path, path.exists()))
+    return out
+
+
+def run_text(cmd):
+    try:
+        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).rstrip("\n")
+    except Exception:
+        return ""
+
+
+def result_items(result, key):
+    return result.get(key, [])
+
+
+def workspace_list(sock):
+    return result_items(request(sock, "workspace.list"), "workspaces")
+
+
+def agent_list(sock):
+    return result_items(request(sock, "agent.list"), "agents")
+
+
+def pane_list(sock):
+    return result_items(request(sock, "pane.list"), "panes")
+
+
+def print_json(obj):
+    print(json.dumps(obj, indent=2, sort_keys=True))
+
+
+def one_socket(session):
+    sockets = session_sockets(session)
+    existing = [(name, path) for name, path, ok in sockets if ok]
+    if not existing:
+        available = ", ".join(name for name, _path, ok in session_sockets(None) if ok) or "none"
+        raise SystemExit(f"no Herdr socket for session={session or '<default>'}; available={available}")
+    if len(existing) > 1 and not session:
+        raise SystemExit("choose --session; multiple Herdr sockets exist")
+    return existing[0]
+
+
+def fmt(value, width):
+    text = "" if value is None else str(value)
+    if len(text) > width:
+        return text[: max(0, width - 1)] + "…"
+    return text.ljust(width)
+
+
+def print_sessions(args):
+    rows = []
+    for name, path, ok in session_sockets(args.session):
+        state = "socket" if ok else "missing"
+        rows.append((name, state, str(path)))
+    if args.json:
+        print_json([{"session": n, "state": s, "socket": p} for n, s, p in rows])
+        return
+    for n, s, p in rows:
+        print(f"{fmt(n, 24)} {fmt(s, 8)} {p}")
+
+
+def print_summary(args):
+    payload = []
+    for name, path, ok in session_sockets(args.session):
+        entry = {"session": name, "socket": str(path), "present": ok}
+        if ok:
+            try:
+                workspaces = workspace_list(path)
+                agents = agent_list(path)
+                entry["workspaces"] = workspaces
+                entry["agents"] = agents
+            except Exception as exc:
+                entry["error"] = f"{type(exc).__name__}: {exc}"
+        payload.append(entry)
+    if args.json:
+        print_json(payload)
+        return
+    for item in payload:
+        print(f"session={item['session']} present={item['present']}")
+        if item.get("error"):
+            print(f"  error={item['error']}")
+            continue
+        for w in item.get("workspaces", []):
+            mark = "*" if w.get("focused") else " "
+            print(f"  {mark} ws#{w.get('number')} {w.get('label')} panes={w.get('pane_count')} status={w.get('agent_status')}")
+        agents = item.get("agents", [])
+        if agents:
+            counts = {}
+            for a in agents:
+                counts[a.get("agent_status", "unknown")] = counts.get(a.get("agent_status", "unknown"), 0) + 1
+            print("    agents=" + ",".join(f"{k}:{v}" for k, v in sorted(counts.items())))
+
+
+def print_table(args, kind):
+    _name, sock = one_socket(args.session)
+    if kind == "workspaces":
+        rows = workspace_list(sock)
+    elif kind == "agents":
+        rows = agent_list(sock)
+    else:
+        rows = pane_list(sock)
+    if args.json:
+        print_json(rows)
+        return
+    if kind == "workspaces":
+        print(f"{'#':<3} {'focus':<5} {'status':<10} {'panes':<5} label")
+        for w in rows:
+            print(f"{str(w.get('number','')):<3} {('*' if w.get('focused') else ''):<5} {str(w.get('agent_status','')):<10} {str(w.get('pane_count','')):<5} {w.get('label','')}")
+    else:
+        print(f"{'idx':<3} {'focus':<5} {'status':<10} {'agent':<8} {'pane':<22} cwd/label")
+        for i, p in enumerate(rows, 1):
+            label = p.get("label") or p.get("cwd") or ""
+            print(f"{i:<3} {('*' if p.get('focused') else ''):<5} {str(p.get('agent_status','')):<10} {str(p.get('agent','')):<8} {str(p.get('pane_id','')):<22} {label}")
+
+
+def resolve_pane(sock, target):
+    panes = pane_list(sock)
+    if not panes:
+        raise SystemExit("no panes")
+    if target in ("", "focused", "."):
+        focused = [p for p in panes if p.get("focused")]
+        return (focused or panes)[0]
+    if target.isdigit():
+        idx = int(target) - 1
+        if 0 <= idx < len(panes):
+            return panes[idx]
+    exact = [p for p in panes if target in (p.get("pane_id"), p.get("terminal_id"))]
+    if len(exact) == 1:
+        return exact[0]
+    fuzzy = []
+    for p in panes:
+        hay = " ".join(str(p.get(k, "")) for k in ("pane_id", "terminal_id", "cwd", "label", "agent", "agent_status"))
+        if target in hay:
+            fuzzy.append(p)
+    if len(fuzzy) == 1:
+        return fuzzy[0]
+    if len(fuzzy) > 1:
+        raise SystemExit(f"ambiguous target {target!r}; matched {len(fuzzy)} panes")
+    raise SystemExit(f"pane target not found: {target}")
+
+
+def cmd_read(args):
+    _name, sock = one_socket(args.session)
+    pane = resolve_pane(sock, args.target or "focused")
+    source = args.source.replace("-", "_")
+    res = request(sock, "pane.read", {"pane_id": pane["pane_id"], "source": source, "lines": args.lines, "format": "text"})
+    if args.json:
+        print_json(res)
+    else:
+        read = res.get("read", {})
+        sys.stdout.write(read.get("text", ""))
+        if not read.get("text", "").endswith("\n"):
+            sys.stdout.write("\n")
+
+
+def cmd_steer(args):
+    _name, sock = one_socket(args.session)
+    target = args.target or "focused"
+    message = " ".join(args.message).strip()
+    if not message:
+        raise SystemExit("steer requires a message")
+    pane = resolve_pane(sock, target)
+    candidates = []
+    for key in ("pane_id", "terminal_id"):
+        val = pane.get(key)
+        if val:
+            candidates.append(val)
+    if target not in candidates and target not in ("focused", "."):
+        candidates.insert(0, target)
+    last_err = None
+    for candidate in candidates:
+        try:
+            res = request(sock, "agent.send", {"target": candidate, "message": message})
+            if args.json:
+                print_json(res)
+            else:
+                print(f"sent target={candidate} pane={pane.get('pane_id')}")
+            return
+        except Exception as exc:
+            last_err = exc
+    raise SystemExit(f"agent.send failed: {last_err}")
+
+
+def cmd_status(args):
+    if args.json:
+        host = {
+            "hostname": run_text(["hostname"]),
+            "uptime": run_text(["uptime"]),
+            "tmux_sessions": run_text(["tmux", "list-sessions", "-F", "#{session_name}:#{session_windows}w #{session_activity_string}"]).splitlines(),
+        }
+        summaries = []
+        for name, path, ok in session_sockets(args.session):
+            entry = {"session": name, "socket": str(path), "present": ok}
+            if ok:
+                try:
+                    entry["workspaces"] = workspace_list(path)
+                    entry["agents"] = agent_list(path)
+                except Exception as exc:
+                    entry["error"] = str(exc)
+            summaries.append(entry)
+        print_json({"host": host, "herdr": summaries})
+        return
+    print(run_text(["hostname"]))
+    print(run_text(["uptime"]))
+    print("tmux:")
+    tmux = run_text(["tmux", "list-sessions", "-F", "#{session_name}:#{session_windows}w #{session_activity_string}"])
+    print(tmux if tmux else "  (none)")
+    print("herdr:")
+    print_summary(args)
+
+
+def main():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--session", default="")
+    parser.add_argument("--lines", type=int, default=120)
+    parser.add_argument("--source", default="recent-unwrapped")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("cmd")
+    parser.add_argument("target", nargs="?", default="focused")
+    parser.add_argument("message", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+
+    if args.cmd == "status":
+        cmd_status(args)
+    elif args.cmd == "sessions":
+        print_sessions(args)
+    elif args.cmd == "summary":
+        print_summary(args)
+    elif args.cmd in ("workspaces", "agents", "panes"):
+        print_table(args, args.cmd)
+    elif args.cmd == "read":
+        cmd_read(args)
+    elif args.cmd == "steer":
+        if args.message and args.message[0] == "--":
+            args.message = args.message[1:]
+        cmd_steer(args)
+    else:
+        raise SystemExit(f"unknown command: {args.cmd}")
+
+
+if __name__ == "__main__":
+    main()
+PY
+}
+
+remote_args=(--lines "$LINES" --source "$SOURCE")
+if [[ -n "$SESSION" ]]; then remote_args+=(--session "$SESSION"); fi
+if [[ "$JSON_OUT" -eq 1 ]]; then remote_args+=(--json); fi
+remote_args+=("$CMD" "$@")
+
+ssh "${SSH_OPTS[@]}" "$TARGET" python3 - "${remote_args[@]}" <<<"$(python_payload)"

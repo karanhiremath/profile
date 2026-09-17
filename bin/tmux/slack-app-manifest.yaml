@@ -1,0 +1,33 @@
+# Slack App Manifest — tmux-idle-watch notifications
+# Import at: https://api.slack.com/apps?new_app=1 → "From a manifest"
+#
+# After creating:
+#   1. Install to workspace
+#   2. Copy the Incoming Webhook URL
+#   3. export TMUX_IDLE_SLACK_WEBHOOK="https://hooks.slack.com/services/T.../B.../xxx"
+
+display_information:
+  name: tmux-idle-watch
+  description: Alerts when tmux panes are idle and awaiting input
+  background_color: "#1a1b26"
+  long_description: |
+    Monitors tmux sessions for idle panes (shell prompt with no activity)
+    and sends a notification so you know when a long-running task has
+    finished or a session needs attention.
+
+features:
+  bot_user:
+    display_name: tmux-idle-watch
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - incoming-webhook
+
+settings:
+  incoming_webhooks:
+    - channel: "#tmux-alerts"
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

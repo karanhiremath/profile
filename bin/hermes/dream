@@ -76,7 +76,7 @@ if [ -d "$dream_root" ]; then
   dream_root="$(cd -- "$dream_root" && pwd -P)"
 fi
 tmux_session="${DREAM_TMUX_SESSION:-dream-sandbox}"
-image_tag="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/dream-python-node:dev}"
+image_tag="${HERMES_SANDBOX_IMAGE:-localhost/hermes-agent/python-node:dev}"
 
 run() {
   if [ "$dry_run" -eq 1 ]; then
@@ -157,7 +157,7 @@ fi
 if have podman; then
   if [ "$build_image" = "yes" ] || { [ "$build_image" = "auto" ] && ! podman_image_exists; }; then
     if [ -x "$repo_path/scripts/build-sandbox-image.sh" ]; then
-      run "$repo_path/scripts/build-sandbox-image.sh" dream-python-node
+      run "$repo_path/scripts/build-sandbox-image.sh" python-node-fedora
     else
       echo "dream: image builder missing; skipping: $repo_path/scripts/build-sandbox-image.sh" >&2
     fi
