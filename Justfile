@@ -101,6 +101,15 @@ obsidian:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/obsidian/install
 
+# Install/upgrade read-only notes planning + repo-context CLIs; no cron/config activation.
+agentic-inspect:
+    ./bin/agentic-sync/install-inspect
+
+# Hermetic fixture tests (no real remotes or home configuration).
+test-agentic-inspect:
+    uv run --project bin/agentic-sync/runtime pytest bin/agentic-sync/runtime/tests -q
+    uv run --project bin/agentic-sync/runtime ruff check bin/agentic-sync/runtime
+
 # Personal agent-config sync (symlinks + pull-only cron). Safe on the work Mac.
 agentic-sync:
     #!/usr/bin/env bash

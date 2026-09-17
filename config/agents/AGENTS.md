@@ -19,8 +19,21 @@ Synced read-only from `profile` via `agentic-sync`.
 - Bash: `set -euo pipefail`, support `--help`. Write durable scripts; don't run
   multi-step work as inline one-liners.
 - Every CLI tool ships `<tool> upgrade` (self-update) and bash+zsh completions.
-- Human-readable output: real newlines, progress, clean tables — never raw/escaped JSON.
+- CLI stdout is structured JSON/NDJSON/YAML only; human diagnostics go to stderr.
+  Side-channel events must be redacted and must not contaminate stdout.
 - Research existing OSS before building custom.
+
+## Repo-context routing
+- Before source changes, use `repo-context inspect` with the private registry from
+  `REPO_CONTEXT_REGISTRY`, an exact repo/route, a bounded JSON proposal and an
+  explicit checkout root. `--refresh` reads GitHub metadata; it never fetches/pulls.
+- Read returned guidance and closer repo instructions, then resolve placement and
+  competing branches/PRs. Missing evidence is not an all-clear; oracle output is
+  never approval to mutate, publish or grant permissions.
+- The shared registry is the route inventory across harnesses. Do not duplicate
+  private repo lists in public tooling or overwrite existing specialist agents.
+- Missing CLI/registry: surface the bootstrap gap; no silent bypass. Generic
+  installation and schema: `bin/agentic-sync/README.md` in the tooling checkout.
 
 ## Git
 - Commit messages: imperative mood, name the affected component.

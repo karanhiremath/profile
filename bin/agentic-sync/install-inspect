@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Install/upgrade ONLY the read-only CLI package. No cron or config links.
+set -euo pipefail
+
+case "${1:-}" in
+  --help|-h)
+    echo 'Usage: bin/agentic-sync/install-inspect [--upgrade]' >&2
+    echo 'Installs agentic-sync-notes and repo-context with uv; no scheduler or profile activation.' >&2
+    exit 0 ;;
+  ''|--upgrade) ;;
+  *) echo 'invalid argument' >&2; exit 2 ;;
+esac
+[[ $# -le 1 ]] || { echo 'too many arguments' >&2; exit 2; }
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+command -v uv >/dev/null 2>&1 || { echo 'uv is required' >&2; exit 2; }
+# uv diagnostics stay off the machine-payload channel.
+uv tool install --upgrade --editable "${root}/runtime" >&2
+printf '%s\n' '{"schema_version":1,"state":"installed","commands":["agentic-sync-notes","repo-context"],"scheduler_enabled":false}'

@@ -16,6 +16,18 @@
 
 set -euo pipefail
 
+# The notes namespace is inspection-only and must bypass host.env sourcing,
+# legacy defaults, link deployment and cron code entirely.
+if [[ "${1:-}" == "notes" ]]; then
+  shift
+  if ! command -v agentic-sync-notes >/dev/null 2>&1; then
+    echo 'agentic-sync: run bin/agentic-sync/install-inspect first' >&2
+    echo '{"schema_version":1,"operation":"agentic-sync.notes","state":"rejected","reason":"inspector_not_installed"}'
+    exit 2
+  fi
+  exec agentic-sync-notes "$@"
+fi
+
 DEFAULT_REPO_URL="https://github.com/karanhiremath/profile.git"
 DEFAULT_REPO_DIR="${HOME}/src/profile"
 WORK_REPO_DIR="${HOME}/src/karan.hiremath"
@@ -37,6 +49,7 @@ usage() {
 Usage: agentic-sync [options] [command]
 
 Commands:
+  notes ...       JSON-only status/plan/run --dry-run (install-inspect first)
   run             pull repo if clean, then apply symlinks (default)
   status          print repo/link/cron status
   pull            clone/fetch/ff-only pull repo; skip dirty worktrees

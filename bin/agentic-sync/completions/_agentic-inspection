@@ -1,0 +1,15 @@
+#compdef repo-context agentic-sync-notes
+# Add this directory to fpath before compinit; no automatic shell edits.
+case "$service" in
+  repo-context)
+    _arguments '1:command:(inspect routes)' \
+      '--registry[Registry JSON]:file:_files' '--repo[Exact owner/name]:repository:' \
+      '--route[Registered alias]:route:' '--proposal-file[Proposal JSON]:file:_files' \
+      '--checkout[Explicit root]:directory:_files -/' '--refresh[Read GitHub metadata]' \
+      '--audience[Output boundary]:audience:(private public)' \
+      '--format[Payload format]:format:(json)' '--help[JSON help]' ;;
+  *)
+    _arguments '1:command:(status plan run)' '--dry-run[Inspection only]' \
+      '--config[Policy JSON]:file:_files' '--checkout[Explicit root]:directory:_files -/' \
+      '--format[Payload format]:format:(json)' '--help[JSON help]' ;;
+esac
