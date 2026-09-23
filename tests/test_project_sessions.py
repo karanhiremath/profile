@@ -131,11 +131,13 @@ raise SystemExit(0)
         self.assertEqual([event["kind"] for event in events], ["pm_started", "pm_attached"])
         self.assertIn("new-session -d -s a-pm", self.tmux_log.read_text())
 
-    def test_pm_attaches_to_existing_registered_session(self):
-        self.tmux_state.write_text("a-pm\n")
-        self.run_script("pm", "alpha")
+    def test_pl_attaches_to_existing_registered_session(self):
+        # interactive `pm` launches in-pane and never creates/switches tmux;
+        # attaching an existing registered session is the `pl` path.
+        self.tmux_state.write_text("a-impl\n")
+        self.run_script("pl", "alpha")
         log = self.tmux_log.read_text()
-        self.assertIn("attach-session -t a-pm", log)
+        self.assertIn("attach-session -t a-impl", log)
         self.assertNotIn("new-session", log)
 
     def test_unknown_project_is_actionable(self):
@@ -257,6 +259,204 @@ class LlmFlagOverrideTest(unittest.TestCase):
                 module.apply_llm_flags(args)
         self.assertIn("ignored", err.getvalue())
         self.assertEqual(os.environ.get("HERMES_AGENT_LLM_MODEL", ""), "")
+
+
+class RegistryAutofixUnitTest(unittest.TestCase):
+    """Unit tests for registry YAML parse repair + legacy schema normalization."""
+
+    BROKEN_SCALAR = (
+        "name: lane-x\n"
+        "status: REDIRECTED — Karan corrected the routing (2026-09-16 21:2x): \"No that should go to the breaker\" / \"The dreamer\" -> belongs elsewhere\n"
+        "workdir: /tmp\n"
+    )
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.registry = Path(self.tmp.name) / "projects"
+        self.registry.mkdir()
+        module = load_sessions_module()
+        self.module = module
+        module.REPAIR_LOG.clear()
+        module.NORMALIZATION_LOG.clear()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, name: str, text: str) -> Path:
+        path = self.registry / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_unquoted_colon_plain_scalar_is_repaired_in_place(self):
+        path = self._write("lane-x.yaml", self.BROKEN_SCALAR)
+        data = self.module.load_registry(path)
+        self.assertEqual(data["name"], "lane-x")
+        self.assertIn("No that should go to the breaker", data["status"])
+        self.assertIn("-> belongs elsewhere", data["status"])
+        # repaired on disk, parseable by plain yaml too, backup holds the original
+        reparsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        self.assertIn("No that should go to the breaker", reparsed["status"])
+        backups = list(self.registry.glob("lane-x.yaml.repair-bak-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertIn("status: REDIRECTED", backups[0].read_text(encoding="utf-8"))
+        self.assertEqual(self.module.REPAIR_LOG[0]["path"], str(path))
+
+    def test_repair_handles_multiple_offending_lines(self):
+        text = (
+            "name: lane-y\n"
+            "a: one: two\n"
+            "b: three: four\n"
+        )
+        path = self._write("lane-y.yaml", text)
+        data = self.module.load_registry(path)
+        self.assertEqual(data["a"], "one: two")
+        self.assertEqual(data["b"], "three: four")
+        # repairs accumulate in memory and persist once per file write
+        self.assertEqual(len(self.module.REPAIR_LOG), 1)
+        self.assertEqual(len(list(self.registry.glob("lane-y.yaml.repair-bak-*"))), 1)
+
+    def test_tab_indentation_is_repaired(self):
+        path = self._write("lane-tabs.yaml", "name: lane-tabs\nworkdir: /tmp\ntmux:\n\tpm_session: x-pm\n")
+        data = self.module.load_registry(path)
+        self.assertEqual(data["tmux"]["pm_session"], "x-pm")
+        self.assertNotIn("\t", path.read_text(encoding="utf-8"))
+
+    def test_unrepairable_yaml_fails_with_precise_message(self):
+        path = self._write("lane-bad.yaml", "name: lane-bad\nflow: [1, 2\n")
+        with self.assertRaises(SystemExit) as ctx:
+            self.module.load_registry(path)
+        message = str(ctx.exception)
+        self.assertIn(str(path), message)
+        self.assertIn("line", message)
+        self.assertIn("hint", message)
+        self.assertIn("autofix", message)
+        self.assertEqual(list(self.registry.glob("lane-bad.yaml.repair-bak-*")), [])
+
+    def test_valid_registry_is_not_modified(self):
+        path = self._write("lane-ok.yaml", "name: lane-ok\nworkdir: /tmp\n")
+        before = path.read_bytes()
+        self.module.load_registry(path)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(list(self.registry.glob("lane-ok.yaml.repair-bak-*")), [])
+        self.assertEqual(self.module.REPAIR_LOG, [])
+
+    def test_autofix_disabled_leaves_file_untouched(self):
+        path = self._write("lane-nofix.yaml", self.BROKEN_SCALAR)
+        before = path.read_bytes()
+        with unittest.mock.patch.dict(os.environ, {self.module.REGISTRY_AUTOFIX_ENV: "0"}):
+            with self.assertRaises(SystemExit) as ctx:
+                self.module.load_registry(path)
+        self.assertIn("autofix is disabled", str(ctx.exception))
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_schema_is_normalized_in_memory_only(self):
+        path = self._write(
+            "legacy.yaml",
+            "name: legacy-lane\n"
+            "pm_profile: legacy-pm\n"
+            "sessions:\n"
+            "  pm_session: legacy-pm\n"
+            "  pl_session: legacy-impl\n"
+            "bus: agentic/buses/legacy-events.jsonl\n"
+            "workdir: /tmp\n",
+        )
+        before = path.read_bytes()
+        data = self.module.load_registry(path)
+        # canonical keys materialize in memory
+        self.assertEqual(data["pm"]["profile"], "legacy-pm")
+        self.assertEqual(data["tmux"]["pm_session"], "legacy-pm")
+        self.assertEqual(data["tmux"]["pl_session"], "legacy-impl")
+        self.assertIn("pm_action_required", data["event_bus"]["event_types"])
+        self.assertTrue(data["event_bus"]["publish_paths"])
+        # file on disk untouched (lane-owner migration stays explicit)
+        self.assertEqual(path.read_bytes(), before)
+        # normalized bus path is anchored at the registry repo root
+        publish = data["event_bus"]["publish_paths"][0]["path"]
+        self.assertTrue(Path(publish).is_absolute())
+        self.assertEqual(self.module.NORMALIZATION_LOG[str(path)][0], "pm_profile -> pm.profile")
+
+    def test_doctor_repairs_broken_registry_end_to_end(self):
+        self._write("lane-e2e.yaml", self.BROKEN_SCALAR)
+        env = {
+            **os.environ,
+            "HERMES_PROJECT_REGISTRY_PATH": str(self.registry),
+            "HERMES_AGENT_PROFILE_PATH": str(self.registry),
+            "HERMES_AGENTS_BIN": str(Path(self.tmp.name) / "agents"),
+            "PATH": f"{Path(self.tmp.name) / 'bin'}:{os.environ.get('PATH', '')}",
+        }
+        (Path(self.tmp.name) / "agents").write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(Path(self.tmp.name) / "agents", 0o755)
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "doctor"], env=env, text=True, capture_output=True,
+        )
+        # CLI pipeline contract: stdout is machine payload only, repairs are stderr diagnostics
+        value = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 0)
+        self.assertTrue(value["ok"])
+        self.assertEqual(len(value["repairs"]), 1)
+        self.assertTrue(value["autofix"])
+        self.assertIn("registry-autofix", proc.stderr)
+        repaired = yaml.safe_load((self.registry / "lane-e2e.yaml").read_text(encoding="utf-8"))
+        self.assertIn("No that should go to the breaker", repaired["status"])
+
+    def test_doctor_no_autofix_reports_without_repairing(self):
+        self._write("lane-ro.yaml", self.BROKEN_SCALAR)
+        env = {
+            **os.environ,
+            "HERMES_PROJECT_REGISTRY_PATH": str(self.registry),
+            "HERMES_AGENT_PROFILE_PATH": str(self.registry),
+            "HERMES_AGENTS_BIN": str(Path(self.tmp.name) / "agents"),
+            "PATH": f"{Path(self.tmp.name) / 'bin'}:{os.environ.get('PATH', '')}",
+        }
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "doctor", "--no-autofix"], env=env, text=True, capture_output=True,
+        )
+        value = json.loads(proc.stdout)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(value["ok"])
+        self.assertFalse(value["autofix"])
+        self.assertIn("registry YAML failed to parse", "\n".join(value["errors"]))
+        self.assertNotIn("repaired", proc.stderr)
+        self.assertIn("status: REDIRECTED", (self.registry / "lane-ro.yaml").read_text(encoding="utf-8"))
+
+    def test_doctor_survives_unrepairable_file_and_reports_it(self):
+        self._write("lane-dead.yaml", "name: lane-dead\nflow: [1, 2\n")
+        self._write("lane-live.yaml", "name: lane-live\nworkdir: /tmp\n")
+        env = {
+            **os.environ,
+            "HERMES_PROJECT_REGISTRY_PATH": str(self.registry),
+            "HERMES_AGENT_PROFILE_PATH": str(self.registry),
+            "HERMES_AGENTS_BIN": str(Path(self.tmp.name) / "agents"),
+            "PATH": f"{Path(self.tmp.name) / 'bin'}:{os.environ.get('PATH', '')}",
+        }
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "doctor"], env=env, text=True, capture_output=True,
+        )
+        value = json.loads(proc.stdout)
+        self.assertFalse(value["ok"])
+        self.assertIn("lane-dead", "\n".join(value["errors"]))
+        self.assertIn("lane-live", [row["name"] for row in value["projects"]])
+
+    def test_names_repairs_and_continues(self):
+        self._write(
+            "lane-names.yaml",
+            "name: lane-names\n"
+            "status: REDIRECTED — corrected (2026-09-16 21:2x): \"No that should go to the breaker\"\n"
+            "workdir: /tmp\n",
+        )
+        env = {
+            **os.environ,
+            "HERMES_PROJECT_REGISTRY_PATH": str(self.registry),
+            "HERMES_AGENT_PROFILE_PATH": str(self.registry),
+            "HERMES_AGENTS_BIN": str(Path(self.tmp.name) / "agents"),
+            "PATH": f"{Path(self.tmp.name) / 'bin'}:{os.environ.get('PATH', '')}",
+        }
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "names"], env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("lane-names", proc.stdout.splitlines())
+        self.assertIn("registry-autofix", proc.stderr)
 
 
 if __name__ == "__main__":

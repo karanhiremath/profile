@@ -79,10 +79,223 @@ def slugify(name: str) -> str:
     return slug or "project"
 
 
+# ---------------------------------------------------------------------------
+# Registry YAML hardening: parse repair + legacy schema normalization.
+#
+# Failure classes handled automatically (backup + atomic rewrite + stderr
+# notice + REPAIR_LOG):
+#   1. unquoted ': ' inside a plain scalar (yaml: "mapping values are not
+#      allowed here") — e.g. `status: REDIRECTED (2026-09-16): "note"`
+#   2. tab characters in indentation (yaml: "found character '\\t' ...")
+# Anything else fails closed with a precise path/line/column message and a
+# remediation hint instead of a raw traceback.
+#
+# Legacy key shapes (`pm_profile`, `sessions.pm*`, bare `bus:`) are normalized
+# in memory only — files on disk are untouched and doctor lists the
+# normalizations so registry owners can migrate.
+# ---------------------------------------------------------------------------
+
+REGISTRY_AUTOFIX_ENV = "HERMES_REGISTRY_AUTOFIX"
+REPAIR_LOG: list[dict[str, str]] = []
+NORMALIZATION_LOG: dict[str, list[str]] = {}
+
+_KEY_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<key>[^\s:#][^:]*?):(?P<sep>[ \t]+)(?P<value>\S.*)$")
+_BLOCK_STARTERS = set("\"'>&|*[!#{}")
+
+
+def autofix_enabled() -> bool:
+    return str(os.environ.get(REGISTRY_AUTOFIX_ENV, "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _yaml_error_location(exc: BaseException) -> tuple[int | None, int | None]:
+    mark = getattr(exc, "problem_mark", None)
+    if mark is not None:
+        return mark.line + 1, mark.column + 1
+    return None, None
+
+
+def _registry_parse_message(path: Path, exc: BaseException, note: str) -> str:
+    line, col = _yaml_error_location(exc)
+    where = f"line {line}, column {col}" if line else "unknown location"
+    raw = getattr(exc, "problem", None) or getattr(exc, "note", None) or getattr(exc, "context", None) or str(exc)
+    text = str(raw).strip()
+    problem = text.splitlines()[0] if text else type(exc).__name__
+    source_line = ""
+    if line:
+        try:
+            source_line = "\n  > " + str(path.read_text(encoding="utf-8", errors="replace").splitlines()[line - 1])[:200]
+        except (OSError, IndexError):
+            source_line = ""
+    return (
+        f"ERROR: registry YAML failed to parse: {path}\n"
+        f"  {where}: {problem}{source_line}\n"
+        f"  {note}\n"
+        "  hint: quote the offending scalar or convert it to a block scalar (key: >-); "
+        "keep registry values with ': ' inside them quoted or block-styled"
+    )
+
+
+def _repair_unquoted_colon(text: str, line_no: int) -> str | None:
+    """Convert a plain scalar that contains ': ' into a folded block scalar.
+
+    `key: some text: with a colon" -> key: >-\n    key: some text: with a colon"
+    Subsequent deeper-indented non-key lines are treated as continuation of the
+    same plain scalar. Returns None when the line does not match the known shape.
+    """
+    lines = text.split("\n")
+    idx = line_no - 1
+    if idx < 0 or idx >= len(lines):
+        return None
+    match = _KEY_LINE_RE.match(lines[idx])
+    if not match:
+        return None
+    indent, key, value = match.group("indent"), match.group("key"), match.group("value").rstrip()
+    if not value or value[0] in _BLOCK_STARTERS:
+        return None
+    body_indent = indent.replace("\t", "  ") + "  "
+    cont: list[str] = []
+    j = idx + 1
+    while j < len(lines):
+        nxt = lines[j]
+        if not nxt.strip():
+            break
+        nxt_indent = len(nxt) - len(nxt.lstrip(" "))
+        if nxt_indent <= len(indent.replace("\t", "  ")):
+            break
+        if _KEY_LINE_RE.match(nxt):
+            break
+        cont.append(nxt)
+        j += 1
+    block = [f"{indent}{key}: >-", body_indent + value]
+    for line in cont:
+        cont_indent = len(line) - len(line.lstrip(" "))
+        block.append(line if cont_indent >= len(body_indent) else body_indent + line.lstrip())
+    return "\n".join(lines[:idx] + block + lines[idx + 1 + len(cont):])
+
+
+def _repair_tab_indentation(text: str) -> str:
+    """Expand leading-tab indentation to two spaces per tab (YAML forbids tab indentation)."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.lstrip(" \t")
+        lead = line[: len(line) - len(stripped)]
+        out.append(lead.replace("\t", "  ") + stripped if "\t" in lead else line)
+    return "\n".join(out)
+
+
+def _repair_registry_text(path: Path, text: str, original: str, exc: yaml.YAMLError) -> str:
+    """Attempt known repairs; persist the first parseable result. Raises SystemExit otherwise."""
+    if not autofix_enabled():
+        raise SystemExit(_registry_parse_message(path, exc, "registry autofix is disabled (set HERMES_REGISTRY_AUTOFIX=1 to enable)"))
+    attempted: list[str] = []
+    for _ in range(4):
+        line, _col = _yaml_error_location(exc)
+        problem = str(getattr(exc, "problem", None) or "")
+        candidate: str | None = None
+        repair_kind = ""
+        if "mapping values are not allowed here" in problem and line:
+            repair_kind = "quoted-colon plain scalar -> folded block scalar"
+            candidate = _repair_unquoted_colon(text, line)
+        elif "found character" in problem and "\\t" in problem:
+            repair_kind = "tab indentation -> spaces"
+            candidate = _repair_tab_indentation(text)
+        if candidate is None or candidate == text:
+            break
+        try:
+            yaml.safe_load(candidate)
+        except (yaml.YAMLError, UnicodeDecodeError) as next_exc:
+            text, exc = candidate, next_exc
+            continue
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = path.with_name(f"{path.name}.repair-bak-{stamp}")
+        try:
+            backup.write_text(original, encoding="utf-8")
+            tmp = path.with_name(f".{path.name}.repair-tmp")
+            tmp.write_text(candidate, encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as write_exc:
+            raise SystemExit(f"ERROR: repaired registry text for {path} but could not write it: {write_exc}") from write_exc
+        notice = f"registry-autofix: repaired {path}: {repair_kind}; backup: {backup}"
+        print(notice, file=sys.stderr)
+        REPAIR_LOG.append({"path": str(path), "repair": repair_kind, "backup": str(backup)})
+        return candidate
+    raise SystemExit(_registry_parse_message(path, exc, "autofix: no known repair applied"))
+
+
+def normalize_registry_shape(data: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Map legacy registry key shapes onto the canonical schema, in memory only.
+
+    Legacy shapes (pre-2026-09 registries):
+      pm_profile: x            -> pm.profile
+      sessions: {pm_session: s, pl_session: p} / {pm: s, pl: p} -> tmux.{pm_session,pl_session}
+      bus: <repo-relative>     -> event_bus.publish_paths + default event_types
+    Relative legacy bus paths are anchored at the registry file's repo root.
+    """
+    notes: list[str] = []
+    if data.get("pm_profile") and not (data.get("pm") or {}).get("profile"):
+        pm = data.get("pm")
+        if not isinstance(pm, dict):
+            pm = data["pm"] = {}
+        pm["profile"] = str(data["pm_profile"])
+        notes.append("pm_profile -> pm.profile")
+    tmux = data.get("tmux") if isinstance(data.get("tmux"), dict) else None
+    sessions = data.get("sessions") if isinstance(data.get("sessions"), dict) else None
+    if sessions:
+        for legacy, canonical in (("pm_session", "pm_session"), ("pl_session", "pl_session"),
+                                  ("implementation_session", "implementation_session"),
+                                  ("pm", "pm_session"), ("pl", "pl_session")):
+            if legacy in sessions and not (tmux or {}).get(canonical):
+                if tmux is None:
+                    tmux = data["tmux"] = {}
+                tmux[canonical] = str(sessions[legacy])
+                notes.append(f"sessions.{legacy} -> tmux.{canonical}")
+    if "bus" in data and not isinstance(data.get("event_bus"), dict):
+        raw = str(data["bus"]).strip()
+        if raw:
+            resolved = Path(raw).expanduser()
+            if not resolved.is_absolute():
+                resolved = _repo_root_for(path) / resolved
+            data["event_bus"] = {
+                "publish_paths": [{"path": str(resolved)}],
+                "event_types": ["pm_started", "pm_attached", "project_lead_started",
+                                "project_lead_attached", "pm_action_required"],
+            }
+            notes.append("bus -> event_bus.publish_paths (+default event_types incl pm_action_required)")
+    if notes:
+        data["_normalizations"] = notes
+        key = str(path)
+        if key not in NORMALIZATION_LOG:
+            NORMALIZATION_LOG[key] = notes
+    return data
+
+
+def _repo_root_for(path: Path) -> Path:
+    directory = path.parent
+    for candidate in (directory, *directory.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return directory
+
+
 def load_registry(path: Path) -> dict[str, Any]:
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        original = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SystemExit(f"ERROR: cannot read registry {path}: {exc}") from exc
+    text = original
+    while True:
+        try:
+            data = yaml.safe_load(text) or {}
+            break
+        except yaml.YAMLError as exc:
+            if not autofix_enabled():
+                raise SystemExit(_registry_parse_message(path, exc, "registry autofix is disabled (set HERMES_REGISTRY_AUTOFIX=1 to enable)")) from exc
+            text = _repair_registry_text(path, text, original, exc)
+        except UnicodeDecodeError as exc:
+            raise SystemExit(_registry_parse_message(path, exc, "registry is not valid UTF-8; re-save it as UTF-8")) from exc
     if not isinstance(data, dict):
         raise SystemExit(f"ERROR: registry is not a mapping: {path}")
+    data = normalize_registry_shape(data, path)
     data.setdefault("name", path.stem)
     data["_path"] = str(path)
     return data
@@ -114,7 +327,7 @@ def find_project(name: str) -> dict[str, Any]:
     raise SystemExit(f"ERROR: no such Hermes project: {name}. Searched:\n  {searched}")
 
 
-def project_list() -> list[dict[str, str]]:
+def project_list(errors: list[str] | None = None) -> list[dict[str, str]]:
     if not registry_dirs():
         configured = "\n  ".join(str(path) for path in configured_registry_dirs())
         raise SystemExit(
@@ -125,7 +338,13 @@ def project_list() -> list[dict[str, str]]:
     seen: set[str] = set()
     for directory in registry_dirs():
         for path in sorted(directory.glob("*.y*ml")):
-            data = load_registry(path)
+            try:
+                data = load_registry(path)
+            except SystemExit as exc:
+                if errors is not None:
+                    errors.append(str(exc).strip())
+                    continue
+                raise
             if is_agent_profile(data):
                 continue
             name = str(data.get("name") or path.stem)
@@ -247,6 +466,7 @@ def doctor() -> tuple[dict[str, Any], bool]:
     available = registry_dirs()
     errors: list[str] = []
     warnings: list[str] = []
+    load_errors: list[str] = []
     if not available:
         errors.append(
             "no registry directory is available; set HERMES_PROJECT_REGISTRY_PATH or sync the registered project repo"
@@ -258,15 +478,28 @@ def doctor() -> tuple[dict[str, Any], bool]:
         errors.append(f"Hermes agents launcher is missing or not executable: {agents}")
     projects: list[dict[str, Any]] = []
     if available:
-        for row in project_list():
-            project = find_project(row["name"])
+        for row in project_list(errors=load_errors):
+            try:
+                project = find_project(row["name"])
+            except SystemExit as exc:
+                load_errors.append(str(exc).strip())
+                continue
             project_errors = validate_project(project)
-            projects.append({**row, "valid": not project_errors, "errors": project_errors})
+            projects.append({
+                **row,
+                "valid": not project_errors,
+                "errors": project_errors,
+                "normalizations": list(project.get("_normalizations") or []),
+            })
             warnings.extend(f"project {row['name']}: {error}" for error in project_errors)
-        if not projects:
+        if not projects and not load_errors:
             errors.append("registry directories contain no project YAML files")
+    errors.extend(load_errors)
     result = {
         "ok": not errors,
+        "autofix": autofix_enabled(),
+        "repairs": [dict(entry) for entry in REPAIR_LOG],
+        "normalization_count": sum(len(notes) for notes in NORMALIZATION_LOG.values()),
         "configured_registry_dirs": [str(path) for path in configured],
         "registry_dirs": [str(path) for path in available],
         "project_count": len(projects),
@@ -507,7 +740,8 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
     sub.add_parser("names")
-    sub.add_parser("doctor")
+    d = sub.add_parser("doctor")
+    d.add_argument("--no-autofix", action="store_true", help="report registry defects without repairing them")
     r = sub.add_parser("resolve")
     r.add_argument("project")
     for name in ("pm", "pl", "ensure-pm", "ensure-pl"):
@@ -527,6 +761,8 @@ def main(argv: list[str]) -> int:
             print(row["name"])
         return 0
     if args.cmd == "doctor":
+        if getattr(args, "no_autofix", False):
+            os.environ[REGISTRY_AUTOFIX_ENV] = "0"
         result, ok = doctor()
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if ok else 1
