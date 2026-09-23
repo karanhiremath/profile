@@ -12,8 +12,8 @@ Commands:
   project_sessions.py list
   project_sessions.py names
   project_sessions.py resolve <project>
-  project_sessions.py pm <project> [--dry-run] [--provider P] [--model M] [--thinking T]
-      Launch the PM TUI in the current pane (does not create/switch tmux sessions).
+  project_sessions.py pm <project> [--dry-run] [--surface cli|tui] [--provider P] [--model M] [--thinking T]
+      Launch or attach the registered PM session (does not switch tmux panes).
   project_sessions.py pl <project> [--dry-run] [--provider P] [--model M] [--thinking T]
   project_sessions.py ensure-pm <project> [--dry-run]
       Provision the registered PM tmux session (hostctl / non-interactive).
@@ -392,14 +392,17 @@ def agents_bin() -> str:
     return str(SCRIPT_DIR / "agents")
 
 
-def pm_launch_command(project: dict[str, Any]) -> str:
+def pm_launch_command(project: dict[str, Any], surface: str = "tui") -> str:
     pm = project.get("pm") or {}
-    if pm.get("command"):
+    if pm.get("command") and surface == "tui":
         return str(pm["command"])
     profile = pm.get("profile") or project.get("pm_profile")
     if not profile:
         raise SystemExit(f"ERROR: project {project.get('name')} has no pm.profile or pm.command")
-    return " ".join([shlex.quote(agents_bin()), "up", shlex.quote(str(profile)), "--surface", "tui"])
+    cmd = [agents_bin(), "up", str(profile), "--surface", surface]
+    if surface == "cli":
+        cmd.extend(["--", "--continue", "--cli"])
+    return " ".join(shlex.quote(part) for part in cmd)
 
 
 def tmux_exists(session: str) -> bool:
@@ -562,11 +565,32 @@ def attach_or_switch(session: str, dry_run: bool) -> int:
     return subprocess.call(cmd)
 
 
-def ensure_pm(project: dict[str, Any], dry_run: bool) -> tuple[str, bool]:
+def live_tui_target(profile: str, session: str) -> str | None:
+    try:
+        import alias_seat
+    except ImportError:
+        return None
+    return alias_seat.attach_target(profile, session)
+
+
+def ensure_pm(project: dict[str, Any], dry_run: bool, surface: str = "tui") -> tuple[str, bool]:
     session = session_name(project, "pm")
     created = False
+    pm = project.get("pm") or {}
+    profile = str(pm.get("profile") or project.get("pm_profile") or "")
+    if surface == "tui" and profile:
+        target = live_tui_target(profile, session)
+        if target:
+            emit_project_event(
+                project,
+                "pm_attached",
+                f"pm_attached manifest event: live TUI holds {profile}; attaching {target}.",
+                session,
+                dry_run,
+            )
+            return session, False
     if not tmux_exists(session):
-        launch = pm_launch_command(project)
+        launch = pm_launch_command(project, surface=surface)
         cwd = workdir(project)
         new_cmd = ["tmux", "new-session", "-d", "-s", session, "-c", str(cwd), launch]
         if dry_run:
@@ -623,41 +647,30 @@ def cmd_ensure(project_name: str, kind: str, dry_run: bool) -> int:
     print(json.dumps({"project": project.get("name"), "kind": kind, "session": session, "created": created}))
     return 0
 
+def cmd_pm(project_name: str, dry_run: bool, surface: str = "tui") -> int:
+    """Launch or attach the registered PM session for a project.
 
-def cmd_pm(project_name: str, dry_run: bool) -> int:
-    """Launch the registered PM TUI in the current pane.
-
-    Interactive ``pm`` must not create or switch tmux sessions. Hostctl
-    ``ensure-pm`` still provisions the registered session name.
+    Attaches a live TUI when one already holds the PM profile; otherwise
+    provisions the registered tmux session (ensure semantics) and attaches it.
+    Interactive ``pm`` attaches the current pane via tmux when outside tmux.
     """
     project = find_project(project_name)
     session = session_name(project, "pm")
-    launch = pm_launch_command(project)
-    cwd = workdir(project)
-    emit_project_event(
-        project,
-        "pm_attached",
-        (
-            f"pm_attached manifest event: in-pane PM TUI for project "
-            f"{project.get('name')} (logical session {session})."
-        ),
-        session,
-        dry_run,
-    )
-    if dry_run:
-        print(f"cd {shlex.quote(str(cwd))} && {launch}")
-        return 0
-    if not cwd.is_dir():
-        raise SystemExit(
-            f"ERROR: registered project workdir does not exist: {cwd}. "
-            "Fix the project registry or create the intended isolated worktree first."
-        )
-    try:
-        os.chdir(cwd)
-    except OSError as exc:
-        raise SystemExit(f"ERROR: cannot chdir to project workdir {cwd}: {exc}") from exc
-    os.execvp("bash", ["bash", "-c", launch])
-    return 1
+    pm = project.get("pm") or {}
+    profile = str(pm.get("profile") or project.get("pm_profile") or "")
+    if surface == "tui" and profile:
+        target = live_tui_target(profile, session)
+        if target:
+            emit_project_event(
+                project,
+                "pm_attached",
+                f"pm_attached manifest event: live TUI holds {profile}; attaching {target}.",
+                session,
+                dry_run,
+            )
+            return attach_or_switch(target, dry_run)
+    ensure_pm(project, dry_run, surface=surface)
+    return attach_or_switch(session, dry_run)
 
 
 def cmd_pl(project_name: str, dry_run: bool) -> int:
@@ -748,6 +761,8 @@ def main(argv: list[str]) -> int:
         p = sub.add_parser(name)
         p.add_argument("project")
         p.add_argument("--dry-run", action="store_true")
+        if name == "pm":
+            p.add_argument("--surface", choices=("cli", "tui"), default="tui")
         p.add_argument("--provider", dest="llm_provider", default="", help="launch-scoped provider (openai-codex, cursor, together, xai, ...)")
         p.add_argument("--model", dest="llm_model", default="", help="launch-scoped model; provider/ prefix splits when known")
         p.add_argument("--thinking", dest="llm_thinking", default="", help="launch-scoped thinking level (low, medium, high, xhigh)")
@@ -771,7 +786,7 @@ def main(argv: list[str]) -> int:
         return 0
     if args.cmd == "pm":
         apply_llm_flags(args)
-        return cmd_pm(args.project, args.dry_run)
+        return cmd_pm(args.project, args.dry_run, surface=args.surface)
     if args.cmd == "pl":
         apply_llm_flags(args)
         return cmd_pl(args.project, args.dry_run)

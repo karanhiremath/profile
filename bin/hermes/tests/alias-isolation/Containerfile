@@ -1,0 +1,7 @@
+FROM docker.io/library/alpine:3.20
+# Test harness only. Fleet *-s sandboxes stay nixos; do not copy this as a
+# default agent image. Never ubuntu.
+RUN apk add --no-cache bash python3 tmux coreutils procps
+WORKDIR /src
+COPY . /src/bin/hermes
+CMD ["bash", "/src/bin/hermes/tests/alias-isolation/inside.sh"]

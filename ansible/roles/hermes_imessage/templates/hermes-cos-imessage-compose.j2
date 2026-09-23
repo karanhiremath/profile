@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Managed by ~/src/profile Ansible role: hermes_imessage
+set -euo pipefail
+
+COMPOSE_DIR={{ profile_hermes_imessage_compose_dir | quote }}
+ENV_FILE={{ profile_hermes_imessage_env_file | quote }}
+
+if [ ! -f "$ENV_FILE" ]; then
+  echo "ERROR: missing BlueBubbles env file: $ENV_FILE" >&2
+  echo "Run: PROFILE_ALLOW_HOST_MUTATION=1 TAGS=hermes_imessage just ansible-apply" >&2
+  exit 1
+fi
+
+cd "$COMPOSE_DIR"
+
+if command -v podman-compose >/dev/null 2>&1; then
+  exec podman-compose -f compose.yml "$@"
+fi
+
+if command -v podman >/dev/null 2>&1; then
+  exec podman compose -f compose.yml "$@"
+fi
+
+echo "ERROR: podman-compose or 'podman compose' is required." >&2
+exit 1

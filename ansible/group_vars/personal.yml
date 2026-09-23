@@ -1,2 +1,6 @@
 ---
 profile_env: personal
+
+# Personal Mac hosts are eligible to act as the private iMessage bridge for the
+# CoS. Actual gateway secrets/service activation stay opt-in via inventory.local.yml.
+profile_hermes_imessage_enabled: true

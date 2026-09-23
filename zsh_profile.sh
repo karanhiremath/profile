@@ -75,7 +75,13 @@ path+=("$HOME/.cargo/bin")
 export PATH
 
 # Activate mise after PATH setup so its shims (node, pnpm, neovim) take precedence.
-command -v mise >/dev/null 2>&1 && eval "$(mise activate zsh)"
+# On fresh macOS login shells, ~/.zprofile may source this file before Homebrew
+# shellenv has added /opt/homebrew/bin, so use the Homebrew path as a fallback.
+if command -v mise >/dev/null 2>&1; then
+    eval "$(mise activate zsh)"
+elif [ -x /opt/homebrew/bin/mise ]; then
+    eval "$(/opt/homebrew/bin/mise activate zsh)"
+fi
 
 # omp (oh-my-pi) completions from the live CLI metadata.
 if command -v omp >/dev/null 2>&1; then

@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+# Mobile-friendly attach/launch for Hermes profile sessions.
+# The desktop herm-tui fork is a poor Termix/phone surface; *-m uses the
+# hermes CLI (resume last session) unless a live TUI already owns the home.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+HERMES_TOOLCHAIN_HOME="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}"
+PNPM_HOME="${PNPM_HOME:-$HERMES_TOOLCHAIN_HOME/pnpm}"
+export HERMES_TOOLCHAIN_HOME PNPM_HOME
+export PATH="$HOME/.local/bin:$HERMES_TOOLCHAIN_HOME/bun/bin:$PNPM_HOME/bin:$HERMES_TOOLCHAIN_HOME/venv/bin:$PATH"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fork-env.sh"
+
+PY="${HERMES_PYTHON:-$HERMES_TOOLCHAIN_HOME/venv/bin/python}"
+[ -x "$PY" ] || PY="python3"
+
+usage() {
+  cat <<'EOF'
+Mobile attach/launch for a Hermes profile session (Termix / phone).
+
+Usage:
+  herm-tui-m cos|cosw|notes|notesw [opts]
+  herm-tui-m pm|pl <project> [opts]
+  cos-m | cosw-m | notes-m | notesw-m | pm-m <project> | pl-m <project>
+
+  notes-m     personal-notes-steward  (tmux notes:m, ~/src/notes)
+  notesw-m    work-notes-steward      (tmux notesw:m; work host + profile)
+  cos-m       chief-of-staff          (tmux cos)
+  cosw-m      chief-of-staff-work     (tmux cosw; work host + profile)
+  pm-m <p>    registered project PM   (CLI surface if it must start)
+  pl-m <p>    registered project lead (tmux attach only)
+
+Options:
+  --cli         hermes chat --continue --cli (default when no live TUI)
+  --tui         compact herm --continue (only if this home has no live TUI)
+  --attach      tmux attach only; do not launch
+  --here        run in this pane (no tmux create/switch)
+  --dry-run     print the plan and exit
+  -h, --help    show this help
+
+If a live herm-tui already holds HERMES_HOME, *-m attaches that pane
+(desktop :0 or whichever pane holds the lock), never window :m blindly.
+A second TUI pane kills the gateway pipe. Work profiles are resolved,
+never created, on a personal host.
+EOF
+}
+
+log() { printf 'herm-tui-m: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+profile_exists() {
+  "$PY" "$SCRIPT_DIR/hermes_agents.py" resolve "$1" >/dev/null 2>&1
+}
+
+resolve_named_profile() {
+  local alias="$1" candidate
+  case "$alias" in
+    cos) candidate="chief-of-staff" ;;
+    cosw) candidate="chief-of-staff-work" ;;
+    notes) candidate="personal-notes-steward" ;;
+    notesw)
+      for candidate in work-notes-steward notes-steward-work; do
+        if profile_exists "$candidate"; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  profile_exists "$candidate" || return 1
+  printf '%s\n' "$candidate"
+}
+
+session_for() {
+  case "$1" in
+    cos|cosw|notes|notesw) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+workdir_for() {
+  local alias="$1" dir
+  case "$alias" in
+    notes)
+      dir="${PERSONAL_NOTES_ROOT:-$HOME/src/notes}"
+      [ -d "$dir" ] || dir="$HOME"
+      ;;
+    notesw)
+      dir="${WORK_NOTES_ROOT:-}"
+      if [ -n "$dir" ] && [ -d "$dir" ]; then
+        :
+      else
+        dir="$HOME"
+      fi
+      ;;
+    *)
+      dir="$HOME"
+      ;;
+  esac
+  printf '%s\n' "$dir"
+}
+
+tmux_exists() {
+  command -v tmux >/dev/null 2>&1 && tmux has-session -t "$1" 2>/dev/null
+}
+
+window_exists() {
+  tmux list-windows -t "$1" -F '#{window_name}' 2>/dev/null | grep -Fxq "$2"
+}
+
+pane_cmd() {
+  tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null || true
+}
+
+is_shell_cmd() {
+  case "$1" in
+    zsh|bash|fish|sh|nu|"") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+runtime_home_for() {
+  local home runtime
+  home="$("$PY" "$SCRIPT_DIR/hermes_agents.py" materialize "$1")"
+  runtime="$(sed -n '1p' "$home/active_profile" 2>/dev/null || true)"
+  if [ -n "$runtime" ] && [ "$runtime" != "default" ] && [ -d "$home/profiles/$runtime" ]; then
+    printf '%s\n' "$home/profiles/$runtime"
+  else
+    printf '%s\n' "$home"
+  fi
+}
+
+tui_lock_held() {
+  "$PY" "$SCRIPT_DIR/alias_seat.py" lock-pid "$1" >/dev/null 2>&1
+}
+
+probe_existing_lock() {
+  tui_lock_held "$1"
+}
+
+live_tui_target() {
+  local profile="$1" session="$2"
+  "$PY" "$SCRIPT_DIR/alias_seat.py" attach-target "$profile" "$session" 2>/dev/null || true
+}
+
+attach_or_switch() {
+  local target="$1"
+  if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$target"
+  else
+    tmux attach-session -t "$target"
+  fi
+}
+
+build_launch() {
+  LAUNCH=("$SCRIPT_DIR/agents" up "$1" --surface "$2" --)
+  if [ "$2" = "cli" ]; then
+    LAUNCH+=(--continue --cli)
+  else
+    LAUNCH+=(--continue --no-splash)
+  fi
+}
+
+print_launch() {
+  build_launch "$1" "$2"
+  printf '%s\n' "${LAUNCH[*]}"
+}
+
+ALIAS=""
+SURFACE="cli"
+ATTACH_ONLY=0
+HERE=0
+DRY=0
+PROJECT=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    --cli) SURFACE="cli"; shift ;;
+    --tui) SURFACE="tui"; shift ;;
+    --attach) ATTACH_ONLY=1; shift ;;
+    --here) HERE=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      if [ -z "$ALIAS" ]; then
+        ALIAS="$1"
+        shift
+        continue
+      fi
+      if [ -z "$PROJECT" ] && { [ "$ALIAS" = "pm" ] || [ "$ALIAS" = "pl" ]; }; then
+        PROJECT="$1"
+        shift
+        continue
+      fi
+      die "unexpected argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$ALIAS" ] || { usage >&2; exit 2; }
+
+if [ "$ALIAS" = "pm" ] || [ "$ALIAS" = "pl" ]; then
+  [ -n "$PROJECT" ] || die "$ALIAS-m needs a registered project name"
+  if [ "$DRY" -eq 1 ]; then
+    printf 'alias=%s\n' "$ALIAS"
+    printf 'project=%s\n' "$PROJECT"
+    printf 'surface=%s\n' "$SURFACE"
+    printf 'action=project_sessions\n'
+    if [ "$ALIAS" = "pm" ]; then
+      printf 'command=%s\n' "$PY $SCRIPT_DIR/project_sessions.py pm $PROJECT --surface $SURFACE"
+    else
+      printf 'command=%s\n' "$PY $SCRIPT_DIR/project_sessions.py pl $PROJECT"
+    fi
+    exit 0
+  fi
+  if [ "$ALIAS" = "pm" ]; then
+    exec "$PY" "$SCRIPT_DIR/project_sessions.py" pm "$PROJECT" --surface "$SURFACE"
+  fi
+  exec "$PY" "$SCRIPT_DIR/project_sessions.py" pl "$PROJECT"
+fi
+
+case "$ALIAS" in
+  cos|cosw|notes|notesw) ;;
+  *) die "unknown target: $ALIAS (use cos|cosw|notes|notesw|pm|pl)" ;;
+esac
+
+PROFILE=""
+if ! PROFILE="$(resolve_named_profile "$ALIAS")"; then
+  case "$ALIAS" in
+    notesw)
+      die "work notes steward profile not found (tried work-notes-steward, notes-steward-work). Work lane is unavailable on this host; the profile lives on a work-authorized checkout."
+      ;;
+    cosw)
+      die "chief-of-staff-work profile not found. Work CoS is unavailable on this host."
+      ;;
+    *)
+      die "no Hermes profile for $ALIAS"
+      ;;
+  esac
+fi
+
+SESSION="$(session_for "$ALIAS")"
+WINDOW="m"
+TARGET="$SESSION:$WINDOW"
+WORKDIR="$(workdir_for "$ALIAS")"
+RUNTIME_HOME=""
+LOCK_HELD=0
+LIVE_TARGET=""
+if [ "$DRY" -eq 1 ]; then
+  if probe_existing_lock "$PROFILE"; then
+    LOCK_HELD=1
+  fi
+else
+  RUNTIME_HOME="$(runtime_home_for "$PROFILE")"
+  if tui_lock_held "$PROFILE"; then
+    LOCK_HELD=1
+    LIVE_TARGET="$(live_tui_target "$PROFILE" "$SESSION")"
+  fi
+fi
+
+ACTION="launch"
+if [ "$ATTACH_ONLY" -eq 1 ]; then
+  ACTION="attach"
+elif [ "$LOCK_HELD" -eq 1 ]; then
+  ACTION="attach-live-tui"
+  if [ -n "$LIVE_TARGET" ]; then
+    TARGET="$LIVE_TARGET"
+  fi
+  if [ "$SURFACE" = "tui" ]; then
+    log "live TUI holds ${RUNTIME_HOME:-$PROFILE}; attaching $TARGET instead of a second TUI"
+  fi
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  printf 'alias=%s\n' "$ALIAS"
+  printf 'profile=%s\n' "$PROFILE"
+  printf 'session=%s\n' "$SESSION"
+  printf 'window=%s\n' "$WINDOW"
+  printf 'target=%s\n' "$TARGET"
+  printf 'workdir=%s\n' "$WORKDIR"
+  printf 'surface=%s\n' "$SURFACE"
+  printf 'here=%s\n' "$HERE"
+  printf 'action=%s\n' "$ACTION"
+  printf 'lock_held=%s\n' "$LOCK_HELD"
+  printf 'command=%s\n' "$(print_launch "$PROFILE" "$SURFACE")"
+  exit 0
+fi
+
+if [ "$HERE" -eq 1 ]; then
+  [ "$ATTACH_ONLY" -eq 0 ] || die "--here cannot be combined with --attach"
+  [ "$LOCK_HELD" -eq 0 ] || die "live TUI holds $RUNTIME_HOME; omit --here and attach, or close that pane first"
+  cd "$WORKDIR"
+  build_launch "$PROFILE" "$SURFACE"
+  exec "${LAUNCH[@]}"
+fi
+
+command -v tmux >/dev/null 2>&1 || die "tmux not found"
+
+if [ "$ACTION" = "attach-live-tui" ]; then
+  if [ -n "$LIVE_TARGET" ]; then
+    attach_or_switch "$LIVE_TARGET"
+    exit $?
+  fi
+  tmux_exists "$SESSION" || die "live TUI lock is held but tmux session $SESSION is not running"
+  attach_or_switch "$SESSION"
+  exit $?
+fi
+
+if [ "$ACTION" = "attach" ]; then
+  tmux_exists "$SESSION" || die "tmux session not running: $SESSION"
+  if window_exists "$SESSION" "$WINDOW"; then
+    attach_or_switch "$TARGET"
+  else
+    attach_or_switch "$SESSION"
+  fi
+  exit $?
+fi
+
+build_launch "$PROFILE" "$SURFACE"
+if ! tmux_exists "$SESSION"; then
+  tmux new-session -d -s "$SESSION" -n "$WINDOW" -c "$WORKDIR" "${LAUNCH[@]}"
+  log "started $PROFILE in tmux $TARGET ($SURFACE)"
+  attach_or_switch "$TARGET"
+  exit $?
+fi
+
+if window_exists "$SESSION" "$WINDOW"; then
+  cmd="$(pane_cmd "$TARGET")"
+  if is_shell_cmd "$cmd"; then
+    tmux respawn-pane -k -t "$TARGET" -c "$WORKDIR" "${LAUNCH[@]}"
+    log "respawned idle $TARGET as $PROFILE ($SURFACE)"
+  else
+    log "attaching existing $TARGET (cmd=$cmd)"
+  fi
+  attach_or_switch "$TARGET"
+  exit $?
+fi
+
+tmux new-window -t "$SESSION" -n "$WINDOW" -c "$WORKDIR" "${LAUNCH[@]}"
+log "started $PROFILE in tmux $TARGET ($SURFACE)"
+attach_or_switch "$TARGET"
+exit $?

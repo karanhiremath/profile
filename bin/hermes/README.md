@@ -23,14 +23,25 @@ bin/hermes/doctor        # non-secret status
 bin/hermes/env           # print PATH additions
 bin/hermes/agents        # run isolated Hermes voice agents for daily terminal use
 bin/hermes/cos           # launch personal Chief of Staff profile
+bin/hermes/cos sandbox   # same plane as cosw sandbox (personal profile)
+bin/hermes/cosw          # launch work Chief of Staff profile (sandbox if healthy)
+bin/hermes/cosw sandbox  # status | families | up | attach | exec | rebuild | down
+bin/hermes/sandbox-ctl   # same plane for --profile <pm/pl/fleet> --family <name>
+bin/hermes/dreamw        # launch dreamw profile (nighttide-cyan)
+bin/hermes/apply-nighttide-theme  # install/select host + profile Nighttide colors
 bin/hermes/cos-s         # list/start cataloged personal sandboxes
-bin/hermes/cosw          # launch work Chief of Staff profile
-bin/hermes/dreamw        # launch work dreamer (host-native; prefers work-repo script; nighttide-work-dreamer)
 bin/hermes/cosw-s        # list/start cataloged work sandboxes
 bin/hermes/cosw-hostctl  # sandbox-safe client for CoS-W host project coordination
-bin/hermes/pm <project>  # launch a registered project-manager TUI in the current pane
+bin/hermes/pm <project>  # attach/start a registered project-manager tmux/TUI
 bin/hermes/pl <project>  # attach a registered project-lead implementation session
 bin/hermes/notes-ledger  # deterministic two-ledger daily/review note capture
+bin/hermes/herm-tui-m    # mobile CLI attach/launch (cos-m / notes-m / …)
+bin/hermes/notes-m       # personal-notes-steward in tmux notes:m
+bin/hermes/notesw-m      # work-notes-steward (work host + profile only)
+bin/hermes/cos-m         # chief-of-staff, phone-friendly
+bin/hermes/cosw-m        # chief-of-staff-work, phone-friendly
+bin/hermes/pm-m <p>      # PM session; CLI surface if it must start
+bin/hermes/pl-m <p>      # same attach as pl
 ```
 
 ## Fleet steer (not tmux paste)
@@ -49,29 +60,78 @@ launch herdr for personal sandboxes; that is a separate opt-in path.
 atop steer --harness herm-tui --sid tmux:SESSION:WIN.PANE --mode nudge --text "..."
 ```
 
+## Alias isolation
+
+`cos`, `cos-m`, `cosw`, `notes-m`, `pm`, and `pl` are isolation seats, not
+alternate views of `~/.hermes`. Each family owns one `hermes-agents/<profile>`
+home, one tmux session, and at most one live herm-tui. A second TUI pane on
+the same home closes the gateway pipe.
+
+- `cos` and `cos-m` share `chief-of-staff` / tmux `cos`. Mobile attaches the
+  live desktop pane when a lock is held; it does not spawn `cos:m` as a second
+  TUI.
+- `cos --lane NAME` / `cosw --lane NAME` mint a sibling seat
+  (`chief-of-staff-NAME` / `chief-of-staff-work-NAME`, tmux `cos-NAME` /
+  `cosw-NAME`) so parallel TUIs do not share a home or lock. Omitting
+  `--lane` keeps the default single-pane seat.
+- `cosw` is a different home and session. Personal hosts must not create it.
+- `~/.hermes` (`factory` / `project-manager`) is never a Cos inbox or seat.
+- Launchers export `HERMES_ALIAS_PIN=1` and write `alias.seat.json` so herm-tui
+  cannot switch to a duplicate `default` sibling.
+- Hermes-agent must not emit `hermes -p` wrappers named `cos` / `cosw` / `pm`.
+
+```bash
+python3 bin/hermes/test_alias_seat.py
+python3 bin/hermes/test_ensure_lane.py
+bin/hermes/test_lane_isolation.sh
+bin/hermes/test_herm_tui_m.sh
+bin/hermes/tests/alias-isolation/run.sh   # podman sandbox; required before live
+```
+
+## Nighttide TUI colors
+
+`apply-nighttide-theme` installs the Nighttide family and selects a default per
+host + profile. `cosw` on mac and `cosw` on tc2 share `chief-of-staff-work`
+(`nighttide-ember`). `dreamw` / `hdream` default to `nighttide-cyan`.
+
+```bash
+bin/hermes/apply-nighttide-theme --dry-run
+bin/hermes/apply-nighttide-theme --profile dreamw --theme nighttide-cyan --set-default --eikon nous
+bin/hermes/apply-nighttide-theme --profile cosw --theme nighttide-blue   # one-shot
+bin/hermes/test_apply_nighttide_theme.py
+```
+
+New profile colors/eikons: `skills/herm-tui-profiles/SKILL.md`.
 
 ## CoS / PM / PL command model
 
 These commands are generic profile-level wrappers. They do not embed work/private project state; they resolve profiles and project session registries from the normal Hermes search paths.
 
 ```bash
-cos                         # agents up chief-of-staff (host-native)
-cos --sandbox               # persist-attach to cos-sandbox-default
-cos-s ls                    # list personal sandbox short names
-cos-s cos                   # same as cos --sandbox
-cos-s herm                  # start the personal herm TUI sandbox
-cos-s dream                 # start the dream cockpit sandbox
-dreamw                      # host-native work-dreamer; `dreamw --status` for inventory
+cos                         # agents up chief-of-staff
+cos --lane o1               # isolated sibling seat; parallel with default cos
+cos --lane o1 --print-plan  # profile/session/home only
+cos sandbox status          # personal CoS image / family / container
+cos sandbox families        # distrohop catalog
+cos sandbox rebuild         # personal default: arch-toolkit
+bin/hermes/cos-s ls         # list personal sandbox short names
 cosw                        # host-native CoS-W (timeout-free cursor/grok-4.6:fast)
 cosw --codex                # host-native CoS-W on openai-codex/gpt-5.5
 cosw --xai-grok             # host-native CoS-W on xAI grok-4.6 (not Cursor SDK)
-cosw --sandbox              # attach to the work-devboxes compose sandbox
-cosw-s ls                   # list sandbox short names
-cosw-s cosw                 # same as cosw --sandbox
-cosw-s librarian            # agents up work-notes-librarian --sandbox
-cosw --sandbox-stack list   # full catalog (includes host-only profiles)
-pm <project>                # launch the Hermes PM TUI in the current pane
+cosw --lane o1              # isolated work sibling seat
+cosw --host-tools           # Hermes TUI on the host; no container
+cosw sandbox status         # image / family / container / materialized backend
+cosw sandbox up             # start long-lived attachable CoS-W container
+cosw sandbox attach         # exec into that container
+cosw sandbox rebuild        # requires project-selected family/image on work hosts
+bin/hermes/cosw-s ls        # list work sandbox short names
+bin/hermes/cosw-hostctl     # sandbox-safe client for CoS-W host project coordination
+pm <project>                # attach/start the Hermes PM TUI session for project
 pl <project>                # attach the project-lead implementation tmux session
+notes-m                     # personal notes steward (CLI in tmux notes:m)
+notesw-m                    # work notes steward when that profile exists
+cos-m / cosw-m / pm-m / pl-m
+sandbox-ctl --profile <name> status|up|attach|rebuild
 bin/hermes/project_sessions.py list
 bin/hermes/project_sessions.py resolve <project>
 ```
@@ -186,6 +246,14 @@ The installer uses `uv venv`, installs the small Python helper dependency (`PyYA
 The TUI installer downloads the Bun release asset for the current OS/arch, verifies it against `SHASUMS256.txt`, and installs it under the Hermes toolchain instead of using the global Bun installer. `herm` always execs the local fork (`~/src/herm-tui` or `~/src/herm` via `herm-fork-env.sh`), never published npm `herm-tui`. `just hermes` / `install` / `install-tui` / shell profile all rewrite `~/.local/bin/herm` to that checkout.
 
 `install` writes user-local shims to `${HERMES_SHIM_DIR:-$HOME/.local/bin}` for `hermes`, `hermes-agent`, and `herm`. If that directory is already on PATH, no `source <(.../env)` step is needed.
+
+Hermes Python aliases (`hermes`, `hermes-agent`, `cosw`, `cos`, `agents`, `pm`, `pl`) source `fork-env.sh` and prefer the `karanhiremath/hermes-agent` checkout (timeout-free Cursor SDK overlay) over the published PyPI/npm wheel. `herm` prefers `~/src/herm` (fork of liftaris/herm). Keep forks current with:
+
+```bash
+bin/hermes/fork-sync status
+bin/hermes/fork-sync ensure
+bin/hermes/fork-sync fetch
+```
 
 ## Machine-aware setup
 

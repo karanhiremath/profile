@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{ profile_hermes_imessage_launchd_label }}</string>
+
+  <key>ProgramArguments</key>
+  <array>
+{% if profile_hermes_imessage_deployment == 'podman_compose' %}
+    <string>{{ profile_hermes_imessage_compose_launcher_path }}</string>
+    <string>up</string>
+{% else %}
+    <string>{{ profile_hermes_imessage_launcher_path }}</string>
+{% endif %}
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>{{ (profile_hermes_imessage_deployment == 'podman_compose') | ternary(profile_hermes_imessage_compose_dir, profile_repo_dir) }}</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>{{ profile_hermes_imessage_log_dir }}/gateway.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>{{ profile_hermes_imessage_log_dir }}/gateway.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{{ profile_home }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

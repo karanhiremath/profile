@@ -15,3 +15,12 @@ ansible/.facts/
 # Session layouts name real hosts, repos and customer programs; this repo is public.
 # Work-host configs belong in karan.hiremath, personal ones in notes.
 bin/sesh/sesh.toml
+
+# Local OpenTofu/Terraform state, variables, and plans
+# Keep provider lock files committed for reproducible init/validate.
+**/.terraform/
+**/terraform.tfvars
+**/*.tfstate
+**/*.tfstate.*
+**/tfplan
+**/*.tfplan

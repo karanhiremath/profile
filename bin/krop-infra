@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="${KROP_INFRA_DIR:-$HOME/src/krop-infra}"
+repo_url="${KROP_INFRA_REPO_URL:-}"
+cmd="${1:-help}"
+
+usage() {
+  cat <<EOF
+krop-infra helper for the profile repo
+
+Usage:
+  bin/krop-infra bootstrap   Clone from KROP_INFRA_REPO_URL if set; otherwise ensure local repo exists
+  bin/krop-infra update      Pull --ff-only when a git remote exists
+  bin/krop-infra status      Show local repo status/remotes
+  bin/krop-infra path        Print repo path
+  bin/krop-infra help        Show this help
+
+Environment:
+  KROP_INFRA_DIR       Local checkout path (default: ~/src/krop-infra)
+  KROP_INFRA_REPO_URL  Private remote URL to clone from when the repo is absent
+
+No GitHub repo is created by this helper. It does not apply cloud changes or use secrets.
+EOF
+}
+
+case "$cmd" in
+  bootstrap)
+    if [ -d "$repo_dir/.git" ]; then
+      echo "krop-infra already present: $repo_dir"
+      exit 0
+    fi
+    if [ -z "$repo_url" ]; then
+      mkdir -p "$repo_dir"
+      if [ ! -d "$repo_dir/.git" ]; then
+        git -C "$repo_dir" init
+      fi
+      echo "initialized local-only krop-infra repo: $repo_dir"
+      echo "set KROP_INFRA_REPO_URL to clone a private remote when one exists"
+      exit 0
+    fi
+    mkdir -p "$(dirname "$repo_dir")"
+    git clone "$repo_url" "$repo_dir"
+    ;;
+  update)
+    if [ ! -d "$repo_dir/.git" ]; then
+      "$0" bootstrap
+      exit 0
+    fi
+    if git -C "$repo_dir" remote get-url origin >/dev/null 2>&1; then
+      git -C "$repo_dir" pull --ff-only
+    else
+      echo "no origin remote configured for $repo_dir; local-only repo left unchanged"
+    fi
+    ;;
+  status)
+    if [ ! -d "$repo_dir/.git" ]; then
+      echo "missing repo: $repo_dir"
+      echo "run: KROP_INFRA_REPO_URL=<private-url> just krop-infra-bootstrap"
+      exit 1
+    fi
+    echo "path: $repo_dir"
+    git -C "$repo_dir" remote -v || true
+    git -C "$repo_dir" status --short
+    ;;
+  path)
+    printf '%s\n' "$repo_dir"
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

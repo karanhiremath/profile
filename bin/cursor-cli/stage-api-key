@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""Stage a Cursor Agent CLI API key into repo-approved local env files.
+
+Safety defaults:
+- dry-run unless --write is passed
+- do not print the resolved secret value
+- preserve existing env files and update only CURSOR_API_KEY
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Mapping, Sequence, TextIO
+
+DEFAULT_OP_REF = "op://Personal/Cursor pi-coding-agent/credential"
+CURSOR_ENV_NAME = "CURSOR_API_KEY"
+AGENT_ENV_FILENAME = "agent.env"
+
+ALSO_TARGETS = {
+    "hermes-global": Path("~/.hermes/.env"),
+    "hermes-cos-profile": Path(
+        "~/.local/share/hermes-agents/chief-of-staff/profiles/chief-of-staff/.env"
+    ),
+}
+
+# TODO: Wire --also pi-auth only after the expected ~/.pi/agent/auth.json schema for
+# Cursor-provider credentials is confirmed. Do not fake a best-effort JSON shape.
+UNIMPLEMENTED_ALSO_TARGETS = {"pi-auth"}
+
+_SAFE_UNQUOTED_ENV = re.compile(r"^[A-Za-z0-9_./:=@+,-]+$")
+_CURSOR_LINE = re.compile(r"^(?P<prefix>\s*(?:export\s+)?CURSOR_API_KEY\s*=).*$")
+
+Resolver = Callable[[str], str]
+
+
+class StageError(Exception):
+    """Expected, user-actionable staging failure."""
+
+
+@dataclass(frozen=True)
+class EnvTarget:
+    name: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class StageResult:
+    target: EnvTarget
+    changed: bool
+
+
+def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Stage CURSOR_API_KEY into Cursor/Hermes env files without printing it."
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="mutate target files; default is dry-run only",
+    )
+    parser.add_argument(
+        "--op-ref",
+        default=DEFAULT_OP_REF,
+        help=f"1Password op reference to read (default: {DEFAULT_OP_REF})",
+    )
+    parser.add_argument(
+        "--target-file",
+        help="exact Cursor env file to stage (default: ~/.cursor/agent.env)",
+    )
+    parser.add_argument(
+        "--target-dir",
+        help="directory to stage Cursor agent.env into; relative --target-file values are resolved under it",
+    )
+    parser.add_argument(
+        "--also",
+        action="append",
+        choices=sorted(set(ALSO_TARGETS) | UNIMPLEMENTED_ALSO_TARGETS),
+        default=[],
+        help="also stage to an explicit secondary consumer",
+    )
+    return parser.parse_args(argv)
+
+
+def default_resolver(op_ref: str, runner=subprocess.run) -> str:
+    """Resolve an op:// reference without exposing the returned secret."""
+    try:
+        completed = runner(
+            ["op", "read", op_ref],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise StageError("1Password CLI `op` not found on PATH") from exc
+    if completed.returncode != 0:
+        raise StageError("op read failed; verify personal 1Password CLI auth and item access")
+    value = completed.stdout.rstrip("\n")
+    if not value:
+        raise StageError("op read returned an empty value")
+    return value
+
+
+def expand_path(path: Path | str, environ: Mapping[str, str] | None = None) -> Path:
+    raw = str(path)
+    if raw == "~" or raw.startswith("~/"):
+        env = os.environ if environ is None else environ
+        home = env.get("HOME")
+        if not home:
+            raise StageError("HOME is not set; pass an absolute target path")
+        if raw == "~":
+            return Path(home)
+        return Path(home) / raw[2:]
+    return Path(raw).expanduser()
+
+
+def resolve_for_policy(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
+
+
+def ensure_under_sandbox(path: Path, sandbox_root: Path | None) -> None:
+    if sandbox_root is None:
+        return
+    root = resolve_for_policy(sandbox_root)
+    candidate = resolve_for_policy(path)
+    try:
+        common = os.path.commonpath([str(root), str(candidate)])
+    except ValueError as exc:
+        raise StageError(f"target is outside AGENT_SANDBOX_ROOT: {path}") from exc
+    if common != str(root):
+        raise StageError(f"target is outside AGENT_SANDBOX_ROOT: {path}")
+
+
+def default_cursor_target(args: argparse.Namespace, environ: Mapping[str, str]) -> Path:
+    if args.target_file:
+        target_file = expand_path(args.target_file, environ)
+        if args.target_dir and not target_file.is_absolute():
+            return expand_path(args.target_dir, environ) / target_file
+        return target_file
+    if args.target_dir:
+        return expand_path(args.target_dir, environ) / AGENT_ENV_FILENAME
+
+    sandbox_root = environ.get("AGENT_SANDBOX_ROOT")
+    if sandbox_root:
+        return expand_path(sandbox_root, environ) / "state" / "cursor" / AGENT_ENV_FILENAME
+    return expand_path("~/.cursor/agent.env", environ)
+
+
+def collect_targets(args: argparse.Namespace, environ: Mapping[str, str]) -> list[EnvTarget]:
+    requested_also = set(args.also or [])
+    unsupported = sorted(requested_also & UNIMPLEMENTED_ALSO_TARGETS)
+    if unsupported:
+        raise StageError(
+            "unsupported --also target(s) pending schema confirmation: " + ", ".join(unsupported)
+        )
+
+    sandbox_root = expand_path(environ["AGENT_SANDBOX_ROOT"], environ) if environ.get("AGENT_SANDBOX_ROOT") else None
+    targets = [EnvTarget("cursor", default_cursor_target(args, environ))]
+    for name in sorted(requested_also):
+        targets.append(EnvTarget(name, expand_path(ALSO_TARGETS[name], environ)))
+
+    for target in targets:
+        ensure_under_sandbox(target.path, sandbox_root)
+    return targets
+
+
+def format_env_value(value: str) -> str:
+    if "\x00" in value or "\n" in value or "\r" in value:
+        raise StageError("resolved API key contains unsupported control characters")
+    if not value:
+        raise StageError("resolved API key is empty")
+    if _SAFE_UNQUOTED_ENV.fullmatch(value):
+        return value
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def update_env_text(existing: str, value: str) -> tuple[str, bool]:
+    formatted = format_env_value(value)
+    lines = existing.splitlines(keepends=True)
+    output: list[str] = []
+    found = False
+    changed = False
+
+    for line in lines:
+        ending = "\n" if line.endswith("\n") else ""
+        body = line[:-1] if ending else line
+        match = _CURSOR_LINE.match(body)
+        if not match:
+            output.append(line)
+            continue
+        found = True
+        replacement = f"{match.group('prefix')}{formatted}{ending}"
+        output.append(replacement)
+        if replacement != line:
+            changed = True
+
+    if not found:
+        if output and not output[-1].endswith("\n"):
+            output[-1] += "\n"
+            changed = True
+        output.append(f"{CURSOR_ENV_NAME}={formatted}\n")
+        changed = True
+
+    return "".join(output), changed
+
+
+def write_text_private(path: Path, text: str) -> None:
+    parent = path.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(parent, 0o700)
+
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def stage_env_file(target: EnvTarget, value: str) -> StageResult:
+    path = target.path
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
+    else:
+        existing = ""
+    updated, changed = update_env_text(existing, value)
+
+    if changed or not path.exists():
+        write_text_private(path, updated)
+    else:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        os.chmod(path, 0o600)
+
+    return StageResult(target=target, changed=changed)
+
+
+def run(
+    argv: Sequence[str] | None = None,
+    *,
+    resolver: Resolver | None = None,
+    environ: Mapping[str, str] | None = None,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+) -> int:
+    environ = os.environ if environ is None else environ
+    out = sys.stdout if out is None else out
+    err = sys.stderr if err is None else err
+    resolver = default_resolver if resolver is None else resolver
+
+    try:
+        args = parse_args(argv)
+        targets = collect_targets(args, environ)
+
+        if not args.write:
+            print("dry_run=true", file=out)
+            for target in targets:
+                print(f"would_update[{target.name}]={target.path}", file=out)
+            print("rerun_with=--write", file=out)
+            return 0
+
+        api_key = resolver(args.op_ref)
+        for target in targets:
+            result = stage_env_file(target, api_key)
+            status = "updated" if result.changed else "unchanged"
+            print(f"{status}[{target.name}]={target.path}", file=out)
+        return 0
+    except StageError as exc:
+        print(f"ERROR: {exc}", file=err)
+        return 2
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    resolver: Resolver | None = None,
+    environ: Mapping[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
+    out: TextIO | None = None,
+    stdout: TextIO | None = None,
+    err: TextIO | None = None,
+    stderr: TextIO | None = None,
+) -> int:
+    """Unit-test-friendly entrypoint.
+
+    `env`/`stdout`/`stderr` aliases are accepted for test readability; `environ`,
+    `out`, and `err` are the canonical names used by `run`.
+    """
+
+    return run(
+        argv,
+        resolver=resolver,
+        environ=environ if environ is not None else env,
+        out=out if out is not None else stdout,
+        err=err if err is not None else stderr,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
