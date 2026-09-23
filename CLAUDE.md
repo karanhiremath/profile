@@ -48,5 +48,9 @@ This repo is purely tooling. Project-specific memory, notes, and decisions live 
 ## Granola is optional
 `cursor/rules/granola-optional.mdc` is the synced Cursor user rule. Granola MCP belongs to librarian/notetaker profiles only. `just cursor-setup` links it into `~/.cursor/rules`. Implementor agents do not query Granola.
 
+## Linear CLI
+
+`just linear-cli` installs profile-owned `linear` (official Linear GraphQL API). Token at `LINEAR_API_KEY` or `~/.local/share/fleet/linear-token`. Never print the token. Not `@schpet/linear-cli` and not the 2021 `@linear/cli` (`lin`).
+
 ## No unbounded filesystem walks
 Never `find /` or recurse network/dataset mounts from an agent shell. Locate binaries via PATH and known prefixes. Repo-scoped find only, shallow, timed (`timeout 20s`). Work-host policy: `~/src/karan.hiremath/agentic/memory/playbooks/no-unbounded-fs-walks.md`.

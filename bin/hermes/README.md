@@ -6,6 +6,11 @@ Data boundary:
 - OK: generic install scripts, generic wrappers, personal non-work workflow scaffolds.
 - Not OK: Cartesia-specific prompts, hosts, customer names, security findings, credentials, or internal runbooks.
 - Work Hermes setup belongs in the Cartesia work repo.
+- Crusoe hosts: `fork-env.sh` + every shim (`cosw`, `herm`, `hermes`,
+  `agents`, `pi`) set `AGENT_SHARED_HOME=/shared/people/$USER` and pin
+  `HERMES_AGENTS_DATA_HOME` to `$AGENT_SHARED_HOME/hermes-agents`.
+  `$HOME` is not remapped. SOP lives in
+  `karan.hiremath/agentic/infra/crusoe-hermes-homes.md`.
 
 ## Commands
 
@@ -200,6 +205,13 @@ model:
 auth:
   import_codex_cli: true
 ```
+
+ChatGPT Codex refresh tokens are single-use. Hermes, Pi, and `~/.codex/auth.json`
+must share one grant. `bin/hermes/codex_grant_sync.py` locks that grant and
+write-throughs every rotation (`adopt` / `status`; never prints secrets).
+`cosw --codex` adopts before launch. Hermes save/refresh and the Pi host
+wrapper (`NODE_OPTIONS --import codex-grant-preload.mjs`) keep the stores
+aligned. Set `HERMES_CODEX_GRANT_ISOLATE=1` only for a truly separate login.
 
 Ansible entrypoint:
 

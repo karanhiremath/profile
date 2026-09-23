@@ -136,6 +136,9 @@ write_shim() {
     printf 'export HERMES_TOOLCHAIN_HOME=%q\n' "$HERMES_TOOLCHAIN_HOME"
     printf 'export PNPM_HOME=%q\n' "$PNPM_HOME"
     printf 'export PATH=%q:%q:%q:"$PATH"\n' "$BUN_HOME/bin" "$PNPM_BIN" "$VENV/bin"
+    printf 'if [ -f %q ]; then\n' "$SCRIPT_DIR/fork-env.sh"
+    printf '  . %q\n' "$SCRIPT_DIR/fork-env.sh"
+    printf 'fi\n'
     printf 'exec'
     printf ' %q' "$@"
     printf ' "$@"\n'

@@ -160,6 +160,16 @@ else
 fi
 echo ""
 
+# Linear GraphQL CLI
+echo "==> Installing/upgrading Linear CLI..."
+if "${APP_BIN}/linear-cli/install"; then
+    echo "✓ Linear CLI completed successfully"
+else
+    echo "✗ Linear CLI failed"
+    failed_installs+=("linear-cli")
+fi
+echo ""
+
 # herdr is optional and not part of the default toolkit. It hogs CPU when
 # started; COSW/PM/PL/atop steer herm-tui M2M instead. Install with `just herdr`.
 

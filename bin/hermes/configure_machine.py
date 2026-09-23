@@ -69,6 +69,17 @@ def _import_codex_cli_tokens() -> bool:
 
     _save_codex_tokens(dict(tokens), payload.get("last_refresh"), label="codex-cli-import")
     print("codex_cli_auth=imported")
+    try:
+        sync_dir = Path.home() / "src" / "profile" / "bin" / "hermes"
+        if str(sync_dir) not in sys.path:
+            sys.path.insert(0, str(sync_dir))
+        from codex_grant_sync import adopt_newest
+
+        result = adopt_newest()
+        print(f"codex_grant_adopt={result.get('status')}")
+        print(f"codex_grant_wrote={','.join(result.get('wrote') or [])}")
+    except Exception:
+        print("codex_grant_adopt=skipped")
     return True
 
 

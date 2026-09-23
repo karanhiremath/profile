@@ -1,0 +1,848 @@
+#!/usr/bin/env python3
+"""linear — profile-owned CLI over Linear's official GraphQL API.
+
+This is not @schpet/linear-cli and not the abandoned 2021 @linear/cli (`lin`).
+Auth: LINEAR_API_KEY, else LINEAR_API_KEY_FILE, else ~/.local/share/fleet/linear-token.
+Never print the API key.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+VERSION = "1.0.0"
+API_URL = "https://api.linear.app/graphql"
+DEFAULT_TOKEN_PATH = Path.home() / ".local/share/fleet/linear-token"
+TIMEOUT_SEC = 30
+
+PRIORITY_NAMES = {
+    "none": 0,
+    "urgent": 1,
+    "high": 2,
+    "medium": 3,
+    "low": 4,
+}
+
+
+class LinearError(Exception):
+    pass
+
+
+def token_path() -> Path:
+    override = os.environ.get("LINEAR_API_KEY_FILE") or os.environ.get(
+        "FLEET_LINEAR_TOKEN_PATH"
+    )
+    return Path(override).expanduser() if override else DEFAULT_TOKEN_PATH
+
+
+def load_api_key() -> str:
+    env = os.environ.get("LINEAR_API_KEY", "").strip()
+    if env:
+        return env
+    path = token_path()
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as exc:
+        raise LinearError(
+            f"no Linear API key. Set LINEAR_API_KEY or write a personal key to "
+            f"{path} (mode 600). Create a key at https://linear.app/settings/api"
+        ) from exc
+    except OSError as exc:
+        raise LinearError(f"cannot read Linear token file {path}: {exc}") from exc
+    if not key:
+        raise LinearError(f"Linear token file {path} is empty")
+    return key
+
+
+def read_text_arg(value: str | None, file_value: str | None) -> str | None:
+    if file_value:
+        if file_value == "-":
+            return sys.stdin.read()
+        return Path(file_value).read_text(encoding="utf-8")
+    return value
+
+
+def emit(data: Any, *, table: bool) -> None:
+    if table and isinstance(data, dict):
+        rows = _table_rows(data)
+        if rows is not None:
+            _print_table(rows)
+            return
+    json.dump(data, sys.stdout, indent=2, sort_keys=False)
+    sys.stdout.write("\n")
+
+
+def _table_rows(data: dict[str, Any]) -> list[list[str]] | None:
+    if "nodes" in data and isinstance(data["nodes"], list):
+        nodes = data["nodes"]
+        if not nodes:
+            return [["(none)"]]
+        if all(isinstance(n, dict) for n in nodes):
+            keys: list[str] = []
+            for node in nodes:
+                for key in node:
+                    if key not in keys:
+                        keys.append(key)
+            keys = [k for k in keys if not isinstance(nodes[0].get(k), (dict, list))] or keys
+            header = keys
+            rows = [header]
+            for node in nodes:
+                rows.append([_cell(node.get(k)) for k in header])
+            return rows
+    if set(data) <= {
+        "id",
+        "identifier",
+        "title",
+        "url",
+        "state",
+        "team",
+        "project",
+        "assignee",
+        "name",
+        "email",
+        "key",
+        "organization",
+        "urlKey",
+        "stored",
+        "mode",
+        "token_path",
+        "authenticated",
+        "key_configured",
+    }:
+        return [[k, _cell(v)] for k, v in data.items()]
+    return None
+
+
+def _cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        for key in ("identifier", "name", "email", "key"):
+            if key in value and value[key] is not None:
+                return str(value[key])
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+def _print_table(rows: list[list[str]]) -> None:
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    for row in rows:
+        print("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
+
+
+def parse_priority(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    lowered = raw.strip().lower()
+    if lowered in PRIORITY_NAMES:
+        return PRIORITY_NAMES[lowered]
+    try:
+        value = int(lowered)
+    except ValueError as exc:
+        raise LinearError(
+            "priority must be none|urgent|high|medium|low or 0-4"
+        ) from exc
+    if value not in {0, 1, 2, 3, 4}:
+        raise LinearError("priority must be none|urgent|high|medium|low or 0-4")
+    return value
+
+
+class LinearClient:
+    def __init__(self, api_key: str, *, dry_run: bool = False) -> None:
+        self._api_key = api_key
+        self.dry_run = dry_run
+        self._viewer: dict[str, Any] | None = None
+
+    def gql(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        mutate: bool = False,
+    ) -> dict[str, Any]:
+        payload = {"query": query, "variables": variables or {}}
+        if self.dry_run and mutate:
+            return {"dry_run": True, "query": query, "variables": variables or {}}
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            API_URL,
+            data=body,
+            headers={
+                "Authorization": self._api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT_SEC) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:400]
+            raise LinearError(f"Linear HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise LinearError(f"Linear request failed: {exc.reason}") from exc
+        errors = parsed.get("errors")
+        if errors:
+            messages = "; ".join(
+                err.get("message", str(err)) for err in errors if isinstance(err, dict)
+            )
+            raise LinearError(f"Linear GraphQL error: {messages}")
+        data = parsed.get("data")
+        if data is None:
+            raise LinearError("Linear GraphQL returned no data")
+        return data
+
+    def viewer(self) -> dict[str, Any]:
+        if self._viewer is None:
+            data = self.gql(
+                """
+                query Viewer {
+                  viewer { id name email }
+                  organization { id name urlKey }
+                }
+                """
+            )
+            self._viewer = data
+        return self._viewer
+
+    def team(self, key: str) -> dict[str, Any]:
+        data = self.gql(
+            """
+            query Team($key: String!) {
+              teams(filter: { key: { eq: $key } }) {
+                nodes {
+                  id
+                  key
+                  name
+                  states { nodes { id name type } }
+                }
+              }
+            }
+            """,
+            {"key": key.upper()},
+        )
+        nodes = data["teams"]["nodes"]
+        if not nodes:
+            raise LinearError(f"team not found: {key}")
+        if len(nodes) > 1:
+            raise LinearError(f"team key {key} matched {len(nodes)} teams")
+        return nodes[0]
+
+    def resolve_project(self, name_or_id: str, *, team_key: str | None) -> dict[str, Any]:
+        if _looks_like_uuid(name_or_id):
+            data = self.gql(
+                "query P($id: String!) { project(id: $id) { id name } }",
+                {"id": name_or_id},
+            )
+            project = data.get("project")
+            if not project:
+                raise LinearError(f"project not found: {name_or_id}")
+            return project
+        variables: dict[str, Any] = {"name": name_or_id}
+        query = """
+        query Projects($name: String!) {
+          projects(filter: { name: { eqIgnoreCase: $name } }) {
+            nodes { id name }
+          }
+        }
+        """
+        data = self.gql(query, variables)
+        nodes = data["projects"]["nodes"]
+        if not nodes:
+            data = self.gql(
+                """
+                query ProjectsContains($name: String!) {
+                  projects(filter: { name: { containsIgnoreCase: $name } }) {
+                    nodes { id name }
+                  }
+                }
+                """,
+                {"name": name_or_id},
+            )
+            nodes = data["projects"]["nodes"]
+        if team_key and len(nodes) > 1:
+            team = self.team(team_key)
+            data = self.gql(
+                """
+                query TeamProjects($id: String!) {
+                  team(id: $id) {
+                    projects { nodes { id name } }
+                  }
+                }
+                """,
+                {"id": team["id"]},
+            )
+            team_projects = {
+                p["id"]: p for p in data["team"]["projects"]["nodes"]
+            }
+            nodes = [n for n in nodes if n["id"] in team_projects]
+        if not nodes:
+            raise LinearError(f"project not found: {name_or_id}")
+        if len(nodes) > 1:
+            names = ", ".join(n["name"] for n in nodes[:8])
+            raise LinearError(f"project {name_or_id!r} is ambiguous: {names}")
+        return nodes[0]
+
+    def resolve_user(self, spec: str) -> dict[str, Any]:
+        if spec.lower() in {"me", "@me"}:
+            return self.viewer()["viewer"]
+        if "@" in spec:
+            data = self.gql(
+                """
+                query UserByEmail($email: String!) {
+                  users(filter: { email: { eqIgnoreCase: $email } }) {
+                    nodes { id name email }
+                  }
+                }
+                """,
+                {"email": spec},
+            )
+        else:
+            data = self.gql(
+                """
+                query UserByName($name: String!) {
+                  users(filter: { name: { eqIgnoreCase: $name } }) {
+                    nodes { id name email }
+                  }
+                }
+                """,
+                {"name": spec},
+            )
+        nodes = data["users"]["nodes"]
+        if not nodes:
+            raise LinearError(f"user not found: {spec}")
+        if len(nodes) > 1:
+            raise LinearError(f"user {spec!r} is ambiguous")
+        return nodes[0]
+
+    def resolve_state(self, team_key: str, name: str) -> dict[str, Any]:
+        team = self.team(team_key)
+        matches = [
+            s
+            for s in team["states"]["nodes"]
+            if s["name"].lower() == name.lower()
+        ]
+        if not matches:
+            available = ", ".join(s["name"] for s in team["states"]["nodes"])
+            raise LinearError(f"state {name!r} not on team {team_key}: {available}")
+        return matches[0]
+
+    def issue(self, identifier: str, *, full: bool = True) -> dict[str, Any]:
+        desc = "description" if full else ""
+        data = self.gql(
+            f"""
+            query Issue($id: String!) {{
+              issue(id: $id) {{
+                id
+                identifier
+                title
+                url
+                {desc}
+                priority
+                dueDate
+                createdAt
+                updatedAt
+                state {{ id name type }}
+                assignee {{ id name email }}
+                team {{ id key name }}
+                project {{ id name }}
+                parent {{ identifier title }}
+              }}
+            }}
+            """,
+            {"id": identifier},
+        )
+        issue = data.get("issue")
+        if not issue:
+            raise LinearError(f"issue not found: {identifier}")
+        return issue
+
+
+def _looks_like_uuid(value: str) -> bool:
+    parts = value.split("-")
+    return len(parts) == 5 and len(value) == 36
+
+
+def flatten_issue(issue: dict[str, Any], *, full: bool) -> dict[str, Any]:
+    out = {
+        "identifier": issue.get("identifier"),
+        "title": issue.get("title"),
+        "url": issue.get("url"),
+        "state": (issue.get("state") or {}).get("name"),
+        "team": (issue.get("team") or {}).get("key"),
+        "project": (issue.get("project") or {}).get("name"),
+        "assignee": (issue.get("assignee") or {}).get("email")
+        or (issue.get("assignee") or {}).get("name"),
+        "priority": issue.get("priority"),
+        "dueDate": issue.get("dueDate"),
+        "updatedAt": issue.get("updatedAt"),
+    }
+    if full:
+        out["description"] = issue.get("description")
+        out["id"] = issue.get("id")
+        parent = issue.get("parent")
+        if parent:
+            out["parent"] = parent.get("identifier")
+    return out
+
+
+def cmd_whoami(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    data = client.viewer()
+    return {
+        "authenticated": True,
+        "name": data["viewer"]["name"],
+        "email": data["viewer"]["email"],
+        "organization": data["organization"]["name"],
+        "urlKey": data["organization"]["urlKey"],
+        "token_path": str(token_path()),
+        "key_configured": True,
+    }
+
+
+def cmd_auth_status(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    return cmd_whoami(client, args)
+
+
+def cmd_auth_login(client: LinearClient | None, args: argparse.Namespace) -> dict[str, Any]:
+    path = token_path()
+    key = None
+    if args.key_file:
+        key = Path(args.key_file).read_text(encoding="utf-8").strip()
+    elif os.environ.get("LINEAR_API_KEY"):
+        key = os.environ["LINEAR_API_KEY"].strip()
+    elif path.is_file() and path.read_text(encoding="utf-8").strip():
+        key = path.read_text(encoding="utf-8").strip()
+    elif sys.stdin.isatty():
+        print(
+            "Paste a Linear personal API key from https://linear.app/settings/api",
+            file=sys.stderr,
+        )
+        key = input("API key: ").strip()
+    if not key:
+        raise LinearError(
+            "no key provided. Pass --key-file, set LINEAR_API_KEY, or run in a TTY"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(key, encoding="utf-8")
+    path.chmod(0o600)
+    verified = LinearClient(key).viewer()
+    return {
+        "stored": str(path),
+        "mode": "600",
+        "name": verified["viewer"]["name"],
+        "email": verified["viewer"]["email"],
+        "organization": verified["organization"]["name"],
+    }
+
+
+def cmd_team_list(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    data = client.gql(
+        """
+        query Teams {
+          teams {
+            nodes { id key name }
+          }
+        }
+        """
+    )
+    return {
+        "nodes": [
+            {"key": n["key"], "name": n["name"], "id": n["id"]}
+            for n in data["teams"]["nodes"]
+        ]
+    }
+
+
+def cmd_project_list(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    if args.team:
+        team = client.team(args.team)
+        data = client.gql(
+            """
+            query TeamProjects($id: String!) {
+              team(id: $id) { projects { nodes { id name } } }
+            }
+            """,
+            {"id": team["id"]},
+        )
+        nodes = data["team"]["projects"]["nodes"]
+    else:
+        data = client.gql(
+            """
+            query Projects {
+              projects { nodes { id name } }
+            }
+            """
+        )
+        nodes = data["projects"]["nodes"]
+    return {"nodes": nodes}
+
+
+def cmd_state_list(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    team = client.team(args.team)
+    return {
+        "team": team["key"],
+        "nodes": team["states"]["nodes"],
+    }
+
+
+def cmd_issue_get(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    return flatten_issue(client.issue(args.identifier, full=True), full=True)
+
+
+def cmd_issue_list(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    filt: dict[str, Any] = {}
+    if args.team:
+        filt["team"] = {"key": {"eq": args.team.upper()}}
+    if args.project:
+        project = client.resolve_project(args.project, team_key=args.team)
+        filt["project"] = {"id": {"eq": project["id"]}}
+    if args.assignee:
+        if args.assignee.lower() in {"me", "@me"}:
+            filt["assignee"] = {"isMe": {"eq": True}}
+        else:
+            user = client.resolve_user(args.assignee)
+            filt["assignee"] = {"id": {"eq": user["id"]}}
+    if args.state:
+        filt["state"] = {"name": {"eqIgnoreCase": args.state}}
+    if args.query:
+        filt["searchableContent"] = {"contains": args.query}
+    data = client.gql(
+        """
+        query Issues($filter: IssueFilter, $first: Int) {
+          issues(filter: $filter, first: $first, orderBy: updatedAt) {
+            nodes {
+              id
+              identifier
+              title
+              url
+              description
+              priority
+              dueDate
+              updatedAt
+              state { name type }
+              assignee { name email }
+              team { key name }
+              project { name }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        """,
+        {"filter": filt or None, "first": args.limit},
+    )
+    nodes = [
+        flatten_issue(n, full=args.full) for n in data["issues"]["nodes"]
+    ]
+    return {
+        "nodes": nodes,
+        "hasNextPage": data["issues"]["pageInfo"]["hasNextPage"],
+    }
+
+
+def _issue_input(client: LinearClient, args: argparse.Namespace, *, creating: bool) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if getattr(args, "title", None):
+        payload["title"] = args.title
+    description = read_text_arg(
+        getattr(args, "description", None), getattr(args, "description_file", None)
+    )
+    if description is not None:
+        payload["description"] = description
+    if creating:
+        if not args.team:
+            raise LinearError("issue create requires --team")
+        if not args.title:
+            raise LinearError("issue create requires --title")
+        payload["teamId"] = client.team(args.team)["id"]
+    team_key = getattr(args, "team", None)
+    if args.state:
+        if not team_key and not creating:
+            current = client.issue(args.identifier, full=False)
+            team_key = current["team"]["key"]
+        if not team_key:
+            raise LinearError("--state requires --team")
+        payload["stateId"] = client.resolve_state(team_key, args.state)["id"]
+    if args.project:
+        payload["projectId"] = client.resolve_project(args.project, team_key=team_key)[
+            "id"
+        ]
+    if args.assignee:
+        payload["assigneeId"] = client.resolve_user(args.assignee)["id"]
+    priority = parse_priority(getattr(args, "priority", None))
+    if priority is not None:
+        payload["priority"] = priority
+    parent = getattr(args, "parent", None)
+    if parent:
+        payload["parentId"] = client.issue(parent, full=False)["id"]
+    due = getattr(args, "due", None)
+    if due:
+        payload["dueDate"] = due
+    return payload
+
+
+def cmd_issue_create(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    payload = _issue_input(client, args, creating=True)
+    data = client.gql(
+        """
+        mutation Create($input: IssueCreateInput!) {
+          issueCreate(input: $input) {
+            success
+            issue { identifier url title state { name } team { key } }
+          }
+        }
+        """,
+        {"input": payload},
+        mutate=True,
+    )
+    result = data.get("issueCreate") or data
+    if client.dry_run:
+        return result
+    if not result.get("success"):
+        raise LinearError("issueCreate failed")
+    return flatten_issue(
+        {
+            **result["issue"],
+            "project": None,
+            "assignee": None,
+            "priority": None,
+            "dueDate": None,
+            "updatedAt": None,
+        },
+        full=False,
+    )
+
+
+def cmd_issue_update(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    payload = _issue_input(client, args, creating=False)
+    if not payload:
+        raise LinearError("issue update requires at least one field")
+    data = client.gql(
+        """
+        mutation Update($id: String!, $input: IssueUpdateInput!) {
+          issueUpdate(id: $id, input: $input) {
+            success
+            issue {
+              identifier url title
+              state { name }
+              team { key }
+              project { name }
+              assignee { email }
+            }
+          }
+        }
+        """,
+        {"id": args.identifier, "input": payload},
+        mutate=True,
+    )
+    result = data.get("issueUpdate") or data
+    if client.dry_run:
+        return result
+    if not result.get("success"):
+        raise LinearError("issueUpdate failed")
+    return flatten_issue(
+        {
+            **result["issue"],
+            "priority": None,
+            "dueDate": None,
+            "updatedAt": None,
+        },
+        full=False,
+    )
+
+
+def cmd_issue_comment(client: LinearClient, args: argparse.Namespace) -> dict[str, Any]:
+    body = read_text_arg(args.body, args.body_file)
+    if not body:
+        raise LinearError("comment requires --body or --body-file")
+    issue = client.issue(args.identifier, full=False)
+    data = client.gql(
+        """
+        mutation Comment($input: CommentCreateInput!) {
+          commentCreate(input: $input) {
+            success
+            comment { id url createdAt }
+          }
+        }
+        """,
+        {"input": {"issueId": issue["id"], "body": body}},
+        mutate=True,
+    )
+    result = data.get("commentCreate") or data
+    if client.dry_run:
+        return result
+    if not result.get("success"):
+        raise LinearError("commentCreate failed")
+    return {
+        "identifier": args.identifier,
+        "comment_id": result["comment"]["id"],
+        "url": result["comment"].get("url"),
+    }
+
+
+GLOBAL_FLAGS = ("--json", "--table", "--dry-run", "--version")
+
+
+def hoist_global_flags(argv: list[str]) -> list[str]:
+    """Keep --table/--dry-run working before or after the subcommand."""
+    flags = [a for a in argv if a in GLOBAL_FLAGS]
+    rest = [a for a in argv if a not in GLOBAL_FLAGS]
+    return flags + rest
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="linear",
+        description=(
+            "Profile-owned Linear CLI over the official GraphQL API. "
+            "JSON on stdout. Never prints the API key."
+        ),
+    )
+    parser.add_argument("--version", action="store_true", help="print version and exit")
+    parser.add_argument("--json", action="store_true", default=True, help="JSON output (default)")
+    parser.add_argument("--table", action="store_true", help="human table instead of JSON")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print GraphQL query/variables; do not call Linear",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("whoami", help="viewer + org")
+    sub.add_parser("version", help="CLI version")
+
+    auth = sub.add_parser("auth", help="token status / store")
+    auth_sub = auth.add_subparsers(dest="auth_command")
+    auth_sub.add_parser("status", help="verify token")
+    login = auth_sub.add_parser("login", help="store a personal API key at the fleet path")
+    login.add_argument("--key-file", help="read key from file (not argv)")
+
+    teams = sub.add_parser("team", help="teams")
+    teams_sub = teams.add_subparsers(dest="team_command")
+    teams_sub.add_parser("list", help="list teams")
+
+    projects = sub.add_parser("project", help="projects")
+    projects_sub = projects.add_subparsers(dest="project_command")
+    plist = projects_sub.add_parser("list", help="list projects")
+    plist.add_argument("--team", help="team key")
+
+    states = sub.add_parser("state", help="workflow states")
+    states_sub = states.add_subparsers(dest="state_command")
+    slist = states_sub.add_parser("list", help="list states for a team")
+    slist.add_argument("--team", required=True)
+
+    issue = sub.add_parser("issue", help="issues")
+    issue_sub = issue.add_subparsers(dest="issue_command")
+
+    iget = issue_sub.add_parser("get", help="get one issue")
+    iget.add_argument("identifier")
+
+    ilist = issue_sub.add_parser("list", help="list issues")
+    ilist.add_argument("--team")
+    ilist.add_argument("--project")
+    ilist.add_argument("--assignee", help="me, email, or display name")
+    ilist.add_argument("--state")
+    ilist.add_argument("--query", help="searchableContent contains")
+    ilist.add_argument("--limit", type=int, default=25)
+    ilist.add_argument("--full", action="store_true", help="include descriptions")
+
+    icreate = issue_sub.add_parser("create", help="create an issue")
+    icreate.add_argument("--title", required=True)
+    icreate.add_argument("--team", required=True)
+    icreate.add_argument("--description")
+    icreate.add_argument("--description-file", help="file path or - for stdin")
+    icreate.add_argument("--project")
+    icreate.add_argument("--state")
+    icreate.add_argument("--assignee")
+    icreate.add_argument("--priority")
+    icreate.add_argument("--parent")
+    icreate.add_argument("--due", help="YYYY-MM-DD")
+
+    iupdate = issue_sub.add_parser("update", help="update an issue")
+    iupdate.add_argument("identifier")
+    iupdate.add_argument("--title")
+    iupdate.add_argument("--description")
+    iupdate.add_argument("--description-file")
+    iupdate.add_argument("--team", help="needed only when creating context for --state/--project")
+    iupdate.add_argument("--state")
+    iupdate.add_argument("--assignee")
+    iupdate.add_argument("--project")
+    iupdate.add_argument("--priority")
+    iupdate.add_argument("--due")
+
+    icomment = issue_sub.add_parser("comment", help="comment on an issue")
+    icomment.add_argument("identifier")
+    icomment.add_argument("--body")
+    icomment.add_argument("--body-file", help="file path or - for stdin")
+    return parser
+
+
+def dispatch(args: argparse.Namespace) -> Any:
+    if args.version or args.command == "version":
+        return {"name": "linear", "version": VERSION, "api": API_URL}
+
+    needs_key = not (
+        args.command == "auth" and getattr(args, "auth_command", None) == "login"
+    )
+    client = None
+    if needs_key:
+        client = LinearClient(load_api_key(), dry_run=args.dry_run)
+    elif args.dry_run:
+        client = LinearClient("dry-run", dry_run=True)
+
+    if args.command == "whoami":
+        return cmd_whoami(client, args)
+    if args.command == "auth":
+        if args.auth_command == "status":
+            return cmd_auth_status(client, args)
+        if args.auth_command == "login":
+            return cmd_auth_login(client, args)
+        raise LinearError("auth requires status or login")
+    if args.command == "team":
+        if args.team_command == "list":
+            return cmd_team_list(client, args)
+        raise LinearError("team requires list")
+    if args.command == "project":
+        if args.project_command == "list":
+            return cmd_project_list(client, args)
+        raise LinearError("project requires list")
+    if args.command == "state":
+        if args.state_command == "list":
+            return cmd_state_list(client, args)
+        raise LinearError("state requires list")
+    if args.command == "issue":
+        if args.issue_command == "get":
+            return cmd_issue_get(client, args)
+        if args.issue_command == "list":
+            return cmd_issue_list(client, args)
+        if args.issue_command == "create":
+            return cmd_issue_create(client, args)
+        if args.issue_command == "update":
+            return cmd_issue_update(client, args)
+        if args.issue_command == "comment":
+            return cmd_issue_comment(client, args)
+        raise LinearError("issue requires get|list|create|update|comment")
+    raise LinearError("specify a command (see linear --help)")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(hoist_global_flags(raw))
+    try:
+        result = dispatch(args)
+    except LinearError as exc:
+        print(f"linear: {exc}", file=sys.stderr)
+        return 1
+    emit(result, table=args.table)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

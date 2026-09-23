@@ -476,6 +476,14 @@ gemini-cli:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/gemini-cli/install
 
+# Install profile-owned Linear GraphQL CLI (`linear`)
+linear-cli:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/linear-cli/install
+
 # Install/upgrade vLLM
 vllm:
     #!/usr/bin/env bash

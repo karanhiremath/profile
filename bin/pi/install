@@ -135,7 +135,19 @@ NODE
     cat > "${bin_dir}/pi" <<EOF
 #!/bin/sh
 # Host-local Pi launcher. Prefer the configured agent dir unless the caller overrides it.
+# Do not remap HOME. Shared sessions follow AGENT_SHARED_HOME when present.
+if [ -f "${HOME}/src/karan.hiremath/agentic/infra/agent-shared-home.env.sh" ]; then
+  # shellcheck disable=SC1090
+  . "${HOME}/src/karan.hiremath/agentic/infra/agent-shared-home.env.sh"
+fi
 export PI_CODING_AGENT_DIR="\${PI_CODING_AGENT_DIR:-${pi_agent_dir}}"
+PRELOAD="${PROFILE_DIR}/bin/hermes/codex-grant-preload.mjs"
+if [ -f "\$PRELOAD" ]; then
+  case "\${NODE_OPTIONS:-}" in
+    *codex-grant-preload.mjs*) ;;
+    *) export NODE_OPTIONS="\${NODE_OPTIONS:+\$NODE_OPTIONS }--import \$PRELOAD" ;;
+  esac
+fi
 exec "${HOME}/.local/bin/pi" "\$@"
 EOF
     chmod +x "${bin_dir}/pi"
@@ -143,11 +155,46 @@ EOF
     echo "Configured pi ${profile_selector} agent policy, extensions, launcher, and theme: ${theme_name}"
 }
 
+write_host_pi_grant_wrapper() {
+    local dest shim preload
+    dest="${HOME}/.local/bin/pi"
+    shim="${HOME}/.local/bin/pi.pnpm-shim"
+    preload="${PROFILE_DIR}/bin/hermes/codex-grant-preload.mjs"
+    if [ -f "$dest" ] && ! grep -q 'codex-grant-preload.mjs' "$dest"; then
+        cp -a "$dest" "$shim"
+    fi
+    if [ ! -f "$shim" ]; then
+        echo "WARN: missing ${shim}; leave host pi as pnpm wrote it" >&2
+        return 0
+    fi
+    cat > "$dest" <<EOF
+#!/bin/sh
+# Profile-managed pi host launcher. pnpm add -g rewrites this file; bin/pi/install
+# restores it so Codex refresh tokens write-through to Hermes and ~/.codex.
+# Do not remap HOME. Shared sessions follow AGENT_SHARED_HOME when present.
+if [ -f "${HOME}/src/karan.hiremath/agentic/infra/agent-shared-home.env.sh" ]; then
+  # shellcheck disable=SC1090
+  . "${HOME}/src/karan.hiremath/agentic/infra/agent-shared-home.env.sh"
+fi
+PRELOAD="${preload}"
+if [ -f "\$PRELOAD" ]; then
+  case "\${NODE_OPTIONS:-}" in
+    *codex-grant-preload.mjs*) ;;
+    *) export NODE_OPTIONS="\${NODE_OPTIONS:+\$NODE_OPTIONS }--import \$PRELOAD" ;;
+  esac
+fi
+exec "${shim}" "\$@"
+EOF
+    chmod +x "$dest"
+    echo "Wrote Codex grant write-through wrapper: ${dest}"
+}
+
 install_messages "start" "$app_name"
 ensure_pnpm
 
 install_or_update_pi
 configure_pi_agent
+write_host_pi_grant_wrapper
 
 install_messages "end" "$app_name"
 

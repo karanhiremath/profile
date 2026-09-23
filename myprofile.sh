@@ -298,6 +298,14 @@ if [ -x "${_hermes_toolchain_home}/venv/bin/python" ]; then
 fi
 unset _hermes_toolchain_home
 
+# Crusoe: AGENT_SHARED_HOME=/shared/people/$USER for shared agent sessions
+# and all Hermes / pi profiles. Do not remap $HOME. Host-specific agent
+# state stays here. SOP: karan.hiremath/agentic/infra/crusoe-hermes-homes.md
+if [ -f "$HOME/src/profile/bin/hermes/fork-env.sh" ]; then
+    # shellcheck disable=SC1090
+    . "$HOME/src/profile/bin/hermes/fork-env.sh"
+fi
+
 # `herm` always launches the local herm-tui fork, never published npm 1.10.0.
 if [ -f "$HOME/src/profile/bin/hermes/herm-fork-env.sh" ]; then
     # shellcheck disable=SC1090

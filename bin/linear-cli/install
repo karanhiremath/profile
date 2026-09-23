@@ -1,0 +1,75 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+usage() {
+    cat <<'EOF'
+Usage: bin/linear-cli/install [--help]
+
+Install the profile-owned Linear GraphQL CLI as `linear` on PATH.
+
+This is not @schpet/linear-cli and not the abandoned 2021 @linear/cli (`lin`).
+Auth uses LINEAR_API_KEY or ~/.local/share/fleet/linear-token (mode 600).
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="linear-cli"
+src="${APP_BIN}/linear-cli/linear"
+dest="${HOME}/.local/bin/linear"
+token_path="${LINEAR_API_KEY_FILE:-${HOME}/.local/share/fleet/linear-token}"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 is required for linear-cli" >&2
+    exit 1
+fi
+
+if [ ! -f "${src}" ]; then
+    echo "ERROR: missing ${src}" >&2
+    exit 1
+fi
+
+install_messages "start" "$app_name"
+
+chmod 0755 "${src}"
+mkdir -p "${HOME}/.local/bin"
+ln -sfn "${src}" "${dest}"
+
+if ! command -v linear >/dev/null 2>&1; then
+    echo "WARNING: ${HOME}/.local/bin is not on PATH; linear is at ${dest}" >&2
+fi
+
+install_messages "end" "$app_name"
+
+echo "Installed: ${dest} -> ${src}"
+echo "Auth: LINEAR_API_KEY or ${token_path} (mode 600)"
+echo "Create a personal API key at https://linear.app/settings/api"
+
+if [ -n "${LINEAR_API_KEY:-}" ] || [ -s "${token_path}" ]; then
+    echo "Verifying Linear auth..."
+    if "${dest}" whoami >/dev/null; then
+        "${dest}" --table whoami
+    else
+        echo "WARNING: token present but whoami failed. Run: linear auth login" >&2
+    fi
+else
+    echo "No fleet token yet. Run: linear auth login"
+fi

@@ -35,6 +35,7 @@ Override per session: `cursor-agent --model <slug>`.
 - `approvalMode`: `allowlist` — never `--force` / `--yolo` for fleet work
 - `sandbox.mode`: `disabled` on dev Macs; use cdev/cagent sandboxes for risky remote work
 - Secrets: never commit; fleet secrets at `~/.local/share/fleet/` only
+- **Linear CLI (P0):** `just linear-cli` installs profile-owned `linear` over Linear's official GraphQL API. Auth is `LINEAR_API_KEY` or `~/.local/share/fleet/linear-token` (mode 600). Never print the token. Do not install `@schpet/linear-cli` or the 2021 `@linear/cli` (`lin`).
 - No Cartesia proprietary paths in committed profile artifacts
 - **Granola is librarian/notetaker-only:** `just cursor-setup` links `cursor/rules/*.mdc` and `cursor/skills/*`. Do not query Granola MCP unless a librarian or notetaker profile is loaded and the user names a meeting/decision/schedule. Plugin `alwaysApply` means consider, not preload. Implementor profiles never query Granola.
 - **No unbounded filesystem walks:** never `find /` or recurse network/dataset mounts. PATH / known prefixes only. Repo-scoped find: shallow + `timeout 20s`.

@@ -85,6 +85,7 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 | `just cursor-setup` | Cursor agents/skills + CLI config |
 | `just devin` | Devin for Terminal |
 | `just gemini-cli` | Gemini CLI |
+| `just linear-cli` | Linear GraphQL CLI (`linear`; official API, agent P0) |
 | `just atop` | atop (private fleet-operator TUI; clones `karanhiremath/atop`) |
 | `just herdr` | optional herdr install — not required for COSW/PM/PL (CPU hog if started) |
 | `just hermes` | Hermes Agent + herm TUI wrappers |
