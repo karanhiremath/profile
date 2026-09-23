@@ -11,6 +11,25 @@ COSW = ROOT / "bin/hermes/cosw"
 COSW_S = ROOT / "bin/hermes/cosw-s"
 COS_S = ROOT / "bin/hermes/cos-s"
 
+# These plan tests assert host-resolved state (timeout-free worktree,
+# work-devbox / personal-devbox helpers). Skip cleanly on hosts that do not
+# carry the checkout layout (e.g. CI runners) instead of failing.
+_KH_CHECKOUT = Path.home() / "src" / "karan.hiremath"
+_TIMEOUT_FREE_WORKTREE = Path.home() / "src" / "hermes-agent-worktrees" / "timeout-free-cursor-sdk-20260831T1834"
+_WORK_DEVBOX = _KH_CHECKOUT / "agentic" / "hermes" / "sandboxes" / "work-devbox"
+_PERSONAL_DEVBOX = Path.home() / "src" / "hermes" / "sandboxes" / "personal-devbox"
+
+requires_host_checkout = unittest.skipUnless(
+    _KH_CHECKOUT.is_dir() and _TIMEOUT_FREE_WORKTREE.is_dir(),
+    "host checkout + timeout-free worktree required",
+)
+requires_work_devbox = unittest.skipUnless(
+    _WORK_DEVBOX.exists(), "work-devbox helper required",
+)
+requires_personal_devbox = unittest.skipUnless(
+    _PERSONAL_DEVBOX.exists(), "personal-devbox helper required",
+)
+
 
 def run_plan(*args: str, env: dict[str, str] | None = None) -> dict[str, str]:
     merged = os.environ.copy()
@@ -36,6 +55,7 @@ def run_plan(*args: str, env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 class CoswLaunchPlanTest(unittest.TestCase):
+    @requires_host_checkout
     def test_default_is_host_timeout_free_cursor_grok(self):
         plan = run_plan()
         self.assertEqual(plan["backend"], "local")
@@ -65,6 +85,7 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertEqual(plan["cursor_sdk"], "0")
         self.assertEqual(plan["sandbox"], "0")
 
+    @requires_work_devbox
     def test_sandbox_opt_in(self):
         plan = run_plan("--sandbox")
         self.assertEqual(plan["backend"], "docker")
@@ -87,6 +108,7 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertEqual(plan["sandbox"], "0")
         self.assertEqual(plan["backend"], "local")
 
+    @requires_work_devbox
     def test_sandbox_stack_list(self):
         proc = subprocess.run(
             [str(COSW), "--sandbox-stack", "list"],
@@ -97,6 +119,7 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertIn("chief-of-staff-work", proc.stdout)
         self.assertIn("cosw-sandbox-default", proc.stdout)
 
+    @requires_work_devbox
     def test_cosw_s_ls_lists_short_names(self):
         proc = subprocess.run(
             [str(COSW_S), "ls"],
@@ -109,6 +132,7 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertIn("chief-of-staff-work", proc.stdout)
         self.assertNotIn("staging-voice", proc.stdout)
 
+    @requires_personal_devbox
     def test_cos_s_ls_lists_personal_short_names(self):
         proc = subprocess.run(
             [str(COS_S), "ls"],

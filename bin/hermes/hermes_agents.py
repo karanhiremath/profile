@@ -855,6 +855,7 @@ def _upsert_env(path: Path, updates: Dict[str, str], remove: Optional[list[str]]
     keys = set(updates) | remove_keys
     kept = [ln for ln in existing_lines if ln.partition("=")[0].strip() not in keys]
     managed = [f"{k}={v}" for k, v in updates.items() if v]
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(kept + managed) + "\n", encoding="utf-8")
     path.chmod(0o600)
 
