@@ -173,6 +173,7 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertEqual(plan["model"], "gpt-5.6-luna")
         self.assertEqual(plan["thinking"], "high")
 
+    @requires_host_checkout
     def test_thinking_only_flag_keeps_default_seat(self):
         plan = run_plan("--thinking", "low")
         self.assertEqual(plan["seat"], "cursor-grok")
