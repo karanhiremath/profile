@@ -1,0 +1,675 @@
+#!/usr/bin/env python3
+"""Allowlisted host manager for sandboxed Hermes coordination."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import re
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_SESSIONS = SCRIPT_DIR / "project_sessions.py"
+DEFAULT_STATE = Path(
+    os.environ.get(
+        "COSW_HOST_CONTROL_DIR",
+        str(
+            Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+            / "hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/host-control"
+        ),
+    )
+)
+DEFAULT_SOCKET_DIR = Path(
+    os.environ.get(
+        "COSW_HOST_CONTROL_SOCKET_DIR",
+        str(
+            Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/hermes-{os.getuid()}"))
+            / "hermes-sandbox-manager/chief-of-staff-work"
+        ),
+    )
+)
+SCHEMA = "cosw.dispatch.v1"
+BROKER_VERSION = 2
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_EVENT_BYTES = 32 * 1024
+ALLOWED_ACTIONS = {
+    "bootstrap",
+    "dispatch-pm",
+    "dispatch-status",
+    "ensure-pm",
+    "ensure-pl",
+    "event-append",
+    "fleet-status",
+    "notify-pm",
+    "status",
+}
+DENIED_KEYS = re.compile(r"(^|_)(authorization|cookie|credential|password|private_key|secret|token)(_|$)", re.I)
+TRACEPARENT = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$")
+
+
+def now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def digest(value: object) -> str:
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def state_paths(root: Path) -> tuple[Path, Path, Path]:
+    return root / "requests", root / "responses", root / "pid"
+
+
+def prepare(root: Path, runtime: Path) -> None:
+    requests, responses, _ = state_paths(root)
+    audit = root / "audit"
+    requests.mkdir(parents=True, exist_ok=True)
+    responses.mkdir(parents=True, exist_ok=True)
+    audit.mkdir(parents=True, exist_ok=True)
+    runtime.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    requests.chmod(0o700)
+    responses.chmod(0o700)
+    audit.chmod(0o700)
+    # keep-id maps sandbox uid 1000 to the host operator, so no world-accessible
+    # traversal or socket mode is needed.
+    runtime.chmod(0o700)
+
+
+def project_command(*args: str) -> Any:
+    proc = subprocess.run(
+        [sys.executable, str(PROJECT_SESSIONS), *args],
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    return json.loads(proc.stdout)
+
+
+def resolve_project(project: str) -> dict[str, Any]:
+    value = project_command("resolve", project)
+    if not isinstance(value, dict):
+        raise ValueError("project resolver returned a non-object")
+    return value
+
+
+def ensure(kind: str, project: str) -> dict[str, Any]:
+    proc = subprocess.run(
+        [sys.executable, str(PROJECT_SESSIONS), f"ensure-{kind}", project],
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    value = json.loads(proc.stdout)
+    if not isinstance(value, dict):
+        raise ValueError("project session resolver returned a non-object")
+    return value
+
+
+def tmux_running(name: str) -> bool:
+    return bool(name) and subprocess.run(
+        ["tmux", "has-session", "-t", name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def wait_for_pm(session: str, timeout: float | None = None) -> str:
+    timeout = timeout if timeout is not None else float(os.environ.get("COSW_PM_READY_TIMEOUT", "30"))
+    deadline = time.monotonic() + timeout
+    last = ""
+    while time.monotonic() < deadline:
+        if tmux_running(session):
+            target = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", session, "#{session_name}:#{window_index}.#{pane_index}"],
+                text=True,
+                capture_output=True,
+            )
+            if target.returncode == 0 and target.stdout.strip():
+                last = target.stdout.strip()
+                pane = subprocess.run(
+                    ["tmux", "capture-pane", "-p", "-t", last, "-S", "-80"],
+                    text=True,
+                    capture_output=True,
+                )
+                # A newly launched Herm TUI must finish startup before input is
+                # pasted. Existing/busy TUI panes also match Connected.
+                if pane.returncode == 0 and ("Ready" in pane.stdout or "Connected" in pane.stdout):
+                    return last
+        time.sleep(0.25)
+    raise TimeoutError(f"PM tmux session did not become ready within {timeout:g}s: {session} (last target: {last or 'none'})")
+
+
+def notify_pm(project: str, message: str, ensured: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not message or len(message.encode("utf-8")) > 16 * 1024:
+        raise ValueError("message must be 1..16384 UTF-8 bytes")
+    data = resolve_project(project)
+    session = str((data.get("tmux") or {}).get("pm_session") or "")
+    if not session:
+        raise ValueError("project has no registered PM session")
+    ensured = ensured or (ensure("pm", project) if not tmux_running(session) else {
+        "project": data.get("name"), "kind": "pm", "session": session, "created": False
+    })
+    target = wait_for_pm(session)
+    buffer = f"cosw-host-control-{os.getpid()}-{time.time_ns()}"
+    subprocess.run(["tmux", "load-buffer", "-b", buffer, "-"], input=message, text=True, check=True)
+    try:
+        subprocess.run(["tmux", "send-keys", "-t", target, "C-u"], check=True)
+        subprocess.run(["tmux", "paste-buffer", "-b", buffer, "-d", "-t", target], check=True)
+        subprocess.run(["tmux", "send-keys", "-t", target, "Enter"], check=True)
+    finally:
+        subprocess.run(["tmux", "delete-buffer", "-b", buffer], check=False)
+    return {
+        "session": session,
+        "target": target,
+        "created": bool(ensured.get("created")),
+        "delivered": True,
+    }
+
+
+def status(project: str) -> dict[str, Any]:
+    data = resolve_project(project)
+    tmux = data.get("tmux") or {}
+    result: dict[str, Any] = {"project": data.get("name"), "sessions": {}}
+    for kind in ("pm", "pl"):
+        name = str(tmux.get(f"{kind}_session") or "")
+        result["sessions"][kind] = {"name": name, "running": tmux_running(name)}
+    return result
+
+
+def bootstrap_status() -> dict[str, Any]:
+    diagnostics = project_command("doctor")
+    fleet = fleet_status()
+    return {
+        "broker_version": BROKER_VERSION,
+        "schema_version": SCHEMA,
+        "diagnostics": diagnostics,
+        **fleet,
+        "dispatch_command": "cosw-hostctl dispatch-pm <project> --message '<PM action>' [--handoff <absolute-path>]",
+    }
+
+
+def fleet_status() -> dict[str, Any]:
+    rows = project_command("list")
+    if not isinstance(rows, list):
+        raise ValueError("project list returned a non-array")
+    projects = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pm = str(row.get("pm_session") or "")
+        pl = str(row.get("pl_session") or "")
+        projects.append({
+            "name": str(row.get("name") or ""),
+            "description": str(row.get("description") or ""),
+            "pm": {"name": pm, "running": tmux_running(pm)},
+            "pl": {"name": pl, "running": tmux_running(pl)},
+        })
+    return {"observed_at": now(), "projects": projects}
+
+
+def dispatch_paths(project: dict[str, Any]) -> dict[str, Path]:
+    paths = event_sources(project)
+    if not paths:
+        raise ValueError("project has no writable event_bus.sources or event_bus.publish_paths")
+    return paths
+
+
+def append_jsonl(path: Path, value: dict[str, Any]) -> str:
+    line = json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n"
+    lock = path.with_name(path.name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a", encoding="utf-8") as guard:
+        fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(line)
+            stream.flush()
+            os.fsync(stream.fileno())
+        fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
+    return hashlib.sha256(line.encode()).hexdigest()
+
+
+def validate_handoff(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    path = str(value)
+    if len(path.encode()) > 4096 or "\x00" in path or "\n" in path or not Path(path).is_absolute():
+        raise ValueError("handoff must be an absolute path of at most 4096 UTF-8 bytes")
+    return path
+
+
+def dispatch_pm(request: dict[str, Any], who: dict[str, str]) -> dict[str, Any]:
+    requested_project = str(request.get("project") or "")
+    project = resolve_project(requested_project)
+    allowed = {str(value) for value in (project.get("event_bus") or {}).get("event_types") or []}
+    if "pm_action_required" not in allowed:
+        raise ValueError("project event_bus.event_types must register pm_action_required")
+    message = str(request.get("message") or "").strip()
+    if not message or len(message.encode()) > 12 * 1024:
+        raise ValueError("message must be 1..12288 UTF-8 bytes")
+    handoff = validate_handoff(request.get("handoff"))
+    dispatch_id = f"cosw-{time.time_ns()}-{hashlib.sha256(message.encode()).hexdigest()[:12]}"
+    canonical = message if message.startswith("PM ACTION REQUIRED:") else f"PM ACTION REQUIRED: {message}"
+    canonical += (
+        f" Dispatch ID: {dispatch_id}. Acknowledge on the project bus with kind "
+        f"pm_action_acknowledged and dispatch_id {dispatch_id}."
+    )
+    data = project.get("tmux") or {}
+    pm_session = str(data.get("pm_session") or "")
+    if not pm_session:
+        raise ValueError("project has no explicit tmux.pm_session")
+    event: dict[str, Any] = {
+        "agent_id": who.get("sandbox_id") or "chief-of-staff-work",
+        "kind": "pm_action_required",
+        "severity": "action_required",
+        "project": project.get("name"),
+        "dispatch_id": dispatch_id,
+        "message": {"role": "assistant", "content": canonical},
+        "tmux": {
+            "pm_session": pm_session,
+            "implementation_session": str(data.get("implementation_session") or data.get("pl_session") or ""),
+        },
+        "timestamp": now(),
+    }
+    if handoff:
+        event["handoff_path"] = handoff
+        event["artifacts"] = [handoff]
+    paths = dispatch_paths(project)
+    writes = [
+        {"source": source, "path": str(path), "sha256": append_jsonl(path, event)}
+        for source, path in paths.items()
+    ]
+    ensured = ensure("pm", requested_project)
+    delivery = notify_pm(requested_project, canonical, ensured)
+    return {
+        "dispatch_id": dispatch_id,
+        "project": project.get("name"),
+        "event": {"kind": "pm_action_required", "writes": writes},
+        "pm": delivery,
+        "transport_acknowledged": bool(delivery.get("delivered")),
+        "semantic_acknowledged": False,
+    }
+
+
+def tail_jsonl(path: Path, max_bytes: int = 1024 * 1024) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with path.open("rb") as stream:
+        size = stream.seek(0, os.SEEK_END)
+        stream.seek(max(0, size - max_bytes))
+        raw = stream.read().decode("utf-8", errors="replace")
+    if size > max_bytes:
+        raw = raw.split("\n", 1)[-1]
+    values = []
+    for line in raw.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            values.append(value)
+    return values
+
+
+def dispatch_status(project_name: str, dispatch_id: str) -> dict[str, Any]:
+    if not dispatch_id or len(dispatch_id) > 160 or not re.fullmatch(r"[A-Za-z0-9_.:-]+", dispatch_id):
+        raise ValueError("invalid dispatch_id")
+    project = resolve_project(project_name)
+    canonical = str(project.get("name") or "")
+    for source, path in dispatch_paths(project).items():
+        for event in reversed(tail_jsonl(path)):
+            if (
+                event.get("kind") == "pm_action_acknowledged"
+                and event.get("dispatch_id") == dispatch_id
+                and str(event.get("project") or canonical) == canonical
+            ):
+                return {
+                    "dispatch_id": dispatch_id,
+                    "project": canonical,
+                    "semantic_acknowledged": True,
+                    "ack": {
+                        "source": source,
+                        "path": str(path),
+                        "agent_id": event.get("agent_id"),
+                        "timestamp": event.get("timestamp"),
+                    },
+                }
+    return {"dispatch_id": dispatch_id, "project": canonical, "semantic_acknowledged": False}
+
+
+def contains_denied_key(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(DENIED_KEYS.search(str(key)) or contains_denied_key(item) for key, item in value.items())
+    if isinstance(value, list):
+        return any(contains_denied_key(item) for item in value)
+    return False
+
+
+def event_sources(project: dict[str, Any]) -> dict[str, Path]:
+    bus = project.get("event_bus") or {}
+    sources: dict[str, Path] = {}
+    for item in bus.get("sources") or []:
+        if isinstance(item, dict) and item.get("writable", True) and item.get("key") and item.get("path"):
+            sources[str(item["key"])] = Path(str(item["path"])).expanduser().resolve()
+    if sources:
+        return sources
+    for index, item in enumerate(bus.get("publish_paths") or []):
+        value = item.get("path") if isinstance(item, dict) else item
+        if value:
+            sources[f"publish-{index}"] = Path(str(value)).expanduser().resolve()
+    return sources
+
+
+def append_event(request: dict[str, Any], identity: dict[str, str]) -> dict[str, Any]:
+    project = resolve_project(str(request.get("project") or ""))
+    event = request.get("event")
+    if not isinstance(event, dict):
+        raise ValueError("event must be an object")
+    if contains_denied_key(event):
+        raise ValueError("event contains a denied secret-bearing key")
+    if len(json.dumps(event, ensure_ascii=False).encode()) > MAX_EVENT_BYTES:
+        raise ValueError("event exceeds 32768 UTF-8 bytes")
+    kind = str(event.get("kind") or "")
+    allowed = {str(value) for value in (project.get("event_bus") or {}).get("event_types") or []}
+    if kind not in allowed:
+        raise ValueError(f"event kind not registered for project: {kind}")
+    sources = event_sources(project)
+    source = str(request.get("source") or "")
+    if not source and len(sources) == 1:
+        source = next(iter(sources))
+    if source not in sources:
+        raise ValueError(f"event source must be one of: {sorted(sources)}")
+    path = sources[source]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = dict(event)
+    value["project"] = project.get("name")
+    value.setdefault("timestamp", now())
+    value.setdefault("agent_id", identity.get("sandbox_id") or "sandboxed-hermes-agent")
+    value["sandbox"] = {
+        "id": identity.get("sandbox_id") or "unknown",
+        "session_id": identity.get("session_id") or "unknown",
+        "trace_id": identity.get("trace_id") or "",
+    }
+    return {"source": source, "path": str(path), "sha256": append_jsonl(path, value)}
+
+
+def identity(request: dict[str, Any]) -> dict[str, str]:
+    result = {}
+    for key in ("sandbox_id", "session_id"):
+        value = str(request.get(key) or "")
+        if value and (len(value) > 160 or not re.fullmatch(r"[A-Za-z0-9_.:@/-]+", value)):
+            raise ValueError(f"invalid {key}")
+        result[key] = value
+    parent = str(request.get("traceparent") or "")
+    if parent and not TRACEPARENT.fullmatch(parent):
+        raise ValueError("invalid traceparent")
+    result["trace_id"] = parent.split("-")[1] if parent else digest({"id": request.get("id")})[:32]
+    expires = str(request.get("expires_at") or "")
+    if expires:
+        try:
+            deadline = dt.datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("invalid expires_at") from exc
+        if deadline < dt.datetime.now(dt.timezone.utc):
+            raise ValueError("request expired")
+    return result
+
+
+def handle(request: dict[str, Any]) -> dict[str, Any]:
+    request_id = str(request.get("id") or "")
+    action = str(request.get("action") or "")
+    project = str(request.get("project") or "")
+    if not request_id or len(request_id) > 128:
+        raise ValueError("invalid request id")
+    if action not in ALLOWED_ACTIONS:
+        raise ValueError(f"action not allowed: {action}")
+    if action not in {"bootstrap", "fleet-status"} and (not project or len(project) > 128):
+        raise ValueError("invalid project")
+    who = identity(request)
+    if action == "bootstrap":
+        result = bootstrap_status()
+    elif action == "dispatch-pm":
+        result = dispatch_pm(request, who)
+    elif action == "dispatch-status":
+        result = dispatch_status(project, str(request.get("dispatch_id") or ""))
+    elif action == "ensure-pm":
+        result = ensure("pm", project)
+    elif action == "ensure-pl":
+        result = ensure("pl", project)
+    elif action == "event-append":
+        result = append_event(request, who)
+    elif action == "fleet-status":
+        result = fleet_status()
+    elif action == "notify-pm":
+        result = notify_pm(project, str(request.get("message") or ""))
+    else:
+        result = status(project)
+    return {
+        "schema_version": SCHEMA,
+        "id": request_id,
+        "ok": True,
+        "action": action,
+        "project": project or None,
+        "trace_id": who["trace_id"],
+        "result": result,
+    }
+
+
+def audit(root: Path, request: dict[str, Any], response: dict[str, Any], started: float, peer_uid: int | None) -> None:
+    error = str(response.get("error") or "")
+    event = {
+        "schema_version": SCHEMA,
+        "observed_at": now(),
+        "event_type": "sandbox.manager.request",
+        "request_id": str(request.get("id") or response.get("id") or ""),
+        "action": str(request.get("action") or "unknown"),
+        "project": str(request.get("project") or "") or None,
+        "sandbox_id": str(request.get("sandbox_id") or "") or None,
+        "session_id": str(request.get("session_id") or "") or None,
+        "trace_id": response.get("trace_id"),
+        "peer_uid": peer_uid,
+        "ok": bool(response.get("ok")),
+        "error_kind": error.split(":", 1)[0] if error else None,
+        "duration_ms": round((time.monotonic() - started) * 1000, 3),
+        "request_sha256": digest(request),
+    }
+    path = root / "audit" / "events.jsonl"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event, separators=(",", ":")) + "\n")
+    path.chmod(0o600)
+
+
+def process(
+    request: dict[str, Any],
+    root: Path,
+    peer_uid: int | None = None,
+    authenticated_sandbox_id: str | None = None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    request = dict(request)
+    request_id = str(request.get("id") or "")
+    try:
+        if peer_uid is not None and peer_uid != os.getuid():
+            raise PermissionError("socket peer uid does not match manager uid")
+        if authenticated_sandbox_id:
+            request["sandbox_id"] = authenticated_sandbox_id
+        response = handle(request)
+    except Exception as exc:  # responses intentionally exclude tracebacks and secrets
+        response = {
+            "schema_version": SCHEMA,
+            "id": request_id,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    audit(root, request, response, started, peer_uid)
+    return response
+
+
+def process_file(path: Path, root: Path, responses: Path, authenticated_sandbox_id: str | None = None) -> None:
+    request_id = path.stem
+    try:
+        if path.stat().st_size > MAX_REQUEST_BYTES:
+            raise ValueError("request too large")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("request must be an object")
+        response = process(raw, root, authenticated_sandbox_id=authenticated_sandbox_id)
+        request_id = str(raw.get("id") or request_id)
+    except Exception as exc:
+        response = {"schema_version": SCHEMA, "id": request_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    tmp = responses / f".{request_id}.{os.getpid()}.tmp"
+    final = responses / f"{request_id}.json"
+    tmp.write_text(json.dumps(response, separators=(",", ":")) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(final)
+    path.unlink(missing_ok=True)
+
+
+def peer_uid(conn: socket.socket) -> int | None:
+    if not hasattr(socket, "SO_PEERCRED"):
+        return None
+    try:
+        _, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        return uid
+    except OSError:
+        return None
+
+
+def read_request(conn: socket.socket) -> dict[str, Any]:
+    data = bytearray()
+    while len(data) <= MAX_REQUEST_BYTES:
+        chunk = conn.recv(min(8192, MAX_REQUEST_BYTES + 1 - len(data)))
+        if not chunk:
+            break
+        data.extend(chunk)
+        if b"\n" in chunk:
+            break
+    if len(data) > MAX_REQUEST_BYTES:
+        raise ValueError("request too large")
+    raw = json.loads(bytes(data).split(b"\n", 1)[0])
+    if not isinstance(raw, dict):
+        raise ValueError("request must be an object")
+    return raw
+
+
+def run(root: Path, runtime: Path, interval: float, sandbox_id: str | None = None) -> int:
+    prepare(root, runtime)
+    requests, responses, pidfile = state_paths(root)
+    path = runtime / "manager.sock"
+    path.unlink(missing_ok=True)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    path.chmod(0o600)
+    server.listen(16)
+    server.settimeout(interval)
+    pidfile.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    stop = False
+
+    def request_stop(_signum: int, _frame: Any) -> None:
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    try:
+        while not stop:
+            try:
+                conn, _ = server.accept()
+            except TimeoutError:
+                conn = None
+            if conn is not None:
+                with conn:
+                    try:
+                        uid = peer_uid(conn)
+                        response = process(
+                            read_request(conn),
+                            root,
+                            uid if uid is not None else -1,
+                            authenticated_sandbox_id=sandbox_id,
+                        )
+                    except Exception as exc:
+                        response = {"schema_version": SCHEMA, "id": "", "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                    conn.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+            for item in sorted(requests.glob("*.json")):
+                process_file(item, root, responses, sandbox_id)
+    finally:
+        server.close()
+        path.unlink(missing_ok=True)
+        pidfile.unlink(missing_ok=True)
+    return 0
+
+
+def is_running(pidfile: Path) -> bool:
+    try:
+        os.kill(int(pidfile.read_text().strip()), 0)
+        return True
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("start", "run", "status", "stop"))
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
+    parser.add_argument("--socket-dir", type=Path, default=DEFAULT_SOCKET_DIR)
+    parser.add_argument("--interval", type=float, default=0.2)
+    parser.add_argument("--sandbox-id")
+    args = parser.parse_args()
+    root = args.state_dir.expanduser().resolve()
+    runtime = args.socket_dir.expanduser().resolve()
+    prepare(root, runtime)
+    _, _, pidfile = state_paths(root)
+    if args.command == "run":
+        return run(root, runtime, args.interval, args.sandbox_id)
+    if args.command == "status":
+        print(json.dumps({"running": is_running(pidfile), "state": str(root), "socket": str(runtime / "manager.sock")}))
+        return 0 if is_running(pidfile) else 1
+    if args.command == "stop":
+        if is_running(pidfile):
+            os.kill(int(pidfile.read_text().strip()), signal.SIGTERM)
+        return 0
+    if is_running(pidfile):
+        return 0
+    log = root / "broker.log"
+    with log.open("ab") as stream:
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "run",
+                "--state-dir",
+                str(root),
+                "--socket-dir",
+                str(runtime),
+                "--interval",
+                str(args.interval),
+                *(["--sandbox-id", args.sandbox_id] if args.sandbox_id else []),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=stream,
+            stderr=stream,
+            start_new_session=True,
+        )
+    for _ in range(50):
+        if is_running(pidfile) and (runtime / "manager.sock").exists():
+            print(json.dumps({"running": True, "state": str(root), "socket": str(runtime / "manager.sock")}))
+            return 0
+        time.sleep(0.05)
+    raise SystemExit("broker failed to start")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

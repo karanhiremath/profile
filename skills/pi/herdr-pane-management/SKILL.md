@@ -7,7 +7,13 @@ argument-hint: "open pane|start poller|diagnose herdr"
 
 # Herdr Pane Management
 
-Use this skill whenever operating Herdr from inside Pi, especially when the user asks to open a pane "in this session/tab/workspace".
+Use this skill only when the user is already inside a Herdr session and asks to
+open, split, or diagnose a **visible Herdr pane**.
+
+**Do not start herdr for COSW / PM / PL / implementor fleets.** Herdr hogs CPU.
+Those fleets live in tmux + herm-tui and are steered with atop / M2M
+(`$HERMES_HOME/steer-inbox/live/<pid>.sock`). A stopped herdr server is not a
+gap and is not a reason to launch `herdr server`.
 
 ## Critical safety rules
 

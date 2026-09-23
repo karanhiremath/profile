@@ -2,8 +2,15 @@
 """Install and select Karan's Nighttide Herm TUI themes.
 
 Keeps Herm's visual theme aligned with ~/src/profile/bin/ghostty/config.
-The dark background is the exact Ghostty background (#2e3d4e). Accent is
-the host/profile identity cue:
+The dark background is intentionally the exact Ghostty background (#2e3d4e)
+for both personal and work profiles, while preserving a small identity cue:
+  - personal/default profiles use the purple accent
+  - work profiles use the orange accent
+  - work PM profiles use nighttide-work-pm (same Ember accent, slightly
+    different primary so the PM seat is distinct from CoS-W)
+  - work dreamer profiles use nighttide-work-dreamer (same Ember accent
+    and Growth line; Cartesia Memory primary so the scratch seat is
+    distinct from CoS-W and PM)
 
   this MBP Cos          nighttide-violet
   home-mac-mini Cos     nighttide-teal
@@ -53,7 +60,9 @@ def _under_root(root: Path) -> Path | None:
     check both `<root>/herm-tui` and `<root>/node_modules/herm-tui`.
     """
     candidates = [root / "herm-tui", root / "node_modules" / "herm-tui"]
-    # pnpm v11 may place global packages under a hash/project directory.
+    # pnpm v11 may place global packages under a hash/project directory, e.g.
+    #   <global>/v11/<hash>/node_modules/herm-tui
+    # while `pnpm root -g` reports only <global>/v11.
     candidates.extend(sorted(root.glob("*/herm-tui")))
     candidates.extend(sorted(root.glob("*/node_modules/herm-tui")))
     for candidate in candidates:
@@ -62,19 +71,35 @@ def _under_root(root: Path) -> Path | None:
     return None
 
 
+def _is_fork_checkout(path: Path) -> bool:
+    return (path / "src" / "index.tsx").is_file()
+
+
+def _themes_dir(root: Path) -> Path:
+    source = root / "src" / "theme" / "themes"
+    if source.is_dir():
+        return source
+    return root / "themes"
+
+
 def _herm_tui_dir() -> Path:
-    """Locate the active herm-tui install/source directory.
+    """Locate the herm-tui tree used for nighttide theme files.
 
     Resolution order:
-      1. HERMES_HERM_TUI_DIR (install-tui exports this; may be ~/src/herm)
-      2. HERMES_PNPM_GLOBAL_ROOT / `pnpm root -g`
-      3. toolchain-local pnpm global store
-      4. legacy npm-global install used by older profile shims
-      5. local fork checkout at ~/src/herm
+      1. HERMES_HERM_TUI_DIR / HERM_TUI_FORK (local fork preferred)
+      2. fork checkouts at ~/src/herm-tui then ~/src/herm
+      3. legacy npm-global install under the toolchain npm home
+      4. HERMES_PNPM_GLOBAL_ROOT / `pnpm root -g` / toolchain-local pnpm global
+      5. fallback to ~/src/herm-tui
+
     """
-    direct_env = os.environ.get("HERMES_HERM_TUI_DIR")
-    if direct_env and Path(direct_env).exists():
-        return Path(direct_env)
+    for key in ("HERMES_HERM_TUI_DIR", "HERM_TUI_FORK"):
+        raw = os.environ.get(key, "").strip()
+        if raw and Path(raw).exists():
+            return Path(raw)
+    for candidate in (HOME / "src" / "herm-tui", HOME / "src" / "herm"):
+        if _is_fork_checkout(candidate):
+            return candidate
 
     root_env = os.environ.get("HERMES_PNPM_GLOBAL_ROOT")
     if root_env:
@@ -99,6 +124,8 @@ def _herm_tui_dir() -> Path:
     )
     if matches:
         return matches[-1]
+    if matches:
+        return matches[-1]
 
     toolchain = Path(os.environ.get("HERMES_TOOLCHAIN_HOME", HOME / ".local/share/hermes-toolchain"))
     npm_home = Path(os.environ.get("HERMES_NPM_HOME", toolchain / "npm"))
@@ -109,12 +136,12 @@ def _herm_tui_dir() -> Path:
     local_fork = HOME / "src/herm"
     if local_fork.exists():
         return local_fork
-    return pnpm_home / "global/v11/node_modules/herm-tui"
+    return HOME / "src" / "herm-tui"
 
 
 HERM_TUI = _herm_tui_dir()
 BUILTIN_THEMES = HERM_TUI / "src/theme/themes"
-THEMES = HERM_TUI / "themes"
+THEMES = _themes_dir(HERM_TUI)
 INDEX = HERM_TUI / "index.js"
 
 GHOSTTY_CONFIG = HOME / "src/profile/bin/ghostty/config"
@@ -156,13 +183,22 @@ def ghostty_background() -> str:
 
 
 GHOSTTY_BG = ghostty_background()
+# Ghostty palette 4 — slightly deeper than work color12 (#5b8fd4) so PM
+# TUIs stay in the nighttide-work family but read as a distinct seat.
+PM_PRIMARY_TEXT = "#4d7ab5"
+# Cartesia Memory / cartesia-blue-500. Same Ember+Growth-line family as
+# CoS-W/PM; softer primary so dreamw is visually distinct.
+DREAMER_PRIMARY_TEXT = "#99b0c8"
 
 # (accent, primary, line_color). Dark surfaces stay transparent so Ghostty
 # shows through — Cos chrome is accent-only, not a painted panel.
 THEME_VARIANTS: dict[str, tuple[str, str, str]] = {
-    "nighttide": (EMBER, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide": (RED, NIGHTTIDE_PRIMARY, TRANSPARENT),
+    "nighttide-personal": (RED, NIGHTTIDE_PRIMARY, TRANSPARENT),
     "nighttide-ember": (EMBER, GHOSTTY_COLOR12, PRODUCT_GROWTH_LIGHT),
     "nighttide-work": (EMBER, GHOSTTY_COLOR12, PRODUCT_GROWTH_LIGHT),
+    "nighttide-work-pm": (EMBER, PM_PRIMARY_TEXT, PRODUCT_GROWTH_LIGHT),
+    "nighttide-work-dreamer": (EMBER, DREAMER_PRIMARY_TEXT, PRODUCT_GROWTH_LIGHT),
     "nighttide-violet": (VIOLET, NIGHTTIDE_PRIMARY, TRANSPARENT),
     "nighttide-teal": (TEAL, BLUE, TRANSPARENT),
     "nighttide-blue": (BLUE, NIGHTTIDE_PRIMARY, TRANSPARENT),
@@ -482,6 +518,16 @@ def is_work_home(home: Path) -> bool:
     )
 
 
+def is_pm_home(home: Path) -> bool:
+    name = home.name.lower()
+    return "project-manager" in name or name.endswith("-pm")
+
+
+def is_dreamer_home(home: Path) -> bool:
+    name = home.name.lower()
+    return "dreamer" in name or name.endswith("-dreamw")
+
+
 def is_dream_home(home: Path) -> bool:
     if is_work_home(home):
         return False
@@ -563,6 +609,10 @@ def theme_for_home(
         if pinned:
             return pinned
     kind = profile_class(home)
+    if is_pm_home(home):
+        return "nighttide-work-pm"
+    if is_dreamer_home(home):
+        return "nighttide-work-dreamer"
     if kind == "work":
         return PROFILE_DEFAULT_THEME["work"]
     if kind == "dream":
@@ -615,7 +665,7 @@ def candidate_homes() -> list[Path]:
 
     agents = HOME / ".local/share/hermes-agents"
     if agents.exists():
-        for dirpath, _dirnames, _filenames in os.walk(agents, onerror=lambda _e: None):
+        for dirpath, _dn, _fn in os.walk(agents, onerror=lambda _e: None):
             d = Path(dirpath)
             try:
                 if (d / "config.yaml").exists() or (d / "SOUL.md").exists():

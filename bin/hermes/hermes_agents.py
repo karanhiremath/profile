@@ -3,6 +3,7 @@
 an isolated HERMES_HOME for it.
 
 Each agent gets its own HERMES_HOME under
+``$AGENT_SHARED_HOME/hermes-agents/<name>/`` (Crusoe) or
 ``$XDG_DATA_HOME/hermes-agents/<name>/`` so it never touches the operator's
 main ~/.hermes. The home gets a derived ``config.yaml`` (Cartesia TTS+STT wired
 to the profile's endpoint/models), an ``.env`` seeded from ~/.hermes/.env with
@@ -33,6 +34,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+
+# alias_seat lives next to this script; make the import work under importlib
+# test harnesses and arbitrary entrypoints, not just direct script execution.
+_HERMES_BIN_DIR = str(Path(__file__).resolve().parent)
+if _HERMES_BIN_DIR not in sys.path:
+    sys.path.insert(0, _HERMES_BIN_DIR)
 
 import alias_seat
 
@@ -111,6 +118,25 @@ def find_profile(name: str) -> Path:
     raise SystemExit(f"ERROR: no such profile: {name}. Searched:\n  {searched}")
 
 
+def _shared_people_root() -> Optional[Path]:
+    for key in ("AGENT_SHARED_HOME", "HERMES_SHARED_PEOPLE_HOME"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            if path.is_dir():
+                return path
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if not user:
+        return None
+    root = Path("/shared/people") / user
+    return root if root.is_dir() else None
+
+
+def _shared_people_agents_home() -> Optional[Path]:
+    root = _shared_people_root()
+    return (root / "hermes-agents") if root is not None else None
+
+
 def _rewrite_profile_name(text: str, old: str, new: str) -> str:
     return re.sub(
         rf"^name:\s*{re.escape(old)}\s*$",
@@ -141,6 +167,10 @@ def ensure_lane_profile(base: str, instance: str) -> str:
 def _data_home() -> Path:
     if override := os.environ.get("HERMES_AGENTS_DATA_HOME"):
         return Path(override).expanduser()
+    shared = _shared_people_agents_home()
+    if shared is not None:
+        return shared
+
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "hermes-agents"
 
@@ -159,8 +189,8 @@ def _read_env_file(path: Path) -> Dict[str, str]:
     return out
 
 
-def _cursor_api_key_from_pi_auth() -> Optional[str]:
-    """Read the Cursor key Pi already stores, without printing it."""
+def _api_key_from_pi_auth(provider: str) -> Optional[str]:
+    """Read a provider key Pi already stores, without printing it."""
     raw_dir = os.environ.get("PI_AGENT_DIR") or str(Path.home() / ".pi" / "agent")
     path = Path(raw_dir).expanduser() / "auth.json"
     try:
@@ -169,11 +199,15 @@ def _cursor_api_key_from_pi_auth() -> Optional[str]:
         return None
     if not isinstance(data, dict):
         return None
-    cursor = data.get("cursor")
-    if not isinstance(cursor, dict):
+    entry = data.get(provider)
+    if not isinstance(entry, dict):
         return None
-    key = str(cursor.get("key") or cursor.get("api_key") or "").strip()
+    key = str(entry.get("key") or entry.get("api_key") or "").strip()
     return key or None
+
+
+def _cursor_api_key_from_pi_auth() -> Optional[str]:
+    return _api_key_from_pi_auth("cursor")
 
 
 def _personal_host() -> bool:
@@ -398,7 +432,79 @@ def _resolve_env(key: str) -> Optional[str]:
         return _resolve_cursor_api_key()
     if os.environ.get(key):
         return os.environ[key]
-    return _read_env_file(MAIN_HOME / ".env").get(key)
+    from_dotenv = _read_env_file(MAIN_HOME / ".env").get(key)
+    if from_dotenv:
+        return from_dotenv
+    pi_auth_providers = {
+        "CURSOR_API_KEY": "cursor",
+        "TOGETHER_API_KEY": "together",
+    }
+    provider = pi_auth_providers.get(key)
+    if provider:
+        return _api_key_from_pi_auth(provider)
+    return None
+
+
+ROUTER_PROFILE_NAME = "model-router"
+
+
+def _load_shared_model_router(profile_file: Path) -> Dict[str, Any]:
+    """Load the shared model-router fragment merged under every profile.
+
+    Searched next to the profile first (work vs personal homes can diverge),
+    then along the profile search PATH. Missing router = no merge, so
+    sandboxes/checkouts without the fragment keep working unchanged.
+    """
+    candidates = [profile_file.parent / f"{ROUTER_PROFILE_NAME}.yaml"]
+    candidates += [d / f"{ROUTER_PROFILE_NAME}.yaml" for d in profile_path()]
+    for router_path in candidates:
+        if not router_path.exists():
+            continue
+        data = yaml.safe_load(router_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            raise SystemExit(f"ERROR: shared model router is not a mapping: {router_path}")
+        return data
+    return {}
+
+
+def _merge_shared_model_router(profile: Dict[str, Any], profile_file: Path) -> None:
+    """Merge the shared model-router under a profile (profile wins per key).
+
+    - llm: only fills keys the profile omits (provider/model/thinking/
+      reasoning_effort/base_url).
+    - fallback_model: installed only when the profile defines none; entries
+      equal to the profile's primary route are excluded so a seat never
+      'falls back' to the model it already runs.
+    """
+    router = _load_shared_model_router(profile_file)
+    if not router:
+        return
+
+    router_llm = router.get("llm")
+    if isinstance(router_llm, dict) and router_llm:
+        llm = profile.get("llm")
+        if not isinstance(llm, dict):
+            llm = {}
+            profile["llm"] = llm
+        for key in ("provider", "model", "thinking", "reasoning_effort", "base_url"):
+            if key in router_llm and not str(llm.get(key) or "").strip():
+                llm[key] = router_llm[key]
+
+    if "fallback_model" not in profile:
+        chain = router.get("fallback_model")
+        if isinstance(chain, list) and chain:
+            llm = profile.get("llm") or {}
+            primary = (str(llm.get("provider") or "").strip().lower(), str(llm.get("model") or "").strip().lower())
+            entries: list[Dict[str, Any]] = []
+            for entry in chain:
+                if not isinstance(entry, dict):
+                    continue
+                candidate = (str(entry.get("provider") or "").strip().lower(), str(entry.get("model") or "").strip().lower())
+                if primary == ("", "") or candidate == primary:
+                    continue
+                entries.append(entry)
+            if entries:
+                profile["fallback_model"] = entries
 
 
 def _stage_cursor_key_slots(key: str) -> None:
@@ -421,6 +527,7 @@ def load_profile(name: str) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise SystemExit(f"ERROR: profile is not a mapping: {path}")
     data.setdefault("name", name)
+    _merge_shared_model_router(data, path)
     return data
 
 
@@ -584,20 +691,129 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
     if not tts_on and "tts" in toolsets:
         toolsets.remove("tts")
 
+    provider = (
+        os.environ.get("HERMES_AGENT_LLM_PROVIDER", "").strip()
+        or str(llm.get("provider") or "openai-codex")
+    )
+    model = (
+        os.environ.get("HERMES_AGENT_LLM_MODEL", "").strip()
+        or str(llm.get("model") or "gpt-5.5")
+    )
+    model_cfg: Dict[str, Any] = {
+        "provider": provider,
+        "default": model,
+    }
+    llm_base_url = str(llm.get("base_url") or "").strip()
+    if llm_base_url:
+        model_cfg["base_url"] = llm_base_url
+    thinking = (
+        os.environ.get("HERMES_AGENT_LLM_THINKING", "").strip().lower()
+        or str(llm.get("thinking") or llm.get("reasoning_effort") or "").strip().lower()
+    )
     cfg: Dict[str, Any] = {
-        "model": {
-            "provider": llm.get("provider", "openai-codex"),
-            "default": _cursor_sdk_model(str(llm.get("model", "gpt-5.5"))),
-        },
+        "model": model_cfg,
         "toolsets": toolsets,
         "plugins": {"enabled": ["cartesia"] if (tts_on or stt_on) else []},
     }
+    if thinking:
+        # Hermes reads agent.reasoning_effort; keep the profile field portable
+        # as llm.thinking so pi and other harnesses can reuse the same YAML.
+        cfg["agent"] = {"reasoning_effort": thinking}
     display = profile.get("display")
     if isinstance(display, dict) and display:
         cfg["display"] = display
-    terminal = resolve_terminal(profile)
-    if terminal:
+    terminal = profile.get("terminal")
+    override = os.environ.get("HERMES_AGENT_TERMINAL_BACKEND", "").strip()
+    if override == "host":
+        override = "local"
+    if override:
+        terminal = dict(terminal) if isinstance(terminal, dict) else {}
+        terminal["backend"] = override
+        if override in {"local"}:
+            cwd_env = os.environ.get("TERMINAL_CWD") or os.environ.get("COSW_TERMINAL_CWD") or ""
+            if cwd_env.strip():
+                terminal["cwd"] = cwd_env
+            for key in list(terminal):
+                if key.startswith("docker_"):
+                    terminal.pop(key, None)
+        if override in {"docker", "singularity", "modal", "daytona"} and not terminal.get("cwd"):
+            terminal["cwd"] = os.environ.get("TERMINAL_CWD") or ("/workspace" if override == "docker" else "/root")
+        if override == "docker":
+            terminal.setdefault("docker_image", os.environ.get("TERMINAL_DOCKER_IMAGE", "localhost/hermes-agent/python-node:dev"))
+            volumes_env = os.environ.get("TERMINAL_DOCKER_VOLUMES", "").strip()
+            if volumes_env:
+                try:
+                    volumes = json.loads(volumes_env)
+                except json.JSONDecodeError:
+                    volumes = [item.strip() for item in volumes_env.split(",") if item.strip()]
+                if isinstance(volumes, list) and all(isinstance(item, str) for item in volumes):
+                    terminal["docker_volumes"] = volumes
+            src = Path.home() / "src"
+            if src.is_dir() and not terminal.get("docker_volumes"):
+                terminal["docker_volumes"] = [f"{src}:/root/src", f"{src}:/home/hermes/src"]
+            persist_env = os.environ.get("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "").strip().lower()
+            if persist_env in {"1", "true", "yes"}:
+                terminal["docker_persist_across_processes"] = True
+            elif persist_env in {"0", "false", "no"}:
+                terminal["docker_persist_across_processes"] = False
+            else:
+                terminal.setdefault("docker_persist_across_processes", False)
+            extra_args_env = os.environ.get("TERMINAL_DOCKER_EXTRA_ARGS", "").strip()
+            if extra_args_env:
+                try:
+                    extra_args = json.loads(extra_args_env)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(f"ERROR: TERMINAL_DOCKER_EXTRA_ARGS must be a JSON array: {exc}") from exc
+                if not isinstance(extra_args, list) or not all(isinstance(item, str) for item in extra_args):
+                    raise SystemExit("ERROR: TERMINAL_DOCKER_EXTRA_ARGS must be a JSON array of strings")
+                terminal["docker_extra_args"] = extra_args
+            docker_env_raw = os.environ.get("TERMINAL_DOCKER_ENV", "").strip()
+            if docker_env_raw:
+                try:
+                    docker_env = json.loads(docker_env_raw)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(f"ERROR: TERMINAL_DOCKER_ENV must be a JSON object: {exc}") from exc
+                if not isinstance(docker_env, dict) or not all(
+                    isinstance(key, str) and isinstance(value, str) for key, value in docker_env.items()
+                ):
+                    raise SystemExit("ERROR: TERMINAL_DOCKER_ENV must be a JSON object of string values")
+                terminal["docker_env"] = docker_env
+    if isinstance(terminal, dict) and terminal:
+        cwd = terminal.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            terminal = dict(terminal)
+            terminal["cwd"] = str(Path(os.path.expandvars(cwd)).expanduser())
         cfg["terminal"] = terminal
+    providers = profile.get("providers")
+    if isinstance(providers, dict) and providers:
+        # Pass through named custom providers so profile-scoped MoA slots can
+        # route to local/OpenAI-compatible endpoints (vLLM, Together, etc.)
+        # without hand-editing the isolated HERMES_HOME config. Profiles should
+        # use key_env for secrets; committed profiles must not inline api_key.
+        cfg["providers"] = providers
+    moa = profile.get("moa")
+    if isinstance(moa, dict) and moa:
+        # Pass through declarative MoA presets so profiles can avoid the
+        # built-in OpenRouter-backed default when that provider is not
+        # configured in the runtime home.
+        cfg["moa"] = moa
+    fallback_model = profile.get("fallback_model")
+    if fallback_model is not None:
+        # Shared model-router chain (or a profile-local override). Validate
+        # fail-closed here so a malformed router breaks loudly at materialize
+        # time instead of silently disabling fallback inside Hermes.
+        entries = fallback_model if isinstance(fallback_model, list) else [fallback_model]
+        cleaned: list[Dict[str, Any]] = []
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise SystemExit(f"ERROR: fallback_model[{i}] must be a dict with 'provider' and 'model'")
+            provider = str(entry.get("provider") or "").strip()
+            model = str(entry.get("model") or "").strip()
+            if not provider or not model:
+                raise SystemExit(f"ERROR: fallback_model[{i}] needs non-empty 'provider' and 'model'")
+            cleaned.append({"provider": provider, "model": model})
+        if cleaned:
+            cfg["fallback_model"] = cleaned
     if tts_on:
         cfg["tts"] = {"provider": "cartesia", "model": tts.get("model", "sonic-3.5"), "voice": voice}
     if stt_on:
@@ -608,11 +824,24 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         }
     else:
         cfg["stt"] = {"enabled": False}
+    journal = os.environ.get("HERMES_STATE_JOURNAL_MODE", "").strip().lower()
+    shared_root = _shared_people_root()
+    if not journal and (
+        str(_data_home()).startswith("/shared/people/")
+        or (shared_root is not None and str(_data_home()).startswith(str(shared_root)))
+    ):
+        journal = "delete"
+    if journal in {"delete", "wal"}:
+        db_cfg = dict(cfg.get("database") or {})
+        db_cfg.setdefault("journal_mode", journal)
+        if journal == "delete":
+            db_cfg.setdefault("synchronous", "FULL")
+        cfg["database"] = db_cfg
     cfg["secrets"] = cursor_onepassword_secrets()
     return cfg
 
 
-def _upsert_env(path: Path, updates: Dict[str, str]) -> None:
+def _upsert_env(path: Path, updates: Dict[str, str], remove: Optional[list[str]] = None) -> None:
     """Write/refresh .env: seed from ~/.hermes/.env on first create, then upsert
     only the managed keys so manual edits (platform tokens) survive."""
     existing_lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else None
@@ -622,11 +851,82 @@ def _upsert_env(path: Path, updates: Dict[str, str]) -> None:
         existing_lines = seed.read_text(encoding="utf-8").splitlines() if seed.exists() else [
             "# Managed by profile/bin/hermes/agents. Machine-local; do not commit.",
         ]
-    keys = set(updates)
+    remove_keys = set(remove or ())
+    keys = set(updates) | remove_keys
     kept = [ln for ln in existing_lines if ln.partition("=")[0].strip() not in keys]
     managed = [f"{k}={v}" for k, v in updates.items() if v]
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(kept + managed) + "\n", encoding="utf-8")
     path.chmod(0o600)
+
+
+def _is_pm_profile(name: str, profile: Dict[str, Any]) -> bool:
+    n = name.lower()
+    role = str(profile.get("role") or "").strip().lower()
+    return "project-manager" in n or n.endswith("-pm") or role == "pm"
+
+
+def _is_dreamer_profile(name: str, profile: Dict[str, Any]) -> bool:
+    n = name.lower()
+    role = str(profile.get("role") or "").strip().lower()
+    return "dreamer" in n or n.endswith("-dreamw") or role == "dreamer"
+
+
+def _find_installed_eikon(name: str) -> Optional[Path]:
+    """Locate an already-installed eikon package to copy into a new home."""
+    homes = [
+        MAIN_HOME / "eikons" / name,
+        MAIN_HOME / "profiles" / "work" / "eikons" / name,
+        Path.home() / ".local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/eikons" / name,
+        Path.home() / ".local/share/hermes-agents/chief-of-staff-work/eikons" / name,
+        # Host CoS-W profile (visible on the operator machine, often not in the sandbox).
+        Path("/home/karan.hiremath/.local/share/hermes-agents/chief-of-staff-work/profiles/chief-of-staff-work/eikons") / name,
+        # Bundled catalog copy shipped with herm-tui (sandbox / source checkout).
+        Path.home() / "src" / "herm-tui" / "node_modules" / "eikon" / "eikons" / name,
+    ]
+    agents = Path.home() / ".local/share/hermes-agents"
+    if agents.is_dir():
+        try:
+            children = list(agents.iterdir())
+        except OSError:
+            children = []
+        for child in children:
+            if not child.is_dir():
+                continue
+            homes.append(child / "eikons" / name)
+            homes.append(child / "profiles" / child.name / "eikons" / name)
+    seen: set[str] = set()
+    for path in homes:
+        try:
+            key = str(path.resolve())
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.is_dir() and (path / f"{name}.eikon").is_file():
+            return path
+    return None
+
+
+def _sync_eikon_into_homes(name: str, *homes: Path) -> None:
+    src = _find_installed_eikon(name)
+    if src is None:
+        print(f"warning: eikon {name!r} not found to copy into agent home", file=sys.stderr)
+        return
+    try:
+        src_key = src.resolve()
+    except OSError:
+        return
+    for home in homes:
+        dest = home / "eikons" / name
+        try:
+            if dest.exists() and dest.resolve() == src_key:
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dest, dirs_exist_ok=True)
+        except OSError:
+            continue
 
 
 def _merge_json_file(path: Path, updates: Dict[str, Any]) -> None:
@@ -678,13 +978,32 @@ def materialize(name: str) -> Path:
     herm_prefs = (profile.get("herm") or {}).get("preferences") or {}
     if not isinstance(herm_prefs, dict):
         herm_prefs = {}
+    herm_prefs = dict(herm_prefs)
+    if _is_pm_profile(name, profile):
+        herm_prefs.setdefault("theme", "nighttide-work-pm")
+        herm_prefs.setdefault("themeMode", "dark")
+        herm_prefs.setdefault("eikon", "mono")
+    if _is_dreamer_profile(name, profile):
+        herm_prefs.setdefault("theme", "nighttide-work-dreamer")
+        herm_prefs.setdefault("themeMode", "dark")
     # config.yaml — always regenerated (fully derived from the profile).
     (home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     if herm_prefs:
         _merge_json_file(home / "herm" / "tui.json", herm_prefs)
 
-    # SOUL.md — persona.
+    # SOUL.md — persona plus a launcher-supplied, generic bootstrap contract.
+    # The append file is intentionally explicit rather than discovered from the
+    # work repo, so generic launchers can expose capabilities without embedding
+    # project-specific state in profile tooling.
     persona = (profile.get("persona") or "").strip()
+    append_path = os.environ.get("HERMES_PERSONA_APPEND_FILE", "").strip()
+    if append_path:
+        source = Path(append_path).expanduser()
+        if not source.is_file():
+            raise SystemExit(f"ERROR: HERMES_PERSONA_APPEND_FILE is unavailable: {source}")
+        appendix = source.read_text(encoding="utf-8").strip()
+        if appendix:
+            persona = f"{persona}\n\n{appendix}" if persona else appendix
     if persona:
         (home / "SOUL.md").write_text(persona + "\n", encoding="utf-8")
 
@@ -693,7 +1012,40 @@ def materialize(name: str) -> Path:
     # non-managed keys (e.g. gateway platform tokens) are preserved. Voice keys
     # are written only for voice-enabled agents.
     env_updates: Dict[str, str] = {}
-    env_updates.update(terminal_env_updates(cfg.get("terminal") if isinstance(cfg.get("terminal"), dict) else {}))
+    env_remove: list[str] = []
+    terminal_cfg = cfg.get("terminal") if isinstance(cfg.get("terminal"), dict) else {}
+    if terminal_cfg.get("backend") == "docker":
+        env_updates["TERMINAL_ENV"] = "docker"
+        env_updates["TERMINAL_CWD"] = str(terminal_cfg.get("cwd") or "/root")
+        if terminal_cfg.get("docker_image"):
+            env_updates["TERMINAL_DOCKER_IMAGE"] = str(terminal_cfg["docker_image"])
+        if terminal_cfg.get("docker_volumes"):
+            env_updates["TERMINAL_DOCKER_VOLUMES"] = json.dumps(terminal_cfg["docker_volumes"])
+        if "docker_persist_across_processes" in terminal_cfg:
+            env_updates["TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES"] = "true" if terminal_cfg["docker_persist_across_processes"] else "false"
+        # Terraform AWS provider / AWS CLI v2 SSO profiles need shared config
+        # loading when host ~/.aws is staged into the sandbox.
+        env_updates["AWS_SDK_LOAD_CONFIG"] = "1"
+        for key in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION"):
+            value = os.environ.get(key, "").strip()
+            if value:
+                env_updates[key] = value
+        docker_bin = os.environ.get("HERMES_DOCKER_BINARY", "").strip()
+        if docker_bin:
+            env_updates["HERMES_DOCKER_BINARY"] = docker_bin
+    elif terminal_cfg.get("backend") in {"local", "host"}:
+        env_updates["TERMINAL_ENV"] = "local"
+        if terminal_cfg.get("cwd"):
+            env_updates["TERMINAL_CWD"] = str(terminal_cfg["cwd"])
+        env_remove.extend(
+            [
+                "TERMINAL_DOCKER_IMAGE",
+                "TERMINAL_DOCKER_VOLUMES",
+                "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+                "TERMINAL_DOCKER_EXTRA_ARGS",
+                "TERMINAL_DOCKER_ENV",
+            ]
+        )
     if uses_voice:
         if base_url:
             env_updates["CARTESIA_BASE_URL"] = base_url
@@ -703,10 +1055,27 @@ def materialize(name: str) -> Path:
         voice = cfg.get("tts", {}).get("voice")
         if voice:
             env_updates["CARTESIA_VOICE_ID"] = voice
-    cursor_key = _resolve_env("CURSOR_API_KEY")
-    if cursor_key:
-        env_updates["CURSOR_API_KEY"] = cursor_key
-    _upsert_env(home / ".env", env_updates)
+    provider_name = str(cfg.get("model", {}).get("provider") or "").strip().lower()
+    if provider_name in {"cursor", "cursor-sdk", "cursor-agent"}:
+        cursor_key = _resolve_env("CURSOR_API_KEY")
+        if cursor_key:
+            env_updates["CURSOR_API_KEY"] = cursor_key
+    providers_cfg = cfg.get("providers")
+    if isinstance(providers_cfg, dict):
+        # Existing isolated homes are not re-seeded from ~/.hermes/.env after
+        # first creation. Keep named provider credentials in sync when profiles
+        # declare a key_env, while preserving manually-added per-profile values
+        # if the source env is absent. Never inline or print secret values.
+        for entry in providers_cfg.values():
+            if not isinstance(entry, dict):
+                continue
+            key_env = str(entry.get("key_env") or "").strip()
+            if not key_env or key_env in env_updates:
+                continue
+            value = _resolve_env(key_env)
+            if value:
+                env_updates[key_env] = value
+    _upsert_env(home / ".env", env_updates, remove=env_remove)
 
     def sync_runtime_home(runtime_home: Path) -> None:
         """Mirror the materialized config into a real Hermes named profile.
@@ -722,7 +1091,7 @@ def materialize(name: str) -> Path:
             _merge_json_file(runtime_home / "herm" / "tui.json", herm_prefs)
         if persona:
             (runtime_home / "SOUL.md").write_text(persona + "\n", encoding="utf-8")
-        _upsert_env(runtime_home / ".env", env_updates)
+        _upsert_env(runtime_home / ".env", env_updates, remove=env_remove)
 
         if uses_voice:
             _ensure_cartesia_plugin(runtime_home)
@@ -750,6 +1119,9 @@ def materialize(name: str) -> Path:
     sync_runtime_home(runtime_home)
     (home / "active_profile").write_text(runtime_name + "\n", encoding="utf-8")
 
+    eikon_name = str(herm_prefs.get("eikon") or "").strip()
+    if eikon_name:
+        _sync_eikon_into_homes(eikon_name, home, runtime_home)
     # Pin owned fleet aliases so herm-tui cannot treat the isolated root
     # as a second switchable "default" Cos/PM/notes profile.
     mapped = alias_seat.seat_for_profile(runtime_name) or alias_seat.seat_for_profile(name)
@@ -812,7 +1184,13 @@ def cmd_resolve(name: str) -> int:
         "platform": profile.get("platform", "telegram"),
         "toolsets": cfg["toolsets"],
         "home": str(_data_home() / name),
+        "model": cfg.get("model"),
     }
+    if cfg.get("fallback_model"):
+        out["fallback_model"] = cfg["fallback_model"]
+    reasoning_effort = (cfg.get("agent") or {}).get("reasoning_effort") if isinstance(cfg.get("agent"), dict) else None
+    if reasoning_effort:
+        out["thinking"] = reasoning_effort
     if uses_voice:
         base_url = resolve_base_url(profile, required=False)
         out["endpoint"] = _redact_host(base_url) if base_url else "(unset)"

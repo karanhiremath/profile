@@ -1,0 +1,115 @@
+#!/bin/bash
+# Install/upgrade sesh — smart tmux session manager (fuzzy connect, config
+# templates, tmux-popup + fzf picker). https://github.com/joshmedeski/sesh
+#
+# Usage: install [--help]
+
+set -euo pipefail
+
+shopt -s failglob
+
+# Set PROFILE_DIR and APP_BIN if not already set
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+. "${APP_BIN}/sh/brew_helper.sh"
+
+app_name="sesh"
+
+usage() {
+    sed -n '2,5p' "$0" | sed -e 's/^# //' -e '/^#$/d'
+}
+
+case "${1:-}" in
+    -h|--help|help) usage; exit 0 ;;
+esac
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+if command -v sesh >/dev/null 2>&1; then
+    echo "sesh already installed: $(command -v sesh)"
+    sesh --version 2>/dev/null || true
+else
+    install_messages "start" "$app_name"
+
+    if ensure_brew_in_path; then
+        # sesh is in homebrew-core (bottled for macOS + Linux arm64/x86_64) —
+        # no tap needed.
+        echo "Installing sesh via Homebrew..."
+        brew install sesh
+    else
+        case "${MACHINE}" in
+            Darwin|Mac)
+                echo "ERROR: Homebrew not found. Please install Homebrew first."
+                exit 1
+                ;;
+            Linux)
+                echo "Homebrew not found; installing sesh from GitHub releases..."
+                case "${ARCH}" in
+                    x86_64|amd64)  SESH_ARCH="x86_64" ;;
+                    aarch64|arm64) SESH_ARCH="arm64" ;;
+                    *)
+                        echo "ERROR: unsupported architecture: ${ARCH}"
+                        exit 1
+                        ;;
+                esac
+
+                if ! command -v curl >/dev/null 2>&1; then
+                    echo "ERROR: curl required to install sesh"
+                    exit 1
+                fi
+
+                SESH_VERSION="$(curl -s https://api.github.com/repos/joshmedeski/sesh/releases/latest | grep tag_name | cut -d '"' -f 4)"
+                ASSET="sesh_Linux_${SESH_ARCH}.tar.gz"
+                URL="https://github.com/joshmedeski/sesh/releases/download/${SESH_VERSION}/${ASSET}"
+
+                TMP="$(mktemp -d)"
+                trap 'rm -rf "$TMP"' EXIT
+
+                echo "Downloading ${ASSET} (${SESH_VERSION})..."
+                curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 "${URL}" -o "${TMP}/${ASSET}"
+                tar xzf "${TMP}/${ASSET}" -C "${TMP}" sesh
+
+                mkdir -p "${HOME}/.local/bin"
+                mv "${TMP}/sesh" "${HOME}/.local/bin/sesh"
+                chmod +x "${HOME}/.local/bin/sesh"
+                ;;
+            *)
+                echo "Unsupported platform: ${MACHINE}"
+                exit 1
+                ;;
+        esac
+    fi
+
+    install_messages "end" "$app_name"
+fi
+
+if ! command -v fzf >/dev/null 2>&1; then
+    echo "WARN: fzf not found — sesh's tmux-popup picker needs fzf-tmux. Run 'just fzf'."
+fi
+
+# Session layouts name real hosts, repos and customer programs, and this repo is public.
+# The config itself lives in a private repo; only the symlink is managed here.
+mkdir -p "${HOME}/.config/sesh"
+sesh_host="$(hostname -s)"
+sesh_src="${SESH_CONFIG_SRC:-${KH_DIR:-${HOME}/src/karan.hiremath}/scripts/sesh/sesh.${sesh_host}.toml}"
+
+echo ""
+echo "sesh installed: $(command -v sesh || echo "${HOME}/.local/bin/sesh")"
+sesh --version 2>/dev/null || true
+if [ -f "$sesh_src" ]; then
+    ln -fs "$sesh_src" "${HOME}/.config/sesh/sesh.toml"
+    echo "Config linked: ~/.config/sesh/sesh.toml -> ${sesh_src}"
+else
+    echo "WARN: no sesh layout for host '${sesh_host}' at ${sesh_src}"
+    echo "      Add one there, or set SESH_CONFIG_SRC to point at a personal config."
+fi
+echo "tmux popup: prefix + T (bind wired in bin/tmux/tmux.conf; this profile's prefix is C-a)"

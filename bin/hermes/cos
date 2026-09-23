@@ -8,6 +8,15 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/llm-flags.sh"
+
+if ! parse_llm_flags "$@"; then
+  exit 1
+fi
+
+set -- "${LLM_FLAGS_REST[@]+${LLM_FLAGS_REST[@]}}"
+
 
 usage() {
   cat <<'EOF'
@@ -90,4 +99,5 @@ if [ -n "$COS_LANE" ]; then
   log "lane $COS_LANE -> $COS_PROFILE"
 fi
 
+llm_flags_export
 exec "$SCRIPT_DIR/agents" up "$COS_PROFILE" "${COS_ARGS[@]+"${COS_ARGS[@]}"}"

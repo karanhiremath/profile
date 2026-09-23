@@ -1,0 +1,13 @@
+---
+description: Linear CLI is the P0 Linear path; never print the token
+alwaysApply: true
+---
+
+# Linear CLI (profile-owned)
+
+Use the profile-owned `linear` command. It calls Linear's official GraphQL API.
+
+- Auth: `LINEAR_API_KEY`, else `~/.local/share/fleet/linear-token` (mode 600)
+- Never print, log, or commit the token
+- Never install `@schpet/linear-cli` or the 2021 `@linear/cli` (`lin`)
+- MCP is optional fallback only when `linear` is unavailable in that harness

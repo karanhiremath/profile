@@ -17,6 +17,19 @@ printf 'bun_home=%s\n' "$BUN_HOME"
 printf 'private_dir=%s\n' "$PRIVATE_DIR"
 printf 'shim_dir=%s\n' "$SHIM_DIR"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/herm-fork-env.sh"
+if export_herm_fork_env; then
+  printf 'herm_fork=%s\n' "$HERM_TUI_FORK"
+  printf 'herm_entry=%s\n' "$(herm_fork_entry)"
+else
+  printf 'herm_fork=missing\n'
+fi
+if [ -n "${HERM_TUI_FORK:-}" ] && [ -x "$SHIM_DIR/herm" ]; then
+  printf 'herm_shim_points_at_fork=%s\n' "$(grep -Fq "$HERM_TUI_FORK/src/index.tsx" "$SHIM_DIR/herm" && echo yes || echo no)"
+fi
+
 for bin in hermes hermes-agent herm; do
   path="$(command -v "$bin" 2>/dev/null || true)"
   if [ -n "$path" ]; then

@@ -1,0 +1,64 @@
+#!/bin/bash
+# tmux-pane-link — print a clickable deep link to a tmux pane.
+#
+# Prints an OSC 8 hyperlink (text = the target, href = tmux-goto://<target>)
+# for terminals that support clickable hyperlinks (Ghostty does). Clicking it
+# only jumps tmux if `bin/tmux-goto/install` has registered the tmux-goto://
+# scheme with the OS on the machine actually running the terminal — see
+# bin/tmux-goto/README.md for exactly what that does and does not cover.
+# The manual fallback command is always printed too (to stderr, unless
+# --quiet), so this is never a link that "looks clickable but isn't".
+#
+# Usage: tmux-pane-link <session[:window[.pane]]> [--text LABEL] [--plain] [--quiet]
+
+set -euo pipefail
+
+usage() { sed -n '2,12p' "$0" | sed -e 's/^# //' -e '/^#$/d'; }
+
+TARGET=""
+LABEL=""
+PLAIN=0
+QUIET=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --text)    LABEL="${2:-}"; shift 2 ;;
+        --plain)   PLAIN=1; shift ;;
+        --quiet)   QUIET=1; shift ;;
+        -*)
+            echo "ERROR: unknown flag: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            if [ -n "$TARGET" ]; then
+                echo "ERROR: unexpected extra argument: $1" >&2
+                exit 2
+            fi
+            TARGET="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$TARGET" ]; then
+    echo "ERROR: missing tmux target (session[:window[.pane]])" >&2
+    usage >&2
+    exit 2
+fi
+
+[ -n "$LABEL" ] || LABEL="$TARGET"
+URI="tmux-goto://${TARGET}"
+
+if [ "$PLAIN" -eq 1 ]; then
+    printf '%s\n' "$LABEL"
+else
+    # OSC 8: ESC ] 8 ; ; URI ST  TEXT  ESC ] 8 ; ; ST
+    printf '\033]8;;%s\033\\%s\033]8;;\033\\\n' "$URI" "$LABEL"
+fi
+
+if [ "$QUIET" -eq 0 ]; then
+    printf 'manual: tmux switch-client -t %s   (or: tmux attach-session -t %s)\n' \
+        "$TARGET" "${TARGET%%:*}" >&2
+fi

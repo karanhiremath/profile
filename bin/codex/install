@@ -16,29 +16,181 @@ fi
 . "${APP_BIN}/sh/shell_fns" --source-only
 
 app_name="codex"
-codex_app_bin="/Applications/Codex.app/Contents/Resources/codex"
-target_dir="${HOME}/.local/bin"
-target="${target_dir}/codex"
+package_name="@openai/codex"
+
+path_prepend() {
+    local dir="$1"
+    [ -n "${dir}" ] || return 0
+    case ":${PATH}:" in
+        *":${dir}:"*) ;;
+        *) export PATH="${dir}:${PATH}" ;;
+    esac
+}
+
+# node + pnpm are provided by mise (config/mise/config.toml). Guard on pnpm.
+ensure_pnpm() {
+    if ! command -v pnpm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+        echo "ERROR: node + pnpm are required and are provided by mise."
+        echo "Run 'just mise' (or bin/mise/install), then re-run this installer."
+        exit 1
+    fi
+
+    # pnpm requires its global bin dir on PATH before `pnpm add -g` will run.
+    export PNPM_HOME="${PNPM_HOME:-${HOME}/.local/share/pnpm}"
+    mkdir -p "${PNPM_HOME}/bin"
+    path_prepend "${PNPM_HOME}/bin"
+
+    # On this profile, pnpm's global-bin-dir is normally ~/.local/bin. Keep this
+    # robust across pnpm versions/configs by honoring both global-bin-dir and
+    # `pnpm bin -g` when available.
+    local configured_bin pnpm_bin
+    configured_bin="$(pnpm config get global-bin-dir 2>/dev/null || true)"
+    if [ -n "${configured_bin}" ] && [ "${configured_bin}" != "undefined" ] && [ "${configured_bin}" != "null" ]; then
+        mkdir -p "${configured_bin}"
+        path_prepend "${configured_bin}"
+    fi
+
+    pnpm_bin="$(pnpm bin -g 2>/dev/null || true)"
+    if [ -n "${pnpm_bin}" ] && [ -d "${pnpm_bin}" ]; then
+        path_prepend "${pnpm_bin}"
+    fi
+}
+
+restore_pnpm_codex_shim() {
+    local pnpm_bin codex_shim pnpm_shim
+    pnpm_bin="$(pnpm bin -g 2>/dev/null || true)"
+    [ -n "${pnpm_bin}" ] || return 0
+
+    codex_shim="${pnpm_bin}/codex"
+    pnpm_shim="${pnpm_bin}/codex-pnpm"
+    if [ -f "${codex_shim}" ] && grep -q "profile-managed codex wrapper" "${codex_shim}" && [ -x "${pnpm_shim}" ]; then
+        cp "${pnpm_shim}" "${codex_shim}"
+    fi
+}
+
+remove_legacy_codex_link() {
+    local pnpm_bin codex_path link_target
+    pnpm_bin="$(pnpm bin -g 2>/dev/null || true)"
+    [ -n "${pnpm_bin}" ] || return 0
+
+    codex_path="${pnpm_bin}/codex"
+    [ -L "${codex_path}" ] || return 0
+
+    link_target="$(readlink "${codex_path}" || true)"
+    case "${link_target}" in
+        *"/.codex/packages/standalone/"*|/Applications/Codex.app/*)
+            echo "Removing legacy Codex CLI link: ${codex_path} -> ${link_target}"
+            rm -f "${codex_path}"
+            ;;
+    esac
+}
+
+cleanup_stale_arg0_dirs() {
+    local base dir removed skipped
+    base="${HOME}/.codex/tmp/arg0"
+    [ -d "${base}" ] || return 0
+
+    removed=0
+    skipped=0
+    while IFS= read -r -d '' dir; do
+        if [ -e "${dir}/.lock" ]; then
+            if command -v lsof >/dev/null 2>&1; then
+                if lsof "${dir}/.lock" >/dev/null 2>&1; then
+                    skipped=$((skipped + 1))
+                    continue
+                fi
+            else
+                skipped=$((skipped + 1))
+                continue
+            fi
+        fi
+
+        if rm -rf -- "${dir}" 2>/dev/null; then
+            removed=$((removed + 1))
+        fi
+    done < <(find "${base}" -mindepth 1 -maxdepth 1 -type d -name 'codex-arg0*' -print0 2>/dev/null)
+
+    if [ "${removed}" -gt 0 ] || [ "${skipped}" -gt 0 ]; then
+        echo "Cleaned Codex arg0 temp dirs: removed=${removed} skipped_locked=${skipped}"
+    fi
+}
+
+install_codex_wrapper() {
+    local pnpm_bin codex_shim pnpm_shim
+    pnpm_bin="$(pnpm bin -g 2>/dev/null || true)"
+    if [ -z "${pnpm_bin}" ]; then
+        echo "ERROR: unable to resolve pnpm global bin dir" >&2
+        exit 1
+    fi
+
+    codex_shim="${pnpm_bin}/codex"
+    pnpm_shim="${pnpm_bin}/codex-pnpm"
+    if [ ! -f "${codex_shim}" ]; then
+        echo "ERROR: expected pnpm codex shim missing: ${codex_shim}" >&2
+        exit 1
+    fi
+
+    if grep -q "profile-managed codex wrapper" "${codex_shim}"; then
+        if [ ! -x "${pnpm_shim}" ]; then
+            echo "ERROR: codex wrapper exists but pnpm shim is missing: ${pnpm_shim}" >&2
+            exit 1
+        fi
+    else
+        cp "${codex_shim}" "${pnpm_shim}"
+        chmod +x "${pnpm_shim}"
+    fi
+
+    cat > "${codex_shim}" <<EOF
+#!/usr/bin/env bash
+# profile-managed codex wrapper
+set -euo pipefail
+
+cleanup_stale_arg0_dirs() {
+    local base dir
+    base="\${HOME}/.codex/tmp/arg0"
+    [ -d "\${base}" ] || return 0
+
+    while IFS= read -r -d '' dir; do
+        if [ -e "\${dir}/.lock" ]; then
+            if command -v lsof >/dev/null 2>&1; then
+                lsof "\${dir}/.lock" >/dev/null 2>&1 && continue
+            else
+                continue
+            fi
+        fi
+        rm -rf -- "\${dir}" 2>/dev/null || true
+    done < <(find "\${base}" -mindepth 1 -maxdepth 1 -type d -name 'codex-arg0*' -print0 2>/dev/null)
+}
+
+cleanup_stale_arg0_dirs
+exec "${pnpm_shim}" "\$@"
+EOF
+    chmod +x "${codex_shim}"
+    echo "Installed profile-managed codex wrapper: ${codex_shim} -> ${pnpm_shim}"
+}
 
 install_messages "start" "$app_name"
+ensure_pnpm
 
-if [ ! -x "$codex_app_bin" ]; then
-    echo "ERROR: Codex.app CLI not found at ${codex_app_bin}"
-    echo "Install or update Codex.app, then rerun: just codex"
-    exit 1
+printf 'node version: %s\n' "$(node --version)"
+printf 'pnpm version: %s\n' "$(pnpm --version)"
+
+restore_pnpm_codex_shim
+remove_legacy_codex_link
+
+if pnpm list -g --depth=0 "${package_name}" 2>/dev/null | grep -Fq "${package_name}@"; then
+    echo "Codex CLI already installed via pnpm. Upgrading ${package_name}..."
+else
+    echo "Installing Codex CLI via pnpm (${package_name})..."
 fi
 
-mkdir -p "$target_dir"
-ln -fns "$codex_app_bin" "$target"
+pnpm add -g --allow-build="${package_name}" "${package_name}"
 
-if ! command -v codex >/dev/null 2>&1; then
-    echo "WARNING: codex linked to ${target}, but ${target_dir} is not on PATH in this shell."
-    echo "Open a new zsh/tmux session or source ~/.zshrc."
-fi
-
-"$target" --version
+cleanup_stale_arg0_dirs
+install_codex_wrapper
+codex --version
 
 install_messages "end" "$app_name"
 
-echo "codex linked at ${target}"
+echo "codex installed via pnpm package ${package_name}"
 echo "tmux usage: tmux new -s codex 'codex -C ~/src'"

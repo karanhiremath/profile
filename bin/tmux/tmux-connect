@@ -8,6 +8,11 @@
 #   tmux-connect --ls [host]            # list attachable tmux sessions (default: local)
 #   tmux-connect <host> --ls            # same, for a registered host
 #   tmux-connect --ls-cache [host]      # print cached session names (completions)
+#   tmux-connect --sandbox --ls [host]  # list running user podman sandboxes
+#   tmux-connect --sandbox <host> --ls  # same
+#   tmux-connect --sandbox <host> <box> # attach/create tmux session "home" in sandbox
+#   tmux-connect --sandbox <host> <box> <session>
+#   tmux-connect --sandbox <host> <box> --ls   # list tmux sessions in sandbox
 #   tmux-connect --list                 # list registered hosts
 #   tmux-connect --status               # check which hosts have active sessions
 #   tmux-connect --help                 # show help
@@ -20,10 +25,11 @@ REGISTRY="${SCRIPT_DIR}/hosts/registry.conf"
 EXTRA_REGISTRIES="${TMUX_CONNECT_EXTRA_REGISTRIES:-}"
 
 usage() {
-    sed -n '2,13p' "$0" | sed 's/^# //'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 SESSION_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/tmux-connect/sessions"
+SANDBOX_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/tmux-connect/sandboxes"
 
 session_cache_file() {
     local host="${1:-local}"
@@ -45,6 +51,52 @@ cmd_ls_cache() {
     if [[ -f "$file" ]]; then
         cat "$file"
     fi
+}
+
+sandbox_cache_file() {
+    local host="${1:-local}"
+    host="${host//\//_}"
+    printf '%s/%s\n' "$SANDBOX_CACHE_DIR" "$host"
+}
+
+sandbox_session_cache_file() {
+    local host="${1:-local}" sandbox="${2:-}"
+    host="${host//\//_}"
+    sandbox="${sandbox//\//_}"
+    printf '%s/%s--%s\n' "$SESSION_CACHE_DIR" "$host" "$sandbox"
+}
+
+write_sandbox_cache() {
+    local host="$1"
+    local file
+    file="$(sandbox_cache_file "$host")"
+    mkdir -p "$SANDBOX_CACHE_DIR"
+    cat > "$file"
+}
+
+write_sandbox_session_cache() {
+    local host="$1" sandbox="$2"
+    local file
+    file="$(sandbox_session_cache_file "$host" "$sandbox")"
+    mkdir -p "$SESSION_CACHE_DIR"
+    cat > "$file"
+}
+
+cmd_sandbox_ls_cache() {
+    local host="${1:-local}" sandbox="${2:-}"
+    local file
+    if [[ -n "$sandbox" ]]; then
+        file="$(sandbox_session_cache_file "$host" "$sandbox")"
+    else
+        file="$(sandbox_cache_file "$host")"
+    fi
+    if [[ -f "$file" ]]; then
+        cat "$file"
+    fi
+}
+
+valid_tmux_ident() {
+    [[ "$1" =~ ^[A-Za-z0-9._:@-]+$ ]]
 }
 
 # All registry files (base + extras)
@@ -321,6 +373,9 @@ cmd_picker() {
     connect_host "$host"
 }
 
+# shellcheck source=tmux-connect-sandbox.inc
+. "$SCRIPT_DIR/tmux-connect-sandbox.inc"
+
 # --- Main ---
 
 case "${1:-}" in
@@ -328,6 +383,10 @@ case "${1:-}" in
     -l|--list|list)         cmd_list ;;
     --ls)                   cmd_ls "${2:-local}" ;;
     --ls-cache)             cmd_ls_cache "${2:-local}" ;;
+    --sandbox)
+        shift
+        sandbox_main "$@"
+        ;;
     -s|--status|status)     cmd_status ;;
     "")                     cmd_picker ;;
     *)

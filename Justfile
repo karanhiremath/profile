@@ -5,14 +5,14 @@ HOME := "$(echo $HOME)"
 
 
 # Install core tools + full coding-dev environment
-all: mise git tmux nvim pc dev
+all: mise git tmux nvim fzf pc dev
 
 install:
     ./install.sh
 
 # Stand up the full coding-dev environment in one command (idempotent):
 # mise (-> node, pnpm, uv, neovim) then the coding CLIs (claude, pi,
-# copilot-cli, hermes). mise runs FIRST so the CLI installers find node/pnpm/uv.
+# codex, copilot-cli, hermes). mise runs FIRST so the CLI installers find node/pnpm/uv.
 # Resilient: a failing installer is reported and the rest still run; a summary
 # prints at the end and `just dev` exits non-zero if any step failed.
 # Usage: just dev [--help]
@@ -33,8 +33,11 @@ dev *FLAGS:
       1. bin/mise/install         mise + node, pnpm, uv, neovim
       2. bin/claude/install       Claude Code CLI       (pnpm global)
       3. bin/pi/install           pi coding agent       (pnpm global)
-      4. bin/copilot-cli/install  GitHub Copilot CLI
-      5. bin/hermes/install       Hermes isolated toolchain (uses mise's uv)
+      4. bin/omp/install          oh-my-pi (omp)        (checksummed GitHub release)
+      5. bin/codex/install        Codex CLI             (pnpm global)
+      6. bin/copilot-cli/install  GitHub Copilot CLI
+      7. bin/hermes/install       Hermes isolated toolchain (uses mise's uv)
+      8. bin/atop/install         private fleet-operator TUI (~/src/atop)
 
     mise runs first so the CLI installers find node/pnpm/uv on PATH.
     Resilient: a failing step is reported and the rest continue; a summary
@@ -68,8 +71,11 @@ dev *FLAGS:
     run_step "mise"        ./bin/mise/install
     run_step "claude"      ./bin/claude/install
     run_step "pi"          ./bin/pi/install
+    run_step "omp"         ./bin/omp/install
+    run_step "codex"       ./bin/codex/install
     run_step "copilot-cli" ./bin/copilot-cli/install
     run_step "hermes"      ./bin/hermes/install
+    run_step "atop"        ./bin/atop/install
 
     echo ""
     echo "=== coding-dev environment summary ==="
@@ -240,6 +246,29 @@ nvim:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/nvim/install
 
+# Install/upgrade fzf
+fzf:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/fzf/install
+
+# Install/upgrade sesh (smart tmux session manager) + link sesh.toml
+sesh:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/sesh/install
+
+# Register the tmux-goto:// URI scheme + install tmux-pane-link
+tmux-goto:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/tmux-goto/install
 # Build and install atop (agent-fleet TUI) from karan.hiremath crate
 # Crate source (first hit with Cargo.toml):
 #   ATOP_SRC, $KH_DIR/agentic/telemetry/atop, ~/src/karan.hiremath/...,
@@ -399,6 +428,14 @@ pi:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/pi/install
 
+# Install/upgrade oh-my-pi (omp) + profile-managed personal/work agent
+omp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/omp/install
+
 # Link profile-managed Pi skills into ~/.pi/agent/skills
 pi-skills:
     #!/usr/bin/env bash
@@ -409,7 +446,7 @@ pi-skills:
         ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
     done
 
-# Link Codex.app CLI for shell/tmux use
+# Install/upgrade Codex CLI via pnpm (node + pnpm from mise)
 codex:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -488,6 +525,14 @@ gemini-cli:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/gemini-cli/install
 
+# Install profile-owned Linear GraphQL CLI (`linear`)
+linear-cli:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/linear-cli/install
+
 # Install/upgrade vLLM
 vllm:
     #!/usr/bin/env bash
@@ -504,7 +549,15 @@ kubectl:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/kubectl/install
 
-# Install/upgrade herdr (agent multiplexer; runs inside tmux)
+# Install/upgrade atop (private fleet-operator TUI; cloned to ~/src/atop)
+atop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/atop/install
+
+# Optional: install herdr. Not required for COSW/PM/PL/atop (it hogs CPU).
 herdr:
     #!/usr/bin/env bash
     set -euo pipefail

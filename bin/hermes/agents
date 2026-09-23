@@ -24,7 +24,9 @@
 #       --surface cli|tui|gateway   Override the profile's default surface
 #       --platform <name>           Messaging platform for surface=gateway
 #       --model <name>              Launch-scoped model (writes HERMES_AGENT_LLM_MODEL)
+#       --model <provider/model>    provider/ prefix splits when it names a known provider
 #       --provider <name>           Launch-scoped provider (openai-codex, cursor, xai, ...)
+#       --thinking <level>          Launch-scoped thinking level (low, medium, high, xhigh)
 #       --host, --no-sandbox        Host-native local terminal
 #       --sandbox                   Compose sandbox (work-devboxes or personal hermes-sandboxes)
 #       --check                     Run an endpoint health check before launching
@@ -42,6 +44,12 @@ while [ -L "$SOURCE" ]; do
   case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/llm-flags.sh"
+if [ -f "$SCRIPT_DIR/fork-env.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$SCRIPT_DIR/fork-env.sh"
+fi
 PY_BACKEND="$SCRIPT_DIR/hermes_agents.py"
 TEMPLATE_SRC="$SCRIPT_DIR/profiles/TEMPLATE.yaml"
 PLUGIN_DIR="$SCRIPT_DIR/plugins/cartesia"
@@ -177,14 +185,15 @@ case "$cmd" in
   up)
     [ "$#" -ge 1 ] || die "up needs a profile name"
     profile="$1"; shift
-    surface=""; platform=""; do_check=0; model=""; provider=""; sandbox=""
-    here=0; force_tui=0; passthrough=()
+    surface=""; platform=""; do_check=0; model=""; provider=""; thinking=""; sandbox=""; here=0; force_tui=0; passthrough=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --surface) surface="${2:?}"; shift 2 ;;
         --platform) platform="${2:?}"; shift 2 ;;
         --model) model="${2:?}"; shift 2 ;;
         --provider) provider="${2:?}"; shift 2 ;;
+        --thinking) thinking="${2:?}"; shift 2 ;;
+
         --host|--host-tools|--no-sandbox) sandbox="host"; shift ;;
         --sandbox|--docker) sandbox="sandbox"; shift ;;
         --check) do_check=1; shift ;;
@@ -209,9 +218,23 @@ case "$cmd" in
       export HERMES_TUI_PROVIDER="$provider"
     fi
     if [ -n "$model" ]; then
+      # Split provider/model when the prefix names a known provider so
+      # together/zai-org/GLM-5.3-Flash-style ids pin both halves.
+      llm_flags_split "$model"
+      if [ -n "$LLM_SPLIT_PROVIDER" ]; then
+        if [ -n "$provider" ] && [ "$provider" != "$LLM_SPLIT_PROVIDER" ]; then
+          die "conflicting --provider $provider vs --model $model"
+        fi
+        [ -n "$provider" ] || provider="$LLM_SPLIT_PROVIDER"
+        model="$LLM_SPLIT_MODEL"
+      fi
+
       export HERMES_AGENT_LLM_MODEL="$model"
       export HERMES_INFERENCE_MODEL="$model"
       export HERMES_MODEL="$model"
+    fi
+    if [ -n "$thinking" ]; then
+      export HERMES_AGENT_LLM_THINKING="$thinking"
     fi
     # Cursor SDK on Mini rejects grok-4.6:fast. Strip the thinking suffix.
     case "${HERMES_MODEL:-}" in
@@ -241,6 +264,9 @@ case "$cmd" in
     if [ -n "$alias_name" ]; then
       "$PY" "$SEAT_PY" write-seat "$profile" "$alias_name" >/dev/null
       export_pin "$profile"
+    fi
+    if type hermes_ensure_short_home >/dev/null 2>&1; then
+      runtime_home="$(hermes_ensure_short_home "$profile" "$runtime_home")"
     fi
     echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home alias=${alias_name:-none}"
 
