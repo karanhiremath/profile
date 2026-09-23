@@ -36,6 +36,11 @@ Backend:
   --terminal-backend local|docker      explicit backend
   --sandbox-stack [args]               run work-devbox (list|up|down|status|ensure)
 
+State:
+  launch runs a state_doctor preflight (integrity, NFS+WAL, writers,
+  AF_UNIX length) for the profile and fails closed on corruption.
+  COSW_SKIP_STATE_PREFLIGHT=1 overrides (diagnostics only).
+
 Seats:
   --codex, --gpt-5.5                   start on openai-codex/gpt-5.5
   --grok, --cursor-grok                Cursor grok-4.6:fast + timeout-free PYTHONPATH
@@ -697,6 +702,15 @@ ensure_dispatch_bootstrap() {
   if ! result="$("$py" "$SCRIPT_DIR/project_sessions.py" doctor 2>&1)"; then
     printf '%s\n' "$result" >&2
     die "COSW project dispatch bootstrap failed; apply the remediation above"
+  fi
+  # State-store preflight (hermes.state-doctor.v1): integrity, NFS+WAL guard,
+  # single-writer census, AF_UNIX path length. Blocks launch on hard fails
+  # instead of starting the gateway crash-loop on a corrupt state.db.
+  if [ "${COSW_SKIP_STATE_PREFLIGHT:-0}" != "1" ] && [ -f "$SCRIPT_DIR/state_doctor.py" ]; then
+    if ! "$py" "$SCRIPT_DIR/state_doctor.py" preflight --profile "$COSW_PROFILE" >/dev/null 2>&1; then
+      "$py" "$SCRIPT_DIR/state_doctor.py" census --profile "$COSW_PROFILE" 2>/dev/null | tail -20 >&2 || true
+      die "COSW state preflight failed for $COSW_PROFILE — run: state_doctor.py repair --profile $COSW_PROFILE --yes (override: COSW_SKIP_STATE_PREFLIGHT=1)"
+    fi
   fi
   agents_data_home="${HERMES_AGENTS_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-agents}"
   profile_home="$agents_data_home/$COSW_PROFILE/profiles/$COSW_PROFILE"
