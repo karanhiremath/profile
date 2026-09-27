@@ -232,6 +232,22 @@ tmux:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/tmux/install
 
+# Install/upgrade sesh (smart tmux session manager) + link sesh.toml
+sesh:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/sesh/install
+
+# Register the tmux-goto:// URI scheme + install tmux-pane-link
+tmux-goto:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/tmux-goto/install
+
 
 nvim:
     #!/usr/bin/env bash

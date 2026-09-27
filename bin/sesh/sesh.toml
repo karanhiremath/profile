@@ -1,0 +1,50 @@
+# sesh config — profile-managed, symlinked to ~/.config/sesh/sesh.toml by
+# bin/sesh/install. Docs: https://github.com/joshmedeski/sesh
+#
+# Session name -> real working directory is a best-effort guess based on what
+# each session is actually for. Verify/adjust `path` for your current
+# workstreams; these are meant as a fast starting point, not gospel.
+
+[default_session]
+preview_command = "eza --all --git --icons --color=always {} 2>/dev/null || ls -la {}"
+
+# Chief-of-staff / cross-project orchestration (cos, cosw, pm, pl surfaces
+# live under here — see ~/src/karan.hiremath/CLAUDE.md).
+[[session]]
+name = "cosw"
+path = "~/src/karan.hiremath"
+icon = "🧭"
+
+# Personal knowledge base / daily notes.
+[[session]]
+name = "home"
+path = "~/src/notes"
+icon = "🏠"
+
+# FIPS/IL5 validation lane hub. In practice this session spans multiple repo
+# checkouts (bifrost-il5-*, cartesia-security-il5-*, gypsum-il5-*, forge) as
+# separate windows — this path is just the connect-or-create default;
+# hand-add a `[[window]]` per repo if you want sesh to lay them out too.
+[[session]]
+name = "fips"
+path = "~/src/karan.hiremath/agentic/validation"
+icon = "🔒"
+
+# ServiceNow FIPS Linear project — implementation surface is bifrost.
+[[session]]
+name = "sn-fips"
+path = "~/src/bifrost"
+icon = "🛠️"
+
+# "sagemaker" is intentionally NOT templated here: no local checkout backs it
+# and it likely lives on a remote training host. Use the existing host
+# registry instead: bin/tmux/tmux-connect <host>, hosts listed in
+# bin/tmux/hosts/registry.conf (add a `sagemaker|<ssh-target>|sagemaker|...`
+# line there once you know the right host).
+
+blacklist = []
+sort_order = ["config", "tmux", "tmuxinator", "zoxide"]
+
+[tui]
+preview = true
+show_icons = true

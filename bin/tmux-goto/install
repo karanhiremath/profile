@@ -1,0 +1,135 @@
+#!/bin/bash
+# Symlink tmux-pane-link + handler onto PATH and register the tmux-goto://
+# URI scheme with the OS running THIS install (see README.md for why that
+# scoping matters — the registration has to happen on whichever machine
+# actually runs the terminal emulator that will receive the click).
+#
+# Usage: install [--help]
+
+set -euo pipefail
+
+shopt -s failglob
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="tmux-goto"
+
+usage() { sed -n '2,7p' "$0" | sed -e 's/^# //' -e '/^#$/d'; }
+
+case "${1:-}" in
+    -h|--help|help) usage; exit 0 ;;
+esac
+
+TOOL_DIR="${APP_BIN}/tmux-goto"
+BIN_DIR="${HOME}/.local/bin"
+MACHINE="$(uname -s)"
+
+install_messages "start" "$app_name"
+
+chmod +x "${TOOL_DIR}/tmux-pane-link" "${TOOL_DIR}/handler"
+mkdir -p "${BIN_DIR}"
+ln -fs "${TOOL_DIR}/tmux-pane-link" "${BIN_DIR}/tmux-pane-link"
+ln -fs "${TOOL_DIR}/handler" "${BIN_DIR}/tmux-goto-handler"
+echo "✓ Linked ${BIN_DIR}/tmux-pane-link and ${BIN_DIR}/tmux-goto-handler"
+
+case "${MACHINE}" in
+    Linux)
+        if command -v xdg-mime >/dev/null 2>&1; then
+            APPS_DIR="${HOME}/.local/share/applications"
+            mkdir -p "${APPS_DIR}"
+            DESKTOP_FILE="${APPS_DIR}/tmux-goto.desktop"
+            cat >"${DESKTOP_FILE}" <<EOF
+[Desktop Entry]
+Type=Application
+Name=tmux-goto
+Comment=Jump to a tmux session:window.pane from a clicked tmux-goto:// link
+Exec=${BIN_DIR}/tmux-goto-handler %u
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/tmux-goto;
+EOF
+            xdg-mime default tmux-goto.desktop x-scheme-handler/tmux-goto
+            if command -v update-desktop-database >/dev/null 2>&1; then
+                update-desktop-database "${APPS_DIR}" >/dev/null 2>&1 || true
+            fi
+            echo "✓ Registered tmux-goto:// via xdg-mime -> ${DESKTOP_FILE}"
+            echo "  This only matters if a Ghostty window on THIS Linux desktop"
+            echo "  is what receives the click. If you view this host's tmux"
+            echo "  through Ghostty running on macOS over SSH, register there"
+            echo "  instead (run 'just tmux-goto' on the Mac)."
+        else
+            echo "WARN: xdg-mime not found (package: xdg-utils / desktop-file-utils)."
+            echo "      Skipping URI scheme registration — tmux-pane-link still"
+            echo "      works, but the printed link will not be clickable until"
+            echo "      you register bin/tmux-goto/handler as the x-scheme-handler"
+            echo "      for tmux-goto by hand. Manual fallback always works:"
+            echo "        tmux switch-client -t <session:window.pane>"
+        fi
+        ;;
+    Darwin)
+        APP_NAME="Tmux Goto"
+        APP_PATH="${HOME}/Applications/${APP_NAME}.app"
+        mkdir -p "${HOME}/Applications"
+
+        SCPT_SRC="$(mktemp).applescript"
+        cat >"${SCPT_SRC}" <<EOF
+on open location theURL
+    do shell script "${BIN_DIR}/tmux-goto-handler " & quoted form of theURL
+end open location
+EOF
+        rm -rf "${APP_PATH}"
+        if command -v osacompile >/dev/null 2>&1; then
+            osacompile -o "${APP_PATH}" "${SCPT_SRC}"
+            rm -f "${SCPT_SRC}"
+
+            PLIST="${APP_PATH}/Contents/Info.plist"
+            PB=/usr/libexec/PlistBuddy
+            "$PB" -c "Add :CFBundleURLTypes array" "${PLIST}" 2>/dev/null || true
+            "$PB" -c "Add :CFBundleURLTypes:0 dict" "${PLIST}" 2>/dev/null || true
+            "$PB" -c "Add :CFBundleURLTypes:0:CFBundleURLName string tmux-goto" "${PLIST}" 2>/dev/null || true
+            "$PB" -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "${PLIST}" 2>/dev/null || true
+            "$PB" -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string tmux-goto" "${PLIST}" 2>/dev/null || true
+
+            xattr -cr "${APP_PATH}" 2>/dev/null || true
+
+            LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+            if [ -x "${LSREGISTER}" ]; then
+                "${LSREGISTER}" -f "${APP_PATH}"
+            fi
+
+            echo "✓ Generated ${APP_PATH} and registered it for tmux-goto://"
+            echo "  UNVERIFIED on real hardware — this installer was written and run"
+            echo "  from a Linux sandbox with no Mac to test click-through on."
+            echo "  Verify with:"
+            echo "    open 'tmux-goto://<session>:<window>.<pane>'"
+            echo "  then check ${HOME}/.cache/tmux-goto.log for a matching entry."
+            echo "  If nothing happens, re-run: ${LSREGISTER} -f '${APP_PATH}'"
+            echo "  Ghostty may also show a one-time 'Allow Ghostty to Execute'"
+            echo "  prompt the first time the handler's -e command runs."
+        else
+            rm -f "${SCPT_SRC}"
+            echo "WARN: osacompile not found (unexpected on stock macOS)."
+            echo "      Skipping URI scheme registration. Manual fallback:"
+            echo "        tmux switch-client -t <session:window.pane>"
+        fi
+        ;;
+    *)
+        echo "WARN: unsupported platform ${MACHINE} — no URI scheme registration."
+        echo "      Manual fallback: tmux switch-client -t <session:window.pane>"
+        ;;
+esac
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "tmux-pane-link installed: ${BIN_DIR}/tmux-pane-link"
+echo "Usage: tmux-pane-link fips:3.1"
