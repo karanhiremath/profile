@@ -33,6 +33,7 @@ Override per session: `cursor-agent --model <slug>`.
 - `sandbox.mode`: `disabled` on dev Macs; use cdev/cagent sandboxes for risky remote work
 - Secrets: never commit; fleet secrets at `~/.local/share/fleet/` only
 - No Cartesia proprietary paths in committed profile artifacts
+- **Granola is optional (all projects):** `just cursor-setup` links `cursor/rules/*.mdc` into `~/.cursor/rules`. Do not query Granola MCP or granola skills unless the user names a meeting, a decision, "what we discussed", or their schedule. Plugin `alwaysApply` means consider, not preload.
 
 ### Hermes CoS/PM command layer
 

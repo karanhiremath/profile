@@ -1,0 +1,23 @@
+---
+description: Granola is optional — do not query meetings unless the user points at one
+alwaysApply: true
+---
+
+# Granola is optional (user-global)
+
+The Granola plugin rule is `alwaysApply: true`. That means **consider** meeting context, not **query Granola on every turn**. This user rule applies in every project and wins over the plugin: do not call Granola MCP (`query_granola_meetings`, `list_meetings`, `get_meetings`, `get_meeting_transcript`) or granola skills unless the user explicitly points at a meeting or decision.
+
+## Do not query
+
+- Routine edits, small fixes, local code questions
+- Feature/bug/spec work with no meeting pointer
+- "This might have been discussed" or "looks like a planning review"
+- Preloading granola-context / granola-prep / granola-review at session start
+
+## Query only when the user
+
+- Names a meeting, "what we discussed", a past decision, or asks who said what
+- Asks about upcoming calls or their schedule
+- Asks a PR/commit/doc to cite which meeting decided it
+
+Then look up the cited question and keep the answer short (meeting title, date, decision, who).

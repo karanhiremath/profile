@@ -36,13 +36,37 @@ if [[ -n "${AGENT_SANDBOX_ROOT:-}" ]]; then
   esac
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
 if [[ "$INSTALL" -eq 1 ]]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
   "$PROFILE_DIR/bin/cursor-cli/install"
 fi
 
-mkdir -p "$TARGET_DIR/agents" "$TARGET_DIR/skills"
+mkdir -p "$TARGET_DIR/agents" "$TARGET_DIR/skills" "$TARGET_DIR/projects"
+
+# NFS homes cannot host Cursor project state. On scratch-backed hosts, keep
+# ~/.cursor/projects pointed at host-local $TARGET_DIR/projects (not /var/tmp).
+if [[ -n "${AGENT_SANDBOX_ROOT:-}" ]]; then
+  projects_dest="$TARGET_DIR/projects"
+  projects_link="$HOME/.cursor/projects"
+  mkdir -p "$projects_dest" "$(dirname "$projects_link")"
+  chmod 700 "$projects_dest"
+  retarget=0
+  if [[ -L "$projects_link" ]]; then
+    current="$(readlink "$projects_link")"
+    if [[ "$current" != "$projects_dest" || ! -d "$projects_link" ]]; then
+      retarget=1
+    fi
+  elif [[ ! -e "$projects_link" ]]; then
+    retarget=1
+  fi
+  if [[ "$retarget" -eq 1 ]]; then
+    ln -sfn "$projects_dest" "$projects_link"
+  fi
+  printf 'cursor_projects_dir=%s\n' "$projects_dest"
+  printf 'cursor_projects_link=%s -> %s\n' "$projects_link" "$(readlink "$projects_link")"
+fi
 
 if [[ -n "$AGENT_DIR" && -d "$AGENT_DIR" ]]; then
   while IFS= read -r -d '' file; do
@@ -59,6 +83,23 @@ if [[ -n "$SKILL_DIR" && -d "$SKILL_DIR" ]]; then
     ln -sfn "$dir" "$TARGET_DIR/skills/$name"
     printf 'skill=%s\n' "$name"
   done < <(find "$SKILL_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
+fi
+
+# User-global Cursor rules (alwaysApply). Profile is source; ~/.cursor/rules is install.
+RULES_SRC="$PROFILE_DIR/cursor/rules"
+if [[ -d "$RULES_SRC" ]]; then
+  dests=("$TARGET_DIR/rules")
+  if [[ "$TARGET_DIR/rules" != "$HOME/.cursor/rules" ]]; then
+    dests+=("$HOME/.cursor/rules")
+  fi
+  for dest in "${dests[@]}"; do
+    mkdir -p "$dest"
+    for f in "$RULES_SRC"/*.mdc; do
+      [[ -f "$f" ]] || continue
+      ln -sfn "$f" "$dest/$(basename "$f")"
+      printf 'rule=%s\n' "$dest/$(basename "$f")"
+    done
+  done
 fi
 
 python3 - "$TARGET_DIR/cli-config.json" <<'PY'
