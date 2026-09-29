@@ -23,7 +23,7 @@ OWNER="${HERMES_GATEWAY_OWNER:-cxis-devlarge-2}"
 PROFILES="${HERMES_FLEET_PROFILES:-chief-of-staff-work chief-of-staff}"
 PY_LOCAL="$HOME/.local/share/hermes-toolchain/venv/bin/python"
 PY_REMOTE="\$HOME/.local/share/hermes-toolchain/venv/bin/python"
-PATCH_REMOTE="\$HOME/src/profile/bin/hermes/patch-nfs-journal-env.py"
+PATCHER_FILE="$HOME/src/profile/bin/hermes/patch-nfs-journal-env.py"
 
 conv_py() { # $1 = profile
   cat <<PYEOF
@@ -49,10 +49,12 @@ else:
 PYEOF
 }
 
-report="$("$PY_LOCAL" - "$HOSTS" "$OWNER" "$PROFILES" "$APPLY" <<'PYEOF'
+report="$("$PY_LOCAL" - "$PATCHER_FILE" "$HOSTS" "$OWNER" "$PROFILES" "$APPLY" <<'PYEOF'
 import json, subprocess, sys
+from pathlib import Path
 
-hosts, owner, profiles, apply = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+patcher_path = sys.argv[1]
+hosts, owner, profiles, apply = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] == "1"
 rows = []
 ok = True
 
@@ -76,13 +78,13 @@ for h in hosts.split():
         rc, out, err = ssh(h, f"systemctl --user stop hermes-gateway-{prof}.service; "
                               f"systemctl --user disable hermes-gateway-{prof}.service; true")
         steps.append({"step": "stop-unit", "profile": prof, "rc": rc})
-    # 2. patch journal-mode env on all code planes
-    rc, out, err = ssh(h, "python3 $HOME/src/profile/bin/hermes/patch-nfs-journal-env.py || "
-                          "$HOME/.local/share/hermes-toolchain/venv/bin/python "
-                          "$HOME/src/profile/bin/hermes/patch-nfs-journal-env.py")
-    patched = '"ok": true' in out
-    steps.append({"step": "patch-journal-env", "rc": rc, "ok": patched})
-    ok = ok and patched
+    # 2. patch journal-mode env on all code planes — pipe the patcher over
+    #    ssh stdin so remote hosts don't need the profile repo synced
+    rc, out, err = ssh(h, "$HOME/.local/share/hermes-toolchain/venv/bin/python - || python3 -",
+                       stdin_text=Path(patcher_path).read_text())
+    steps.append({"step": "patch-journal-env", "rc": rc,
+                  "ok": '"ok": true' in out})
+    ok = ok and ('"ok": true' in out)
     # 3. offline WAL -> delete conversion (python over ssh stdin)
     for prof in profiles.split():
         conv = f"""import sqlite3, pathlib, os
