@@ -66,6 +66,39 @@ def runtime_home(profile: str) -> Path:
     return root / profile
 
 
+def short_home(profile: str) -> Path | None:
+    """Contract short home <AGENT_SHARED_HOME>/c/<slug> (afunix sun_path limit).
+    Matched by symlink target so the slug table stays in exactly one place
+    (crusoe-hermes-home.env.sh hermes_short_home_slug)."""
+    runtime = runtime_home(profile)
+    root = agents_data_home().parent / "c"
+    if not root.is_dir():
+        return None
+    try:
+        runtime_resolved = runtime.resolve()
+    except OSError:
+        return None
+    try:
+        for entry in sorted(root.iterdir()):
+            if entry.is_symlink() and entry.resolve() == runtime_resolved:
+                return entry
+    except OSError:
+        return None
+    return None
+
+
+def probe_home(profile: str) -> Path:
+    """Home the gateway actually binds sockets in. Priority: explicit
+    HERMES_HOME (launcher env), then the contract short-home symlink, then the
+    materialized runtime home. The short home aliases the same directory, so
+    db probes are equivalent — only socket path lengths differ."""
+    explicit = os.environ.get("HERMES_HOME")
+    if explicit:
+        return Path(explicit)
+    short = short_home(profile)
+    return short if short is not None else runtime_home(profile)
+
+
 def db_paths(home: Path) -> dict[str, Path]:
     return {
         "db": home / "state.db",
@@ -263,7 +296,7 @@ def spool_pending(home: Path) -> int:
 # ── census / preflight ───────────────────────────────────────────────────────
 
 def census_profile(profile: str) -> dict[str, Any]:
-    home = runtime_home(profile)
+    home = probe_home(profile)
     store = classify_store(home)
     fs = fs_type_of(home)
     writers = live_writer_pids(home)

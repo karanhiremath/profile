@@ -52,6 +52,12 @@ fi
 uv venv --python "$HERMES_VENV_PYTHON" --allow-existing --seed "$VENV"
 uv pip install --python "$VENV/bin/python" pip setuptools wheel PyYAML
 
+# Contract pin HERMES_STATE_JOURNAL_MODE=delete is unimplemented upstream
+# (hermes 0.18.2/0.21.0 always try WAL first). Re-apply after every install:
+# patches venv + all hermes-agent worktree overlays. See
+# agentic/infra/crusoe-hermes-homes.md rule 1.
+python3 "$SCRIPT_DIR/patch-nfs-journal-env.py" || echo "WARN: nfs-journal patch failed; WAL-on-NFS rot risk" >&2
+
 # pnpm's global bin dir is $PNPM_HOME/bin and MUST be on PATH before `pnpm add -g`
 # (otherwise pnpm refuses to install and `pnpm bin -g`/`pnpm root -g` return an
 # error string instead of a path).
@@ -165,6 +171,7 @@ write_shim cosw-host-control "$SCRIPT_DIR/cosw-host-control"
 write_shim cosw-hostctl "$SCRIPT_DIR/cosw-hostctl"
 write_shim pm "$SCRIPT_DIR/pm"
 write_shim pl "$SCRIPT_DIR/pl"
+write_shim doctor "$SCRIPT_DIR/doctor"
 
 if [ "$SKIP_PRIVATE_SYNC" -eq 0 ]; then
   "$SCRIPT_DIR/private-sync"

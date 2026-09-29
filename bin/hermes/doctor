@@ -72,3 +72,14 @@ if [ -d "$PRIVATE_DIR/.git" ]; then
 else
   printf 'private_repo=missing\n'
 fi
+
+# State-lane contract: HERMES_STATE_JOURNAL_MODE honored on all code planes
+# (upstream 0.18.2/0.21.0 always try WAL first — NFS rot). See
+# karan.hiremath/agentic/infra/crusoe-hermes-homes.md rule 1.
+if command -v python3 >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/patch-nfs-journal-env.py" ]; then
+  jp="$(python3 "$SCRIPT_DIR/patch-nfs-journal-env.py" --check 2>/dev/null || true)"
+  if [ -n "$jp" ]; then
+    planes_total="$(printf '%s' "$jp" | python3 -c 'import json,sys; d=json.load(sys.stdin); t=d.get("targets",[]); print(sum(1 for x in t if x.get("ok")), "/", len(t))' 2>/dev/null || echo unknown)"
+    printf 'journal_env_patch=%s (%s planes ok)\n' "$([ "$(printf '%s' "$jp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ok"))' 2>/dev/null)" = True ] && echo applied || echo missing)" "$planes_total"
+  fi
+fi
