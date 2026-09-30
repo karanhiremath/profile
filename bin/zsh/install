@@ -1,28 +1,124 @@
 #!/bin/bash
-
+# Install the profile-managed zsh default stack on a host or sandbox.
+#
+# Managed layout (see zshrc.bootstrap for the contract):
+#   ~/.zshrc                       <- zshrc.bootstrap (refreshed only if bootstrap-shaped)
+#   ~/.zshrc.d/                    host-local fragments (never synced)
+#   ~/.zshrc.secrets               secrets, 0600 (never synced)
+#   ~/.pi/agent/bin/pi-update-wrapper.sh
+#   ~/.local/bin/doctor            hermes toolchain doctor shim
+#
+# Records an installed-state baseline under ~/.cache/profile/zsh-baseline/
+# which bin/zsh/zsh-sync uses to detect drift (source of the merge queue).
+#
+# Usage: install [--help]
 set -euo pipefail
 
-shopt -s failglob
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
 
-. "${PROFILE_DIR}"/bin/sh/shell_fns --source-only
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+  "") ;;
+  *) echo "ERROR: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+esac
 
-app_name="bash"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PROFILE_DIR="${PROFILE_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 
-MACHINE="$(uname -s)"
-ARCH="$(uname -m)"
-
-# confirm .zprofile and .zshrc are setup appropriately
-if grep -q "${PROFILE_DIR}/zsh_profile.sh" ~/.zshrc; then
-    echo "zsh_profile.sh already sourced in ~/.zshrc"
-else
-    echo "Sourcing ${PROFILE_DIR}/zsh_profile.sh in ~/.zshrc"
-    echo "source ${PROFILE_DIR}/zsh_profile.sh" >> ~/.zshrc
+# Guard existence first: bash 3.2 treats a failed `.` builtin as fatal even
+# under `|| true`, so `/bin/bash` on macOS would abort with no output.
+if [ -f "${PROFILE_DIR}/bin/sh/shell_fns" ]; then
+  . "${PROFILE_DIR}/bin/sh/shell_fns" --source-only || true
 fi
 
-if grep -q "${PROFILE_DIR}/myprofile.sh" ~/.zshrc; then
-    echo "myprofile.sh already sourced in ~/.zshrc"
+HOME_DIR="${ZSH_SYNC_HOME:-$HOME}"
+BASELINE_DIR="${ZSH_BASELINE_DIR:-${HOME_DIR}/.cache/profile/zsh-baseline}"
+PI_AGENT_DIR="${PI_AGENT_DIR:-${HOME_DIR}/.pi/agent}"
+
+managed_bootstrap="${PROFILE_DIR}/zshrc.bootstrap"
+managed_pi_wrapper="${PROFILE_DIR}/bin/pi/pi-update-wrapper.sh"
+managed_doctor="${PROFILE_DIR}/bin/hermes/doctor"
+
+installed_zshrc="${HOME_DIR}/.zshrc"
+installed_zshrc_d="${HOME_DIR}/.zshrc.d"
+installed_secrets="${HOME_DIR}/.zshrc.secrets"
+installed_pi_wrapper="${PI_AGENT_DIR}/bin/pi-update-wrapper.sh"
+installed_doctor="${HOME_DIR}/.local/bin/doctor"
+
+is_bootstrap_shaped() {
+  grep -q "profile-managed bootstrap" "$1" 2>/dev/null
+}
+
+hash_file() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
+
+echo "profile zsh install: PROFILE_DIR=${PROFILE_DIR} HOME=${HOME_DIR}"
+
+# --- ~/.zshrc bootstrap -----------------------------------------------------
+if [ ! -f "$installed_zshrc" ]; then
+  cp "$managed_bootstrap" "$installed_zshrc"
+  echo "installed ~/.zshrc (bootstrap)"
+elif is_bootstrap_shaped "$installed_zshrc"; then
+  cp "$managed_bootstrap" "$installed_zshrc"
+  echo "refreshed ~/.zshrc (bootstrap-shaped)"
 else
-    echo "Sourcing ${PROFILE_DIR}/myprofile.sh in ~/.zshrc"
-    echo "source ${PROFILE_DIR}/myprofile.sh" >> ~/.zshrc
+  echo "NOTICE: ~/.zshrc is not profile-managed (unmanaged content present)." >&2
+  echo "        Left untouched. Run: bin/zsh/zsh-sync migrate  (backs it up first)" >&2
 fi
 
+# --- fragment + secrets scaffolding ----------------------------------------
+mkdir -p "$installed_zshrc_d"
+if [ ! -f "$installed_secrets" ]; then
+  cat > "$installed_secrets" <<'EOF'
+# ~/.zshrc.secrets — host-local secrets. NEVER synced by zsh-sync.
+# Keep this file 0600. Capture refuses queue items containing secret material.
+EOF
+  chmod 600 "$installed_secrets"
+  echo "created ~/.zshrc.secrets (0600)"
+fi
+
+# --- pi pre-launch update wrapper -------------------------------------------
+if [ -f "$managed_pi_wrapper" ]; then
+  mkdir -p "${PI_AGENT_DIR}/bin"
+  cp "$managed_pi_wrapper" "$installed_pi_wrapper"
+  chmod +x "$installed_pi_wrapper"
+  echo "installed pi update wrapper: ${installed_pi_wrapper}"
+fi
+
+# --- hermes doctor shim -----------------------------------------------------
+if [ -x "$managed_doctor" ]; then
+  mkdir -p "${HOME_DIR}/.local/bin"
+  cat > "$installed_doctor" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HERMES_TOOLCHAIN_HOME="\${HERMES_TOOLCHAIN_HOME:-\$HOME/.local/share/hermes-toolchain}"
+export PATH="\$HOME/.local/bin:\$HERMES_TOOLCHAIN_HOME/bun/bin:\$HERMES_TOOLCHAIN_HOME/pnpm/bin:\$HERMES_TOOLCHAIN_HOME/venv/bin:\$PATH"
+_profile_dir="\${PROFILE_DIR:-\$HOME/src/profile}"
+exec "\$_profile_dir/bin/hermes/doctor" "\$@"
+EOF
+  chmod +x "$installed_doctor"
+  echo "installed doctor shim: ${installed_doctor}"
+fi
+
+# --- baseline snapshot (drift reference for the merge queue) ----------------
+mkdir -p "${BASELINE_DIR}/zshrc.d"
+cp "$installed_zshrc" "${BASELINE_DIR}/zshrc" 2>/dev/null || true
+cp "$installed_pi_wrapper" "${BASELINE_DIR}/pi-update-wrapper.sh" 2>/dev/null || true
+cp "$installed_doctor" "${BASELINE_DIR}/doctor" 2>/dev/null || true
+for f in "$installed_zshrc_d"/*.zsh; do
+  if [ -f "$f" ]; then cp "$f" "${BASELINE_DIR}/zshrc.d/$(basename "$f")"; fi
+done
+
+repo_head="$(git -C "$PROFILE_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+{
+  printf '{\n'
+  printf '  "installed_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '  "repo_head": "%s",\n' "$repo_head"
+  printf '  "hashes": {\n'
+  printf '    "zshrc": "%s"' "$(hash_file "$installed_zshrc" 2>/dev/null || echo none)"
+  if [ -f "$installed_pi_wrapper" ]; then printf ',\n    "pi-update-wrapper": "%s"' "$(hash_file "$installed_pi_wrapper")"; fi
+  if [ -f "$installed_doctor" ]; then printf ',\n    "doctor": "%s"' "$(hash_file "$installed_doctor")"; fi
+  printf '\n  }\n}\n'
+} > "${BASELINE_DIR}/manifest.json"
+
+echo "baseline recorded: ${BASELINE_DIR} (repo HEAD ${repo_head})"
+echo "done."
