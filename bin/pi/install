@@ -155,6 +155,22 @@ EOF
     echo "Configured pi ${profile_selector} agent policy, extensions, launcher, and theme: ${theme_name}"
 }
 
+install_update_wrapper() {
+    local src dst pi_agent_dir
+    pi_agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
+    src="${SCRIPT_DIR}/pi-update-wrapper.sh"
+    dst="${pi_agent_dir}/bin/pi-update-wrapper.sh"
+    if [ ! -f "$src" ]; then
+        echo "WARN: missing ${src}; skipping pre-launch update wrapper" >&2
+        return 0
+    fi
+    mkdir -p "${pi_agent_dir}/bin"
+    cp "$src" "$dst"
+    chmod +x "$dst"
+    echo "Installed pi pre-launch update wrapper: ${dst}"
+    echo "Wire it in ~/.zshrc: [ -r \"$dst\" ] && source \"$dst\""
+}
+
 write_host_pi_grant_wrapper() {
     local dest shim preload
     dest="${HOME}/.local/bin/pi"
@@ -194,6 +210,7 @@ ensure_pnpm
 
 install_or_update_pi
 configure_pi_agent
+install_update_wrapper
 write_host_pi_grant_wrapper
 
 install_messages "end" "$app_name"

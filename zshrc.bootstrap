@@ -1,0 +1,37 @@
+# ~/.zshrc — profile-managed bootstrap.
+# Canonical source: <profile>/zshrc.bootstrap (installed by bin/zsh/install).
+#
+# Layout contract (kept in sync by bin/zsh/zsh-sync):
+#   <profile>/zsh_profile.sh   shared zsh defaults        (synced via git)
+#   <profile>/myprofile.sh     shared shell functions     (synced via git)
+#   <profile>/zsh.d/*.zsh      shared ordered fragments   (synced via git)
+#   ~/.zshrc.d/*.zsh           host-local fragments       (NEVER synced)
+#   ~/.zshrc.secrets           secrets (0600)             (NEVER synced)
+#
+# Do NOT add host-specific content or secrets to this file. Host-specific
+# content belongs in ~/.zshrc.d/<nn>-<name>.zsh; secrets in ~/.zshrc.secrets.
+
+_profile_dir="${PROFILE_DIR:-$HOME/src/profile}"
+
+if [ -r "$_profile_dir/zsh_profile.sh" ]; then
+    source "$_profile_dir/zsh_profile.sh"
+fi
+if [ -r "$_profile_dir/myprofile.sh" ]; then
+    source "$_profile_dir/myprofile.sh"
+fi
+
+# Shared defaults shipped by the profile repo (sorted, all loaded).
+for _f in "$_profile_dir"/zsh.d/*.zsh(N); do
+    source "$_f"
+done
+
+# Host-local fragments (sorted, all loaded).
+mkdir -p "$HOME/.zshrc.d"
+for _f in "$HOME"/.zshrc.d/*.zsh(N); do
+    source "$_f"
+done
+
+# Secrets are sourced last so fragments can reference them.
+[ -r "$HOME/.zshrc.secrets" ] && source "$HOME/.zshrc.secrets"
+
+unset _profile_dir _f

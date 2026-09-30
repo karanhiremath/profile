@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+# zsh-sync — keep zsh defaults in sync across hosts and sandboxes with a
+# merge queue, so host-local edits never silently drift from the profile repo.
+#
+# Model (see zshrc.bootstrap for the layout contract):
+#   - The profile repo checkout IS the canonical zsh defaults; hosts source
+#     shared fragments (zsh_profile.sh, myprofile.sh, zsh.d/*.zsh) directly
+#     from it, so `sync` = git pull.
+#   - Installed copies (~/.zshrc bootstrap, pi update wrapper, doctor shim)
+#     are refreshed from the repo; bin/zsh/install records a baseline of the
+#     installed state.
+#   - Drift (repo edits in a dirty checkout, edited installed copies, new
+#     ~/.zshrc.d fragments) is captured as queue items under
+#     merge-queue/pending/ and reviewed before being merged into the repo.
+#
+# Commands:
+#   status [--json]          drift report + queue state
+#   capture [--name S] [--dry-run] [--yes]
+#                            detect drift -> queue items (secret-guarded)
+#   push                     publish pending items to the zsh-queue branch
+#   merge [--all | <id>]     integrator: apply reviewed items into the repo
+#   sync                     git pull --ff-only + reinstall managed files
+#   migrate                  adopt an unmanaged ~/.zshrc (backs it up first)
+#
+# Env knobs (for tests/sandboxes):
+#   ZSH_SYNC_HOME            alternate HOME (default $HOME)
+#   ZSH_BASELINE_DIR         baseline dir (default $HOME/.cache/profile/zsh-baseline)
+#   ZSH_SYNC_QUEUE_DIR       pending dir (default <repo>/merge-queue/pending)
+#   ZSH_SYNC_BRANCH          queue branch (default zsh-queue)
+set -euo pipefail
+
+usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${PROFILE_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+SYNC_HOME="${ZSH_SYNC_HOME:-$HOME}"
+BASELINE_DIR="${ZSH_BASELINE_DIR:-${SYNC_HOME}/.cache/profile/zsh-baseline}"
+QUEUE_DIR="${ZSH_SYNC_QUEUE_DIR:-${REPO_DIR}/merge-queue/pending}"
+MERGED_DIR="${ZSH_SYNC_MERGED_DIR:-${REPO_DIR}/merge-queue/merged}"
+QUEUE_BRANCH="${ZSH_SYNC_BRANCH:-zsh-queue}"
+
+REPO_HEAD() { git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown; }
+HOST_ID() { hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host; }
+NOW_ID() { date -u +%Y%m%dT%H%M%SZ; }
+
+die() { echo "ERROR: $*" >&2; exit "${2:-1}"; }
+info() { echo "[zsh-sync] $*"; }
+
+# Script-scope scratch state; EXIT trap must not reference function locals
+# (set -u makes them unbound after the function returns).
+_TMP=""
+_WORKTREE=""
+cleanup() {
+  if [ -n "$_TMP" ]; then rm -rf "$_TMP"; fi
+  if [ -n "$_WORKTREE" ]; then git -C "$REPO_DIR" worktree remove --force "$_WORKTREE" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+
+# Secret guard: refuse to queue material that looks like a credential.
+SECRET_PATTERNS='(^|[^A-Z])(DD_API_KEY|DD_APP_KEY|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)='
+SECRET_PATTERNS+='|AKIA[0-9A-Z]{16}'
+SECRET_PATTERNS+='|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}'
+SECRET_PATTERNS+='|sk-(ant-)?[A-Za-z0-9_-]{20,}'
+SECRET_PATTERNS+='|xox[baprs]-[A-Za-z0-9-]{10,}'
+SECRET_PATTERNS+='|-----BEGIN [A-Z ]*PRIVATE KEY'
+SECRET_PATTERNS+='|(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY)=["'"'"']?[A-Za-z0-9+/_-]{16,}'
+
+# Fail closed: grep rc=2 (bad pattern / error) must be treated as dirty,
+# never as clean. BSD grep rejects empty ERE alternatives with rc=2.
+scan_secrets() { # $1 = file to scan; rc 0 = clean, 1 = dirty/unsafe
+  local file="$1" out rc
+  rc=0
+  out="$(grep -nE "$SECRET_PATTERNS" "$file" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ge 2 ]; then
+    echo "secret-scan error (grep rc=$rc); treating payload as dirty" >&2
+    return 1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    printf '%s\n' "$out" | head -5 >&2
+    return 1
+  fi
+  return 0
+}
+
+require_baseline() {
+  [ -f "${BASELINE_DIR}/manifest.json" ] || \
+    die "no install baseline at ${BASELINE_DIR}; run bin/zsh/install first" 4
+}
+
+# --- drift detection ---------------------------------------------------------
+
+repo_dirty_zsh_paths() { # dirty zsh-relevant paths in the repo checkout
+  git -C "$REPO_DIR" status --porcelain -- \
+    zsh_profile.sh myprofile.sh zshrc.bootstrap zsh.d 2>/dev/null \
+    | awk '{print $2}'
+}
+
+installed_drift() { # installed copies that differ from their baseline
+  local pair
+  for pair in "zshrc:${SYNC_HOME}/.zshrc" "pi-update-wrapper:${SYNC_HOME}/.pi/agent/bin/pi-update-wrapper.sh" "doctor:${SYNC_HOME}/.local/bin/doctor"; do
+    local name="${pair%%:*}" path="${pair#*:}"
+    [ -f "$path" ] || continue
+    [ -f "${BASELINE_DIR}/${name}" ] || continue
+    cmp -s "$path" "${BASELINE_DIR}/${name}" || echo "$name:${path}"
+  done
+}
+
+fragment_drift() { # ~/.zshrc.d fragments new or changed since baseline
+  local f base
+  for f in "${SYNC_HOME}"/.zshrc.d/*.zsh; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    [ -f "${BASELINE_DIR}/zshrc.d/${base}" ] || { echo "new:${f}"; continue; }
+    cmp -s "$f" "${BASELINE_DIR}/zshrc.d/${base}" || echo "changed:${f}"
+  done
+}
+
+# --- queue item helpers ------------------------------------------------------
+
+new_item_id() { printf '%s-%s-%s' "$(HOST_ID | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')" "$(NOW_ID)" "$1"; }
+
+queue_item_write() { # $1 id, $2 kind, $3 target description, $4 payload-file
+  local id="$1" kind="$2" target="$3" payload="$4"
+  local dir="${QUEUE_DIR}/${id}"
+  mkdir -p "$dir"
+  printf '%s\n' "$payload" > "${dir}/payload.path"
+  cat > "${dir}/meta.json" <<EOF
+{
+  "id": "${id}",
+  "kind": "${kind}",
+  "target": "${target}",
+  "host": "$(HOST_ID)",
+  "repo_head": "$(REPO_HEAD)",
+  "captured_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+  echo "$dir"
+}
+
+validate_payload() { # $1 payload file -> exit non-zero + message if invalid
+  local f="$1" rc=0
+  if command -v zsh >/dev/null 2>&1; then
+    case "$f" in
+      *.zsh|*zshrc|*zshrc.bootstrap) zsh -n "$f" || rc=1 ;;
+    esac
+  fi
+  case "$f" in
+    *.sh|*install) bash -n "$f" 2>/dev/null || rc=1 ;;
+  esac
+  return $rc
+}
+
+# --- capture -----------------------------------------------------------------
+
+cmd_capture() {
+  local name="zsh-defaults" dry_run=0 assume_yes=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      --yes|-y) assume_yes=1; shift ;;
+      -h|--help|help) usage; exit 0 ;;
+      *) die "unknown capture arg: $1" 2 ;;
+    esac
+  done
+  require_baseline
+
+  local captured=0
+  _TMP="$(mktemp)"
+
+  # Source 1: dirty repo checkout (sandbox/agent edits to shared defaults)
+  local dirty
+  dirty="$(repo_dirty_zsh_paths)"
+  if [ -n "$dirty" ]; then
+    git -C "$REPO_DIR" diff HEAD -- $dirty > "$_TMP"
+    if [ -s "$tmp" ]; then
+      if scan_secrets "$_TMP"; then
+        local id note; id="$(new_item_id "$name")"
+        note=""; [ "$dry_run" -eq 1 ] && note=" (dry-run: skipped)"
+        if [ "$dry_run" -eq 0 ]; then
+          queue_item_write "$id" patch "repo-diff:$(echo "$dirty" | tr '\n' ' ')" "$_TMP" >/dev/null
+          cp "$_TMP" "${QUEUE_DIR}/${id}/patch.diff"
+        fi
+        info "repo diff drift -> item ${id}${note}"
+        captured=$((captured+1))
+      else
+        die "secret material detected in repo diff; move secrets to ~/.zshrc.secrets and retry" 3
+      fi
+    fi
+  fi
+
+  # Source 2: installed copies edited on this host
+  local drift name2 path2 id2
+  for drift in $(installed_drift); do
+    name2="${drift%%:*}"; path2="${drift#*:}"
+    local target_repo
+    case "$name2" in
+      zshrc) target_repo="zshrc.bootstrap" ;;
+      pi-update-wrapper) target_repo="bin/pi/pi-update-wrapper.sh" ;;
+      doctor) target_repo="bin/hermes/doctor" ;;
+      *) target_repo="$name2" ;;
+    esac
+    diff -u "${BASELINE_DIR}/${name2}" "$path2" \
+      | sed -e "s|^--- .*|--- a/${target_repo}|" -e "s|^+++ .*|+++ b/${target_repo}|" > "$_TMP"
+    [ -s "$_TMP" ] || continue
+    if ! scan_secrets "$_TMP"; then
+      die "secret material detected in installed drift (${path2}); move to ~/.zshrc.secrets first" 3
+    fi
+    id2="$(new_item_id "$name")"
+    if [ "$dry_run" -eq 0 ]; then
+      local dir2; dir2="$(queue_item_write "$id2" patch "installed-copy:${target_repo}" "$_TMP")"
+      cp "$_TMP" "${dir2}/patch.diff"
+      info "installed drift (${name2}) -> item ${id2}"
+    else
+      info "dry-run: installed drift (${name2}) detected"
+    fi
+    captured=$((captured+1))
+  done
+
+  # Source 3: host fragments new/changed since install (sandbox workflow)
+  local fdrift kind3 f3 id3 base3
+  for fdrift in $(fragment_drift); do
+    kind3="${fdrift%%:*}"; f3="${fdrift#*:}"; base3="$(basename "$f3")"
+    if ! scan_secrets "$f3"; then
+      die "secret material detected in ${f3}; move to ~/.zshrc.secrets first" 3
+    fi
+    id3="$(new_item_id "$name")"
+    if [ "$dry_run" -eq 0 ]; then
+      local dir3; dir3="$(queue_item_write "$id3" promote "zsh.d/${base3}" "$f3")"
+      mkdir -p "${dir3}/promote"
+      cp "$f3" "${dir3}/promote/${base3}"
+      info "fragment ${kind3} (${base3}) -> item ${id3}"
+    else
+      info "dry-run: fragment ${kind3} (${base3}) detected"
+    fi
+    captured=$((captured+1))
+  done
+
+  if [ "$captured" -eq 0 ]; then
+    info "no drift detected; queue is empty"
+  else
+    info "captured ${captured} queue item(s) in ${QUEUE_DIR}"
+    info "review them, then: bin/zsh/zsh-sync push"
+  fi
+}
+
+# --- push --------------------------------------------------------------------
+
+cmd_push() {
+  [ -d "$QUEUE_DIR" ] || die "no pending items at ${QUEUE_DIR}" 4
+  local n; n="$(find "$QUEUE_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+  [ "$n" -gt 0 ] || { info "nothing to push"; return 0; }
+
+  git -C "$REPO_DIR" fetch origin "${QUEUE_BRANCH}" 2>/dev/null || true
+  local base_rev
+  if git -C "$REPO_DIR" rev-parse --verify -q "origin/${QUEUE_BRANCH}" >/dev/null; then
+    base_rev="$(git -C "$REPO_DIR" rev-parse "origin/${QUEUE_BRANCH}")"
+  else
+    base_rev="$(git -C "$REPO_DIR" rev-parse HEAD)"
+  fi
+
+  local wt; wt="$(mktemp -d)"
+  _WORKTREE="$wt"
+  git -C "$REPO_DIR" worktree add --detach "$wt" "$base_rev" >/dev/null
+
+  mkdir -p "${wt}/merge-queue/pending"
+  cp -R "${QUEUE_DIR}/." "${wt}/merge-queue/pending/"
+  git -C "$wt" add merge-queue/pending
+  git -C "$wt" -c user.name="$(HOST_ID)" -c user.email="$(HOST_ID)@zsh-sync.local" \
+    commit -m "zsh-queue: add ${n} pending item(s) from $(HOST_ID)" >/dev/null
+
+  if ! git -C "$wt" push origin "HEAD:refs/heads/${QUEUE_BRANCH}" 2>/dev/null; then
+    info "push rejected; rebasing on updated queue branch"
+    git -C "$wt" pull --rebase origin "${QUEUE_BRANCH}" >/dev/null 2>&1 \
+      && git -C "$wt" push origin "HEAD:refs/heads/${QUEUE_BRANCH}" \
+      || die "could not push queue items; resolve origin/${QUEUE_BRANCH} manually" 5
+  fi
+  info "pushed ${n} item(s) to origin/${QUEUE_BRANCH}"
+}
+
+# --- merge -------------------------------------------------------------------
+
+cmd_merge() {
+  local apply_all=0 target=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --all) apply_all=1; shift ;;
+      -h|--help|help) usage; exit 0 ;;
+      *) target="$1"; shift ;;
+    esac
+  done
+
+  # Refresh the queue branch locally if reachable.
+  git -C "$REPO_DIR" fetch origin "${QUEUE_BRANCH}" 2>/dev/null || true
+  _TMP="$(mktemp -d)"
+  tmpq="$_TMP"
+  if git -C "$REPO_DIR" rev-parse --verify -q "origin/${QUEUE_BRANCH}" >/dev/null; then
+    git -C "$REPO_DIR" archive "origin/${QUEUE_BRANCH}" merge-queue/pending | tar -x -C "$tmpq" 2>/dev/null || true
+    if [ -d "${tmpq}/merge-queue/pending" ]; then
+      cp -R "${tmpq}/merge-queue/pending/." "${QUEUE_DIR}/" 2>/dev/null || true
+    fi
+  fi
+
+  [ -d "$QUEUE_DIR" ] || die "no pending items at ${QUEUE_DIR}" 4
+  local items; items="$(find "$QUEUE_DIR" -mindepth 1 -maxdepth 1 -type d -name '*' | sort)"
+  [ -n "$items" ] || { info "queue empty; nothing to merge"; return 0; }
+
+  local merged_any=0
+  for item in $items; do
+    local id; id="$(basename "$item")"
+    if [ "$apply_all" -eq 0 ] && [ "$id" != "$target" ]; then continue; fi
+    local kind; kind="$(sed -n 's/.*"kind": *"\([^"]*\)".*/\1/p' "${item}/meta.json" 2>/dev/null || echo patch)"
+
+    case "$kind" in
+      patch)
+        if ! git -C "$REPO_DIR" apply --check "${item}/patch.diff" 2>/dev/null; then
+          info "SKIP ${id}: patch no longer applies (repo moved); rebase or re-capture"
+          continue
+        fi
+        git -C "$REPO_DIR" apply "${item}/patch.diff"
+        ;;
+      promote)
+        local src; src="$(find "${item}/promote" -type f | head -1)"
+        [ -n "$src" ] || { info "SKIP ${id}: empty promote payload"; continue; }
+        local base; base="$(basename "$src")"
+        if [ -e "${REPO_DIR}/zsh.d/${base}" ] && ! cmp -s "$src" "${REPO_DIR}/zsh.d/${base}"; then
+          info "SKIP ${id}: zsh.d/${base} exists with different content; resolve manually"
+          continue
+        fi
+        cp "$src" "${REPO_DIR}/zsh.d/${base}"
+        ;;
+      *) info "SKIP ${id}: unknown kind ${kind}"; continue ;;
+    esac
+
+    # Validate every touched zsh/sh artifact before committing.
+    local bad=0
+    case "$kind" in
+      patch)
+        local p; for p in $(git -C "$REPO_DIR" diff --name-only HEAD); do
+          validate_payload "${REPO_DIR}/${p}" || { bad=1; echo "validation failed: ${p}" >&2; }
+        done
+        ;;
+      promote)
+        validate_payload "${REPO_DIR}/zsh.d/${base}" || bad=1
+        ;;
+    esac
+    if [ "$bad" -ne 0 ]; then
+      case "$kind" in
+        patch) git -C "$REPO_DIR" apply -R "${item}/patch.diff" ;;
+        promote) rm -f "${REPO_DIR}/zsh.d/${base}" ;;
+      esac
+      info "SKIP ${id}: payload failed zsh/bash -n validation; reverted"
+      continue
+    fi
+
+    # Stage exactly the paths the item touched (whole-command git add fails
+    # when any pathspec matches nothing).
+    local staged=()
+    if [ "$kind" = "patch" ]; then
+      local p
+      for p in $(grep '^diff --git' "${item}/patch.diff" | awk '{print $3}' | sed 's|^a/||'); do
+        staged+=("$p")
+      done
+    else
+      staged+=("zsh.d/${base}")
+    fi
+    if [ "${#staged[@]}" -gt 0 ]; then
+      git -C "$REPO_DIR" add -A -- "${staged[@]}"
+    fi
+    git -C "$REPO_DIR" commit -m "zsh-queue: apply ${id} (${kind}) from $(sed -n 's/.*"host": *"\([^"]*\)".*/\1/p' "${item}/meta.json" 2>/dev/null || echo unknown)" >/dev/null \
+      || { info "SKIP ${id}: nothing to commit"; continue; }
+
+    mkdir -p "$MERGED_DIR"
+    mv "$item" "${MERGED_DIR}/${id}"
+    info "merged ${id} (${kind})"
+    merged_any=1
+  done
+
+  [ "$merged_any" -eq 1 ] && info "run 'git push' to publish merged defaults, then 'sync' on other hosts"
+  return 0
+}
+
+# --- sync --------------------------------------------------------------------
+
+cmd_sync() {
+  local dirty; dirty="$(repo_dirty_zsh_paths)"
+  if [ -n "$dirty" ]; then
+    info "repo checkout is dirty for: $(echo "$dirty" | tr '\n' ' ')"
+    info "run 'capture' first so local edits are not clobbered by pull"
+    return 3
+  fi
+  if git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1; then
+    git -C "$REPO_DIR" pull --ff-only 2>/dev/null \
+      || die "git pull --ff-only failed in ${REPO_DIR}; resolve manually" 5
+    info "repo updated to $(REPO_HEAD)"
+  else
+    info "no git remote; skipping pull"
+  fi
+  "$SCRIPT_DIR/install"
+  cmd_status 2>/dev/null || true
+}
+
+# --- migrate -----------------------------------------------------------------
+
+cmd_migrate() {
+  local zshrc="${SYNC_HOME}/.zshrc"
+  [ -f "$zshrc" ] || die "no ~/.zshrc to migrate" 4
+  grep -q "profile-managed bootstrap" "$zshrc" && { info "~/.zshrc already profile-managed"; return 0; }
+
+  local ts bak migrated
+  ts="$(NOW_ID)"
+  bak="${zshrc}.bak-${ts}"
+  migrated="${SYNC_HOME}/.zshrc.d/00-migrated-${ts}.zsh"
+  mkdir -p "${SYNC_HOME}/.zshrc.d"
+  cp "$zshrc" "$bak"
+
+  # Strip the two profile-source lines (bootstrap sources them once).
+  grep -vE '^[[:space:]]*(source|\.)[[:space:]].*src/profile/(zsh_profile|myprofile)\.sh' "$zshrc" \
+    > "$migrated"
+
+  if ! scan_secrets "$migrated"; then
+    info "WARNING: secret-like material detected in ${migrated}" >&2
+    info "         move those lines into ~/.zshrc.secrets (0600); capture will refuse them" >&2
+  fi
+
+  cp "${REPO_DIR}/zshrc.bootstrap" "$zshrc"
+  chmod 600 "$bak"
+  info "migrated: original backed up to ${bak}"
+  info "host content moved to ${migrated} (review ordering: mise re-activate should stay last)"
+  "$SCRIPT_DIR/install"
+}
+
+# --- status ------------------------------------------------------------------
+
+cmd_status() {
+  local as_json=0
+  [ "${1:-}" = "--json" ] && as_json=1
+  require_baseline
+
+  local dirty installed frags pending
+  dirty="$(repo_dirty_zsh_paths)"
+  installed="$(installed_drift | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')"
+  frags="$(fragment_drift | tr '\n' ',' | sed 's/,$//')"
+  pending=""
+  [ -d "$QUEUE_DIR" ] && pending="$(find "$QUEUE_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | tr '\n' ',' | sed 's/,$//')"
+
+  if [ "$as_json" -eq 1 ]; then
+    printf '{"host":"%s","repo_head":"%s","repo_dirty":"%s","installed_drift":"%s","fragment_drift":"%s","pending":"%s"}\n' \
+      "$(HOST_ID)" "$(REPO_HEAD)" "$dirty" "$installed" "$frags" "$pending"
+    return 0
+  fi
+
+  echo "host:            $(HOST_ID)"
+  echo "repo_head:       $(REPO_HEAD)"
+  echo "repo_dirty:      ${dirty:-none}"
+  echo "installed_drift: ${installed:-none}"
+  echo "fragment_drift:  ${frags:-none}"
+  echo "queue_pending:   ${pending:-none}"
+  echo
+  echo "flow: drift -> capture -> push -> (integrator) merge -> sync on all hosts"
+}
+
+# --- dispatch ----------------------------------------------------------------
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { usage; exit 0; }
+shift
+case "$cmd" in
+  status)  cmd_status  "$@" ;;
+  capture) cmd_capture "$@" ;;
+  push)    cmd_push    "$@" ;;
+  merge)   cmd_merge   "$@" ;;
+  sync)    cmd_sync    "$@" ;;
+  migrate) cmd_migrate "$@" ;;
+  -h|--help|help) usage; exit 0 ;;
+  *) die "unknown command: ${cmd} (see --help)" 2 ;;
+esac
