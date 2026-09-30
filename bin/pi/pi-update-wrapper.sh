@@ -21,9 +21,29 @@
 #
 # Failure semantics: if the update fails or times out, launch the existing
 # install anyway (warning on stderr). Never block a launch on the updater.
+#
+# Binary resolution: hosts differ. tc2 keeps a profile-managed grant wrapper
+# at ~/.local/bin/pi; hosts without it (e.g. pnpm-global installs) fall back
+# to the pnpm global bin dir. Resolution must never match this function.
+_pi_resolve() {
+  local _cand
+  for _cand in \
+    "$HOME/.local/bin/pi" \
+    "$HOME/.pi/agent/bin/pi" \
+    "${PNPM_HOME:-$HOME/.local/share/pnpm}/bin/pi" \
+    "$HOME/.local/share/pnpm/bin/pi"
+  do
+    [ -x "$_cand" ] && { printf '%s\n' "$_cand"; return 0; }
+  done
+  return 1
+}
+
 pi() {
-  local _pi_real="$HOME/.local/bin/pi"
-  [ -x "$_pi_real" ] || _pi_real="$HOME/.pi/agent/bin/pi"
+  local _pi_real
+  _pi_real="$(_pi_resolve)" || {
+    echo "[pi] ERROR: pi binary not found (checked ~/.local/bin/pi, ~/.pi/agent/bin/pi, pnpm bin)" >&2
+    return 127
+  }
 
   # Explicit subcommands: run as-is.
   case "$1" in
@@ -56,6 +76,6 @@ pi() {
   fi
 
   # Re-resolve after the update: self-update may rewrite the shim to a new release.
-  [ -x "$HOME/.local/bin/pi" ] && _pi_real="$HOME/.local/bin/pi"
+  _pi_real="$(_pi_resolve)" || return 127
   "$_pi_real" "$@"
 }
