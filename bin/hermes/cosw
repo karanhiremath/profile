@@ -24,8 +24,9 @@ usage() {
   cat <<'EOF'
 Launch the work Chief of Staff (chief-of-staff-work).
 
-Default: host-native local terminal (not the Docker sandbox). Profile seat is
-cursor/grok-4.6:fast on the timeout-free Cursor SDK worktree (no 180s bomb).
+Default: host-native local terminal (not the Docker sandbox). Default seat is
+together/zai-org/GLM-5.3-Flash (Together AI). --grok keeps the cursor
+grok-4.6:fast seat on the timeout-free Cursor SDK worktree (no 180s bomb).
 
 Usage:
   cosw [options] [-- agents-or-herm-args]
@@ -42,9 +43,7 @@ State:
   COSW_SKIP_STATE_PREFLIGHT=1 overrides (diagnostics only).
 
 Seats:
-  --codex, --gpt-5.5                   start on openai-codex/gpt-5.5
-  --grok, --cursor-grok                Cursor grok-4.6:fast + timeout-free PYTHONPATH
-Seats:
+  --together, --glm                    together/zai-org/GLM-5.3-Flash (default seat)
   --codex, --gpt-5.5                   start on openai-codex/gpt-5.5
   --grok, --cursor-grok                Cursor grok-4.6:fast + timeout-free PYTHONPATH
   --xai-grok, --grok-xai               xAI grok-4.6 (not the Cursor SDK)
@@ -149,6 +148,9 @@ cosw_llm_flag() {
 parse_seat_value() {
   local value="$1"
   case "$value" in
+    together/zai-org/GLM-5.3-Flash|together|together-glm|glm)
+      set_seat together-glm
+      ;;
     openai-codex/gpt-5.5|codex|gpt-5.5)
       set_seat codex
       ;;
@@ -294,6 +296,8 @@ strip_cosw_args() {
 
 timeout_free_worktree() {
   local candidate file
+  # Discovery order: explicit override, undated checkout, newest dated
+  # worktree, legacy dated path. Mirrors fork-env.sh _hermes_fork_candidate.
   if [ -n "${COSW_TIMEOUT_FREE_PYTHONPATH:-}" ]; then
     candidate="$COSW_TIMEOUT_FREE_PYTHONPATH"
     file="$candidate/agent/cursor_sdk_client.py"
@@ -303,12 +307,18 @@ timeout_free_worktree() {
     fi
     return 1
   fi
-  candidate="${HOME}/src/hermes-agent-worktrees/timeout-free-cursor-sdk-20260831T1834"
-  file="$candidate/agent/cursor_sdk_client.py"
-  if [ -f "$file" ] && grep -q '_operator_run_timeout_seconds' "$file"; then
-    printf '%s\n' "$candidate"
-    return 0
-  fi
+  for candidate in \
+    "${HOME}/src/hermes-agent-worktrees/timeout-free-cursor-sdk" \
+    "$(ls -dt "${HOME}"/src/hermes-agent-worktrees/timeout-free-cursor-sdk-* 2>/dev/null | head -1)" \
+    "${HOME}/src/hermes-agent-worktrees/timeout-free-cursor-sdk-20260831T1834"
+  do
+    [ -n "$candidate" ] || continue
+    file="$candidate/agent/cursor_sdk_client.py"
+    if [ -f "$file" ] && grep -q '_operator_run_timeout_seconds' "$file"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -342,13 +352,25 @@ apply_cosw_seat() {
   COSW_SEAT_OVERRIDE=0
   COSW_CURSOR_SDK=0
   case "${COSW_SEAT:-}" in
-    ""|cursor-grok)
+    "")
+      # Default seat: Together AI GLM-5.3-Flash. No cursor-SDK PYTHONPATH pin
+      # and no launch env override — the profile YAML llm/providers blocks
+      # own the seat (keeps YAML and launcher defaults in lockstep).
+      COSW_PROVIDER="${COSW_PROVIDER:-together}"
+      COSW_MODEL="${COSW_MODEL:-zai-org/GLM-5.3-Flash}"
+      COSW_CURSOR_SDK=0
+      ;;
+    cursor-grok)
       COSW_PROVIDER="${COSW_PROVIDER:-cursor}"
       COSW_MODEL="${COSW_MODEL:-grok-4.6:fast}"
       COSW_CURSOR_SDK=1
-      if [ "${COSW_SEAT:-}" = "cursor-grok" ]; then
-        COSW_SEAT_OVERRIDE=1
-      fi
+      COSW_SEAT_OVERRIDE=1
+      ;;
+    together-glm)
+      COSW_PROVIDER="${COSW_PROVIDER:-together}"
+      COSW_MODEL="${COSW_MODEL:-zai-org/GLM-5.3-Flash}"
+      COSW_CURSOR_SDK=0
+      COSW_SEAT_OVERRIDE=1
       ;;
     codex)
       COSW_PROVIDER=openai-codex
@@ -457,7 +479,7 @@ print_cosw_plan() {
     printf 'backend=local\n'
   fi
   printf 'sandbox=%s\n' "$sandbox"
-  printf 'seat=%s\n' "${COSW_SEAT:-cursor-grok}"
+  printf 'seat=%s\n' "${COSW_SEAT:-together-glm}"
   printf 'provider=%s\n' "$COSW_PROVIDER"
   printf 'model=%s\n' "$COSW_MODEL"
   printf 'thinking=%s\n' "$COSW_THINKING"
@@ -724,7 +746,7 @@ ensure_dispatch_bootstrap() {
     local pid cmdline
     pid="$(cat "$state/pid" 2>/dev/null || true)"
     cmdline=""
-    [ -z "$pid" ] || cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    [ -z "$pid" ] || cmdline="$(ps -ww -p "$pid" -o command= 2>/dev/null || true)"
     case "$cmdline" in
       *"$SCRIPT_DIR/cosw-host-control"*) ;;
       "") ;;

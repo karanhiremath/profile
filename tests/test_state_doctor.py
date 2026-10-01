@@ -29,6 +29,21 @@ def make_store(tmp: Path, journal_mode: str = "delete", sessions: int = 2) -> No
     conn.close()
 
 
+def short_tmpdir() -> tempfile.TemporaryDirectory:
+    """Temp dir under a short root so AF_UNIX path probes stay <= 108 chars.
+
+    macOS TMPDIR (/var/folders/...) is long enough to fail the tick-socket
+    length check, which is an artifact of the test root, not the code.
+    Falls back to the default temp location when no short root exists.
+    """
+    root = Path("/tmp")
+    if root.is_dir() and os.access(root, os.W_OK):
+        root = root / "sd-doctor-tests"
+        root.mkdir(mode=0o700, exist_ok=True)
+        return tempfile.TemporaryDirectory(dir=str(root))
+    return tempfile.TemporaryDirectory()
+
+
 class StateDoctorCase(unittest.TestCase):
     """Isolates HERMES_AGENTS_DATA_HOME so tests never touch the real store.
 
@@ -38,7 +53,7 @@ class StateDoctorCase(unittest.TestCase):
     PROFILE = "any"
 
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = short_tmpdir()
         self._old_data_home = os.environ.get("HERMES_AGENTS_DATA_HOME")
         os.environ["HERMES_AGENTS_DATA_HOME"] = self.tmp.name
         self.home = Path(self.tmp.name) / self.PROFILE / "profiles" / self.PROFILE
@@ -57,8 +72,8 @@ class StateDoctorCase(unittest.TestCase):
 
 class PathsTest(unittest.TestCase):
     def setUp(self) -> None:
+        self.tmp = short_tmpdir()
         self._old = os.environ.get("HERMES_AGENTS_DATA_HOME")
-        self.tmp = tempfile.TemporaryDirectory()
         os.environ["HERMES_AGENTS_DATA_HOME"] = self.tmp.name
 
     def tearDown(self) -> None:

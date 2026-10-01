@@ -26,6 +26,7 @@ import argparse
 import datetime as _dt
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -197,25 +198,79 @@ def is_nfs(fs: str) -> bool:
     return fs.startswith("nfs")
 
 
-def pid_cmdline(pid: int) -> str | None:
+def _procfs_available() -> bool:
+    return os.path.isdir("/proc")
+
+
+_PS_ENV_TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_PS_TABLE: dict[int, dict[str, Any]] | None = None
+
+
+def _darwin_process_table(force: bool = False) -> dict[int, dict[str, Any]]:
+    """pid -> {cmdline, env} from one `ps -axwwE` snapshot (macOS).
+
+    ps -E appends the environment after the command args. Env values may
+    contain spaces, so the env block is found by walking tokens backwards
+    while they look like KEY= assignments; anything left of that run is the
+    command. Values with spaces can bleed into the parsed command tail —
+    harmless here: writer role checks anchor on command tokens.
+    """
+    global _PS_TABLE
+    if _PS_TABLE is not None and not force:
+        return _PS_TABLE
+    table: dict[int, dict[str, Any]] = {}
     try:
-        with open(f"/proc/{pid}/cmdline", "rb") as fh:
-            return fh.read().replace(b"\0", b" ").decode("utf-8", "replace")
-    except (OSError, ValueError):
-        return None
+        proc = subprocess.run(
+            ["/bin/ps", "-axwwE", "-o", "pid=,command="],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _PS_TABLE = table
+        return table
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_str, _, rest = line.partition(" ")
+        if not pid_str.isdigit() or not rest:
+            continue
+        tokens = rest.split()
+        end = len(tokens)
+        while end > 0 and _PS_ENV_TOKEN.match(tokens[end - 1]):
+            end -= 1
+        env: dict[str, str] = {}
+        for tok in tokens[end:]:
+            key, _, value = tok.partition("=")
+            if key:
+                env[key] = value
+        table[int(pid_str)] = {"cmdline": " ".join(tokens[:end]), "env": env}
+    _PS_TABLE = table
+    return table
+
+
+def pid_cmdline(pid: int) -> str | None:
+    if _procfs_available():
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                return fh.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except (OSError, ValueError):
+            return None
+    return _darwin_process_table().get(pid, {}).get("cmdline")
 
 
 def pid_environ(pid: int) -> dict[str, str]:
-    try:
-        with open(f"/proc/{pid}/environ", "rb") as fh:
-            raw = fh.read().split(b"\0")
-    except (OSError, ValueError):
-        return {}
-    env: dict[str, str] = {}
-    for item in env_raw_items(raw):
-        key, _, value = item.partition("=")
-        env[key] = value
-    return env
+    if _procfs_available():
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as fh:
+                raw = fh.read().split(b"\0")
+        except (OSError, ValueError):
+            return {}
+        env: dict[str, str] = {}
+        for item in env_raw_items(raw):
+            key, _, value = item.partition("=")
+            env[key] = value
+        return env
+    return _darwin_process_table().get(pid, {}).get("env", {})
 
 
 def env_raw_items(raw: list[bytes]) -> list[str]:
@@ -229,16 +284,35 @@ def live_writer_pids(home: Path) -> list[dict[str, Any]]:
     resolved /data_vast/... form of the same home."""
     target = os.path.realpath(home)
     writers: list[dict[str, Any]] = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
+    if _procfs_available():
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid == os.getpid():
+                continue
+            env = pid_environ(pid)
+            if not env.get("HERMES_HOME") or os.path.realpath(env["HERMES_HOME"]) != target:
+                continue
+            cmdline = pid_cmdline(pid) or ""
+            role = None
+            if "hermes_cli.main" in cmdline and "gateway" in cmdline:
+                role = "gateway"
+            elif "tui_gateway" in cmdline:
+                role = "tui_gateway"
+            if role:
+                writers.append({"pid": pid, "role": role, "cmdline": cmdline[:160]})
+        return writers
+    # macOS: no /proc; use one ps snapshot. Same-user only (ps -E hides
+    # other users' environment, so foreign processes simply do not match).
+    for pid, info in sorted(_darwin_process_table().items()):
         if pid == os.getpid():
             continue
-        env = pid_environ(pid)
-        if not env.get("HERMES_HOME") or os.path.realpath(env["HERMES_HOME"]) != target:
+        env = info["env"]
+        hermes_home = str(env.get("HERMES_HOME") or "").strip()
+        if not hermes_home or os.path.realpath(hermes_home) != target:
             continue
-        cmdline = pid_cmdline(pid) or ""
+        cmdline = info["cmdline"]
         role = None
         if "hermes_cli.main" in cmdline and "gateway" in cmdline:
             role = "gateway"
@@ -408,7 +482,16 @@ def preflight_profile(profile: str) -> dict[str, Any]:
 # ── repair ───────────────────────────────────────────────────────────────────
 
 def pid_alive(pid: int) -> bool:
-    return os.path.isdir(f"/proc/{pid}")
+    if _procfs_available():
+        return os.path.isdir(f"/proc/{pid}")
+    try:
+        proc = subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "pid="],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return bool(proc.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def terminate_writers(writers: list[dict[str, Any]], grace: float = 10.0) -> list[int]:

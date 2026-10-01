@@ -539,13 +539,25 @@ def process_file(path: Path, root: Path, responses: Path, authenticated_sandbox_
 
 
 def peer_uid(conn: socket.socket) -> int | None:
-    if not hasattr(socket, "SO_PEERCRED"):
-        return None
-    try:
-        _, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-        return uid
-    except OSError:
-        return None
+    if hasattr(socket, "SO_PEERCRED"):
+        try:
+            _, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            return uid
+        except OSError:
+            return None
+    # macOS has no SO_PEERCRED; getpeereid(2) returns the effective peer uid.
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+
+            libc = ctypes.CDLL("libSystem.B.dylib")
+            uid = ctypes.c_uint(0)
+            gid = ctypes.c_uint(0)
+            if libc.getpeereid(conn.fileno(), ctypes.byref(uid), ctypes.byref(gid)) == 0:
+                return uid.value
+        except Exception:
+            return None
+    return None
 
 
 def read_request(conn: socket.socket) -> dict[str, Any]:
@@ -594,10 +606,14 @@ def run(root: Path, runtime: Path, interval: float, sandbox_id: str | None = Non
                 with conn:
                     try:
                         uid = peer_uid(conn)
+                        # None (creds unavailable) must stay None — process()
+                        # only enforces the uid match when creds are known.
+                        # Mapping None to -1 fail-closed every request on
+                        # platforms without SO_PEERCRED (macOS).
                         response = process(
                             read_request(conn),
                             root,
-                            uid if uid is not None else -1,
+                            peer_uid=uid,
                             authenticated_sandbox_id=sandbox_id,
                         )
                     except Exception as exc:
