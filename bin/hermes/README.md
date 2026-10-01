@@ -115,8 +115,9 @@ cos sandbox status          # personal CoS image / family / container
 cos sandbox families        # distrohop catalog
 cos sandbox rebuild         # personal default: arch-toolkit
 bin/hermes/cos-s ls         # list personal sandbox short names
-cosw                        # host-native CoS-W (timeout-free cursor/grok-4.6:fast)
-cosw --codex                # host-native CoS-W on openai-codex/gpt-5.5
+cosw                        # host-native CoS-W on openai-codex/gpt-6.1-sol (optimal for now)
+cosw --cursor-grok          # host-native CoS-W (timeout-free cursor/grok-4.6:fast)
+cosw --gpt-5.5              # legacy: host-native CoS-W on openai-codex/gpt-5.5
 cosw --xai-grok             # host-native CoS-W on xAI grok-4.6 (not Cursor SDK)
 cosw --lane o1              # isolated work sibling seat
 cosw --host-tools           # Hermes TUI on the host; no container
@@ -147,7 +148,9 @@ Seats (launch-scoped; they do not rewrite the committed profile YAML lock):
 - default / `--cursor-grok` — `cursor/grok-4.6:fast` with
   `PYTHONPATH` pinned at the timeout-free Cursor SDK worktree so the 180s
   nested-run bomb does not fire
-- `--codex` / `--gpt-5.5` — `openai-codex/gpt-5.5` (ChatGPT Codex billing)
+- default seat — `openai-codex/gpt-6.1-sol` (ChatGPT Codex billing; optimal for now)
+- `--codex` / `--gpt-6.1-sol` — same as the default seat
+- `--gpt-5.5` — legacy alias: `openai-codex/gpt-5.5`
 - `--xai-grok` — xAI `grok-4.6` (requires `XAI_API_KEY` or `hermes auth add xai-oauth`)
 
 `cosw --print-plan` prints the resolved backend/seat and exits.
@@ -268,7 +271,7 @@ Example profile:
 ```yaml
 model:
   provider: openai-codex
-  default: gpt-5.5
+  default: gpt-6.1-sol
   base_url: https://chatgpt.com/backend-api/codex
 auth:
   import_codex_cli: true
