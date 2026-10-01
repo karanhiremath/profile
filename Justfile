@@ -38,6 +38,7 @@ dev *FLAGS:
       6. bin/copilot-cli/install  GitHub Copilot CLI
       7. bin/hermes/install       Hermes isolated toolchain (uses mise's uv)
       8. bin/atop/install         private fleet-operator TUI (~/src/atop)
+      9. bin/aos install          personal AOS dispatcher (aos CLI)
 
     mise runs first so the CLI installers find node/pnpm/uv on PATH.
     Resilient: a failing step is reported and the rest continue; a summary
@@ -76,6 +77,7 @@ dev *FLAGS:
     run_step "copilot-cli" ./bin/copilot-cli/install
     run_step "hermes"      ./bin/hermes/install
     run_step "atop"        ./bin/atop/install
+    run_step "aos"         ./bin/aos install
 
     echo ""
     echo "=== coding-dev environment summary ==="
@@ -273,7 +275,7 @@ tmux-goto:
 # Crate source (first hit with Cargo.toml):
 #   ATOP_SRC, $KH_DIR/agentic/telemetry/atop, ~/src/karan.hiremath/...,
 #   or the thin worktree kh/atop-rust-thin-20260902
-atop:
+atop-build:
     #!/usr/bin/env bash
     set -euo pipefail
     resolve_atop_src() {
@@ -556,6 +558,13 @@ atop:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/atop/install
+
+# Install/upgrade the personal AOS dispatcher (single-command AOS management)
+aos:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    ./bin/aos install
 
 # Optional: install herdr. Not required for COSW/PM/PL/atop (it hogs CPU).
 herdr:

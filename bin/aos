@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# aos — personal Agent OS (AOS) management dispatcher.
+#
+# One command for the personal AOS plane: harness sync, prompt buffers,
+# policy engine, fleet TUI, host registry, and job-bus snapshot.
+# Tool-only: no project facts live in this script.
+#
+# Usage: aos [status|sync|pull|doctor|buf|policy|atop|hosts|bus|install|help] [args]
+set -euo pipefail
+
+PROFILE_DIR="${PROFILE_DIR:-$HOME/src/profile}"
+PI_AGENT="${PI_AGENT:-$HOME/.pi/agent}"
+
+usage() {
+	cat <<'EOF'
+Usage: aos <subcommand> [args]
+
+  status          AOS inventory: harness-sync status + tool presence + bus config
+  sync [args]     harness-sync apply (link skills/extensions, merge packages)
+  pull [args]     harness-sync pull [--all] [ssh-host]  (personal-safe set)
+  doctor          harness-sync status + hermes doctor (if present)
+  buf [args]      aos-buf prompt-buffer primitive (catalog/get/apply)
+  policy [args]   aos-policy engine (errors with a hint if not installed)
+  atop [args]     atop fleet TUI (never send-keys; steer via bus/atop vi)
+  hosts           tmux-connect host registry list
+  bus             job-bus snapshot: config summary + job counts + board check
+  install         self-install: symlink ~/.local/bin/aos -> this script
+  help            this help
+
+Env: PROFILE_DIR (default ~/src/profile), PI_AGENT (default ~/.pi/agent)
+EOF
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+cmd_status() {
+	local t
+	printf 'aos: profile=%s pi=%s\n' "$PROFILE_DIR" "$PI_AGENT"
+	if [ -x "$PROFILE_DIR/bin/atop/harness-sync" ]; then
+		"$PROFILE_DIR/bin/atop/harness-sync" status || true
+	else
+		echo "harness-sync: missing at bin/atop/harness-sync" >&2
+	fi
+	for t in aos-buf atop atop-tui aos-data node; do
+		if have "$t"; then printf 'tool %s=ok\n' "$t"; else printf 'tool %s=missing\n' "$t"; fi
+	done
+	if [ -f "$PI_AGENT/job-bus.json" ]; then
+		printf 'job-bus=installed config=%s\n' "$PI_AGENT/job-bus.json"
+	else
+		printf 'job-bus=not-configured\n'
+	fi
+	if [ -f "$PI_AGENT/extensions/job-bus.ts" ]; then
+		printf 'job-bus-extension=present\n'
+	else
+		printf 'job-bus-extension=missing (see karan.hiremath agentic/aeam install-to-host.sh)\n'
+	fi
+}
+
+cmd_doctor() {
+	cmd_status
+	if [ -x "$PROFILE_DIR/bin/hermes/doctor" ]; then
+		echo "--- hermes doctor"
+		"$PROFILE_DIR/bin/hermes/doctor" || true
+	fi
+}
+
+cmd_bus() {
+	if [ ! -f "$PI_AGENT/job-bus.json" ]; then
+		echo "aos bus: no $PI_AGENT/job-bus.json" >&2
+		return 1
+	fi
+	if have python3; then
+		PI_AGENT="$PI_AGENT" python3 - <<'PY'
+import json, os
+cfg = json.load(open(os.path.join(os.environ["PI_AGENT"], "job-bus.json")))
+print(f"enabled={cfg.get('enabled')} intervalMs={cfg.get('intervalMs')} autoSteer={cfg.get('autoSteer')} scope={cfg.get('scope')}")
+subs = cfg.get("subscriptions") or []
+print(f"subscriptions={len(subs)}: {', '.join(map(str, subs)) if subs else '(none)'}")
+PY
+	fi
+	local jobs=0
+	[ -d "$PI_AGENT/jobs" ] && jobs=$(find "$PI_AGENT/jobs" -name "*.status.json" 2>/dev/null | wc -l | tr -d ' ')
+	echo "job-status-files=$jobs"
+	if [ -f "$PI_AGENT/scripts/job-bus-board-check.ts" ] && have node; then
+		echo "--- board check (what /jobs would render)"
+		node "$PI_AGENT/scripts/job-bus-board-check.ts" "$@" || true
+	fi
+}
+
+cmd_policy() {
+	if [ -x "$PROFILE_DIR/bin/aos-policy/aos-policy" ]; then
+		exec "$PROFILE_DIR/bin/aos-policy/aos-policy" "$@"
+	fi
+	if have aos-policy; then
+		exec aos-policy "$@"
+	fi
+	echo "aos policy: engine not installed on this host." >&2
+	echo "expected: $PROFILE_DIR/bin/aos-policy/aos-policy (see config/aos/policy in the aos SOP)" >&2
+	return 1
+}
+
+cmd_install() {
+	local bin_dir="${HOME}/.local/bin" target="$PROFILE_DIR/bin/aos"
+	mkdir -p "$bin_dir"
+	ln -sfn "$target" "$bin_dir/aos"
+	echo "installed: $bin_dir/aos -> $target"
+	have aos && echo "aos on PATH: ok" || echo "aos on PATH: $bin_dir not on PATH" >&2
+}
+
+case "${1:-help}" in
+	status) shift; cmd_status "$@" ;;
+	sync)   shift; exec "$PROFILE_DIR/bin/atop/harness-sync" apply "$@" ;;
+	pull)   shift; exec "$PROFILE_DIR/bin/atop/harness-sync" pull "$@" ;;
+	doctor) shift; cmd_doctor "$@" ;;
+	buf)    shift; exec aos-buf "$@" ;;
+	policy) shift; cmd_policy "$@" ;;
+	atop)   shift; exec atop "$@" ;;
+	hosts)  shift; exec "$PROFILE_DIR/bin/tmux/tmux-connect" --list ;;
+	bus)    shift; cmd_bus "$@" ;;
+	install) shift; cmd_install "$@" ;;
+	-h|--help|help|"") usage ;;
+	*) echo "aos: unknown subcommand '$1' (try: aos help)" >&2; exit 2 ;;
+esac
