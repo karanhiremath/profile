@@ -466,26 +466,32 @@ def _tmux(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def list_tmux_panes() -> List[Dict[str, str]]:
+    # Prefer the stable pane id (%N) as the attach target: window names are
+    # volatile under automatic-rename (a node pane exiting renames the window
+    # between listing and attach -> 'can't find window: <name>'), and demo
+    # sessions routinely carry duplicate window names.
     proc = _tmux(
         "list-panes",
         "-a",
         "-F",
-        "#{session_name}\t#{window_name}\t#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{session_name}:#{window_name}.#{pane_index}",
+        "#{session_name}\t#{window_name}\t#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{session_name}:#{window_name}.#{pane_index}\t#{pane_id}",
     )
     if proc.returncode != 0:
         return []
     rows: List[Dict[str, str]] = []
     for line in proc.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) < 6:
+        if len(parts) < 7:
             continue
+        pane_id = parts[6].strip()
         rows.append({
             "session": parts[0],
             "window": parts[1],
             "index": parts[2],
             "pid": parts[3],
             "command": parts[4],
-            "target": parts[5],
+            "target": pane_id if pane_id else parts[5],
+            "name_target": parts[5],
         })
     return rows
 
