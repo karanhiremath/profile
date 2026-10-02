@@ -31,6 +31,13 @@ done
 
 if [ -z "$PROFILE" ]; then
   PROFILE="$PRIVATE_DIR/machines/$MACHINE/hermes.yaml"
+  if [ ! -f "$PROFILE" ]; then
+    case "$MACHINE" in
+      home-mac-mini|unknown*)
+        PROFILE="$PRIVATE_DIR/machines/khire-mac-mini/hermes.yaml"
+        ;;
+    esac
+  fi
 fi
 
 if [ "$SKIP_INSTALL" -eq 0 ]; then

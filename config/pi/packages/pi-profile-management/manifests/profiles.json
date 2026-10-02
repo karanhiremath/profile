@@ -1,0 +1,136 @@
+{
+  "schema": "pi.profile-manifest.v1",
+  "defaultClass": "implementor",
+  "granolaClasses": ["librarian", "notetaker"],
+  "classes": {
+    "implementor": {
+      "granola": "deny",
+      "mcpDeny": [
+        "granola",
+        "query_granola_meetings",
+        "list_meetings",
+        "get_meetings",
+        "get_meeting_transcript",
+        "list_meeting_folders"
+      ],
+      "skillsDeny": [
+        "granola-context",
+        "granola-prep",
+        "granola-review",
+        "granola-engineer",
+        "granola-lookup"
+      ]
+    },
+    "reviewer": {
+      "granola": "deny",
+      "mcpDeny": [
+        "granola",
+        "query_granola_meetings",
+        "list_meetings",
+        "get_meetings",
+        "get_meeting_transcript",
+        "list_meeting_folders"
+      ],
+      "skillsDeny": [
+        "granola-context",
+        "granola-prep",
+        "granola-review",
+        "granola-engineer",
+        "granola-lookup"
+      ]
+    },
+    "planner": {
+      "granola": "deny",
+      "mcpDeny": [
+        "granola",
+        "query_granola_meetings",
+        "list_meetings",
+        "get_meetings",
+        "get_meeting_transcript",
+        "list_meeting_folders"
+      ],
+      "skillsDeny": [
+        "granola-context",
+        "granola-prep",
+        "granola-review",
+        "granola-engineer",
+        "granola-lookup"
+      ]
+    },
+    "orchestrator": {
+      "granola": "deny",
+      "mcpDeny": [
+        "granola",
+        "query_granola_meetings",
+        "list_meetings",
+        "get_meetings",
+        "get_meeting_transcript",
+        "list_meeting_folders"
+      ],
+      "skillsDeny": [
+        "granola-context",
+        "granola-prep",
+        "granola-review",
+        "granola-engineer",
+        "granola-lookup"
+      ]
+    },
+    "context": {
+      "granola": "deny",
+      "mcpDeny": [
+        "granola",
+        "query_granola_meetings",
+        "list_meetings",
+        "get_meetings",
+        "get_meeting_transcript",
+        "list_meeting_folders"
+      ],
+      "skillsDeny": [
+        "granola-context",
+        "granola-prep",
+        "granola-review",
+        "granola-engineer",
+        "granola-lookup"
+      ]
+    },
+    "librarian": {
+      "granola": "allow-on-skill",
+      "skillsAllow": ["granola-lookup"]
+    },
+    "notetaker": {
+      "granola": "allow-on-skill",
+      "skillsAllow": ["granola-lookup"]
+    }
+  },
+  "agents": {
+    "worker": "implementor",
+    "grok-worker": "implementor",
+    "gitops": "implementor",
+    "scout": "implementor",
+    "research": "implementor",
+    "reviewer": "reviewer",
+    "grok-reviewer": "reviewer",
+    "planner": "planner",
+    "rfd-writer": "planner",
+    "daily-planner": "planner",
+    "work-notes-librarian": "librarian",
+    "granola-notetaker": "notetaker",
+    "cosw": "orchestrator",
+    "cos": "orchestrator",
+    "pm": "orchestrator",
+    "pl": "orchestrator",
+    "fleet-designer": "orchestrator",
+    "omp": "implementor",
+    "omp-harness": "implementor",
+    "cartesia-security-context": "context",
+    "gypsum-context": "context",
+    "bifrost-context": "context"
+  },
+  "projects": [
+    {
+      "match": "cartesia-security",
+      "defaultClass": "implementor",
+      "granola": "deny"
+    }
+  ]
+}

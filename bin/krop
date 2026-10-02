@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Personal krop checkout helper. Never touches ~/src/karan.hiremath.
+# Usage: krop <tf|infra|ai|all> <bootstrap|update|status|path|help>
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: krop <tf|infra|ai|all> <bootstrap|update|status|path|help>
+
+Ensure local krop-* checkouts for home-mac CosW. Does not create GitHub repos,
+apply cloud changes, or read work/KH trees.
+
+Environment (per project, PROJECT in TF|INFRA|AI):
+  KROP_<PROJECT>_DIR        checkout path (default: ~/src/krop-<name>)
+  KROP_<PROJECT>_REPO_URL   clone URL when the checkout is absent
+
+Commands:
+  bootstrap  clone from REPO_URL, or git init a local-only repo
+  update     pull --ff-only when origin exists
+  status     path + remotes + git status
+  path       print checkout path
+EOF
+}
+
+log() { printf 'krop: %s\n' "$*" >&2; }
+
+projects_for() {
+  case "$1" in
+    tf|krop-tf) printf '%s\n' tf ;;
+    infra|krop-infra) printf '%s\n' infra ;;
+    ai|krop-ai) printf '%s\n' ai ;;
+    all) printf '%s\n' tf infra ai ;;
+    *)
+      log "unknown project: $1 (tf|infra|ai|all)"
+      return 2
+      ;;
+  esac
+}
+
+env_prefix() {
+  case "$1" in
+    tf) printf 'KROP_TF' ;;
+    infra) printf 'KROP_INFRA' ;;
+    ai) printf 'KROP_AI' ;;
+  esac
+}
+
+repo_name() {
+  printf 'krop-%s' "$1"
+}
+
+repo_dir() {
+  case "$1" in
+    tf) printf '%s\n' "${KROP_TF_DIR:-$HOME/src/krop-tf}" ;;
+    infra) printf '%s\n' "${KROP_INFRA_DIR:-$HOME/src/krop-infra}" ;;
+    ai) printf '%s\n' "${KROP_AI_DIR:-$HOME/src/krop-ai}" ;;
+  esac
+}
+
+repo_url() {
+  case "$1" in
+    tf) printf '%s\n' "${KROP_TF_REPO_URL:-}" ;;
+    infra) printf '%s\n' "${KROP_INFRA_REPO_URL:-}" ;;
+    ai) printf '%s\n' "${KROP_AI_REPO_URL:-}" ;;
+  esac
+}
+
+cmd_bootstrap() {
+  local name="$1" dir url
+  dir="$(repo_dir "$name")"
+  url="$(repo_url "$name")"
+  if [ -d "$dir/.git" ]; then
+    log "$(repo_name "$name") already present: $dir"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dir")"
+  if [ -n "$url" ]; then
+    git clone "$url" "$dir"
+    return 0
+  fi
+  mkdir -p "$dir"
+  git -C "$dir" init
+  log "initialized local-only $(repo_name "$name"): $dir"
+  log "set $(env_prefix "$name")_REPO_URL to clone a private remote when one exists"
+}
+
+cmd_update() {
+  local name="$1" dir
+  dir="$(repo_dir "$name")"
+  if [ ! -d "$dir/.git" ]; then
+    cmd_bootstrap "$name"
+    return 0
+  fi
+  if git -C "$dir" remote get-url origin >/dev/null 2>&1; then
+    git -C "$dir" pull --ff-only
+  else
+    log "no origin remote for $dir; local-only repo left unchanged"
+  fi
+}
+
+cmd_status() {
+  local name="$1" dir
+  dir="$(repo_dir "$name")"
+  if [ ! -d "$dir/.git" ]; then
+    log "missing repo: $dir"
+    return 1
+  fi
+  printf 'name: %s\n' "$(repo_name "$name")"
+  printf 'path: %s\n' "$dir"
+  git -C "$dir" remote -v || true
+  git -C "$dir" status --short
+}
+
+cmd_path() {
+  repo_dir "$1"
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "help" ] || [ -z "${1:-}" ]; then
+  usage
+  exit 0
+fi
+
+selector="$1"
+shift
+action="${1:-status}"
+if [ $# -gt 0 ]; then
+  shift
+fi
+
+case "$action" in
+  bootstrap|update|status|path|help) ;;
+  *)
+    log "unknown command: $action"
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if [ "$action" = help ]; then
+  usage
+  exit 0
+fi
+
+rc=0
+while IFS= read -r name; do
+  case "$action" in
+    bootstrap) cmd_bootstrap "$name" || rc=$? ;;
+    update) cmd_update "$name" || rc=$? ;;
+    status) cmd_status "$name" || rc=$? ;;
+    path) cmd_path "$name" ;;
+  esac
+done < <(projects_for "$selector")
+exit "$rc"

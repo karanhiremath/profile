@@ -13,6 +13,10 @@ Run with the toolchain venv python:
     ... validate.py --tts                                  # synth roundtrip
     ... validate.py --tts --stt                            # synth then transcribe back
 
+Dest / adversarial GAN (isolated pack :28787; never human :8787 / LAN :18787 / Cos send-keys):
+    profile-wt-cos-voice-pack/pack/cos-voice/ghostty-voice/gan_validate.py
+    COS_VOICE_PACK=1 .../cos-voice-ctl gan [--live] [--crate] [--steer-pi-sid AGENT_SID]
+
 Examples of pointing at internal targets (keep hosts in ~/.hermes/.env):
     CARTESIA_BASE_URL=https://staging-api.cartesia.ai
     CARTESIA_BASE_URL=http://localhost:8000      # on-prem docker-compose
@@ -56,7 +60,7 @@ def main() -> int:
 
     print("config")
     print(f"  tts_endpoint   {base_url()}/tts/bytes")
-    print(f"  stt_endpoint   {stt_base_url()}/stt")
+    print(f"  stt_endpoint   {stt_base_url()}/stt/websocket (ink-preview/ink-2) or /stt (ink-whisper)")
     print(f"  api_version    {api_version()}")
     print(f"  api_key        {'set' if get_env('CARTESIA_API_KEY') else 'MISSING'}")
     print(f"  tts_model      {tts.default_model()}")

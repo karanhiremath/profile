@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# Linear "Work on issue → Custom script" launcher.
+# Docs: https://linear.app/docs/open-issues-with-custom-scripts
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: open-issue [--dry-run] [--in-terminal] [--issue ID] [--print-prompt-template]
+                  [--help]
+
+Linear desktop runs this with LINEAR_* env vars (see coding-tools.json).
+Maps LINEAR_WORK_DIR to a pc project under $PC_SRC_DIR (default ~/src),
+writes the rendered Linear prompt, then opens Ghostty into that pc workspace.
+
+Options:
+  --dry-run                 plan JSON on stdout; write prompt/state; no Ghostty/pc
+  --in-terminal             attach/create the pc session (Ghostty entrypoint)
+  --issue ID                state key when re-entering --in-terminal
+  --print-prompt-template   print the Linear Settings prompt template
+  -h, --help
+
+Env (Linear allowlist):
+  LINEAR_PROMPT LINEAR_ISSUE_IDENTIFIER LINEAR_ISSUE_BRANCH_NAME
+  LINEAR_WORK_DIR LINEAR_PROJECT_NAME LINEAR_PULL_REQUEST_COMMENT_ID
+  LINEAR_TOOL_COMMAND
+
+Other:
+  PC_SRC_DIR     default ~/src
+  PI_BIN PC_BIN  optional absolute binaries
+EOF
+}
+
+die() {
+  printf 'linear-open-issue: %s\n' "$*" >&2
+  exit 1
+}
+
+here() {
+  local src="$1"
+  while [ -L "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+bootstrap_path() {
+  export PATH="${HOME}/.local/bin:${HOME}/.local/share/pnpm:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+}
+
+sanitize_id() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_' | sed 's/^$/unknown/'
+}
+
+sanitize_tmux() {
+  printf '%s' "$1" | tr '.:' '-'
+}
+
+cache_dir() {
+  printf '%s/linear/open-issue' "${XDG_CACHE_HOME:-$HOME/.cache}"
+}
+
+resolve_dir() {
+  local raw="${1:-}"
+  [ -n "$raw" ] || return 1
+  [ -d "$raw" ] || return 1
+  (cd "$raw" && pwd -P)
+}
+
+resolve_workdir() {
+  local raw="${1:-}"
+  [ -n "$raw" ] || die "LINEAR_WORK_DIR is empty; pick a repo in Linear"
+  resolve_dir "$raw" || die "LINEAR_WORK_DIR is not a directory: $raw"
+}
+
+resolve_project() {
+  local workdir="$1"
+  local src="$2"
+  local best_name="" best_path="" best_len=0
+  local name path src_real
+  src_real="$(resolve_dir "$src")" || die "PC_SRC_DIR missing: $src"
+  for path in "$src_real"/*; do
+    [ -d "$path" ] || continue
+    path="$(resolve_dir "$path")" || continue
+    name="$(basename "$path")"
+    case "$workdir" in
+      "$path" | "$path"/*)
+        if [ "${#path}" -gt "$best_len" ]; then
+          best_len="${#path}"
+          best_name="$name"
+          best_path="$path"
+        fi
+        ;;
+    esac
+  done
+  [ -n "$best_name" ] || die "workdir is not under $src_real: $workdir"
+  printf '%s\t%s\n' "$best_name" "$best_path"
+}
+
+session_exists() {
+  tmux has-session -t "$1" 2>/dev/null
+}
+
+write_prompt() {
+  local dest="$1"
+  local issue="$2"
+  local project="$3"
+  local workdir="$4"
+  local branch="$5"
+  local linear_project="$6"
+  mkdir -p "$(dirname "$dest")"
+  umask 077
+  {
+    printf '# Linear open-issue brief\n'
+    printf '# issue: %s\n' "$issue"
+    printf '# pc_project: %s\n' "$project"
+    printf '# workdir: %s\n' "$workdir"
+    printf '# branch: %s\n' "${branch:-}"
+    printf '# linear_project: %s\n' "${linear_project:-}"
+    printf '\n'
+    if [ -n "${LINEAR_PROMPT:-}" ]; then
+      printf '%s\n' "$LINEAR_PROMPT"
+    else
+      printf 'Work Linear issue %s.\n' "$issue"
+      [ -n "$branch" ] && printf 'Suggested branch: %s\n' "$branch"
+    fi
+  } >"$dest"
+}
+
+write_state() {
+  local dest="$1"
+  python3 - "$dest" <<'PY'
+import json, os, sys
+dest = sys.argv[1]
+keys = (
+    "issue", "project", "workdir", "branch", "prompt_file",
+    "session", "window", "pi_prompt", "action",
+)
+data = {k: os.environ.get(f"LINEAR_OPEN_ISSUE_{k.upper()}", "") for k in keys}
+data["schema"] = "linear-open-issue.v1"
+with open(dest, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+os.chmod(dest, 0o600)
+PY
+}
+
+emit_plan() {
+  python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "schema": "linear-open-issue.v1",
+    "issue": os.environ.get("LINEAR_OPEN_ISSUE_ISSUE", ""),
+    "project": os.environ.get("LINEAR_OPEN_ISSUE_PROJECT", ""),
+    "workdir": os.environ.get("LINEAR_OPEN_ISSUE_WORKDIR", ""),
+    "branch": os.environ.get("LINEAR_OPEN_ISSUE_BRANCH", ""),
+    "prompt_file": os.environ.get("LINEAR_OPEN_ISSUE_PROMPT_FILE", ""),
+    "session": os.environ.get("LINEAR_OPEN_ISSUE_SESSION", ""),
+    "window": os.environ.get("LINEAR_OPEN_ISSUE_WINDOW", ""),
+    "pi_prompt": os.environ.get("LINEAR_OPEN_ISSUE_PI_PROMPT", ""),
+    "action": os.environ.get("LINEAR_OPEN_ISSUE_ACTION", ""),
+    "pc_bin": os.environ.get("LINEAR_OPEN_ISSUE_PC_BIN", ""),
+}, indent=2))
+PY
+}
+
+inject_existing() {
+  local session="$1"
+  local window="$2"
+  local prompt_file="$3"
+  local issue="$4"
+  local target="${session}:${window}.1"
+  if ! tmux list-panes -t "$target" >/dev/null 2>&1; then
+    die "pc pi pane missing: $target"
+  fi
+  tmux select-window -t "${session}:${window}"
+  tmux send-keys -t "$target" "Read and execute the Linear issue brief at ${prompt_file}. Issue ${issue}." Enter
+}
+
+launch_pc() {
+  local pc_bin="$1"
+  local project="$2"
+  local issue="$3"
+  local pi_prompt="$4"
+  local prompt_file="$5"
+  exec "$pc_bin" "$project" -- --name "$issue" --prompt-template "$pi_prompt" -- @"$prompt_file"
+}
+
+open_ghostty() {
+  local self="$1"
+  local issue="$2"
+  if [ -d "/Applications/Ghostty.app" ] || [ -d "${HOME}/Applications/Ghostty.app" ]; then
+    open -na "Ghostty.app" --args -e "$self" --in-terminal --issue "$issue"
+    return
+  fi
+  die "Ghostty.app not found; install with just ghostty"
+}
+
+DIR="$(here "${BASH_SOURCE[0]}")"
+SELF="${DIR}/open-issue"
+TEMPLATE="${DIR}/prompt-template.md"
+PI_PROMPT="${DIR}/pi-prompt.md"
+DRY_RUN=0
+IN_TERMINAL=0
+PRINT_TEMPLATE=0
+ISSUE_OVERRIDE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --in-terminal) IN_TERMINAL=1; shift ;;
+    --print-prompt-template) PRINT_TEMPLATE=1; shift ;;
+    --issue)
+      ISSUE_OVERRIDE="${2:?--issue needs an id}"
+      shift 2
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+if [ "$PRINT_TEMPLATE" -eq 1 ]; then
+  python3 - "$TEMPLATE" <<'PY'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+if text.startswith("---"):
+    parts = text.split("---", 2)
+    text = parts[2].lstrip("\n") if len(parts) == 3 else text
+sys.stdout.write(text)
+if not text.endswith("\n"):
+    sys.stdout.write("\n")
+PY
+  exit 0
+fi
+
+bootstrap_path
+
+if [ "$IN_TERMINAL" -eq 1 ]; then
+  issue="$(sanitize_id "${ISSUE_OVERRIDE:-${LINEAR_ISSUE_IDENTIFIER:-}}")"
+  [ "$issue" != "unknown" ] || die "--in-terminal needs --issue or LINEAR_ISSUE_IDENTIFIER"
+  state="$(cache_dir)/${issue}.json"
+  [ -f "$state" ] || die "missing state $state"
+  eval "$(python3 - "$state" <<'PY'
+import json, shlex, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+for k, env in (
+    ("project", "LINEAR_OPEN_ISSUE_PROJECT"),
+    ("prompt_file", "LINEAR_OPEN_ISSUE_PROMPT_FILE"),
+    ("session", "LINEAR_OPEN_ISSUE_SESSION"),
+    ("window", "LINEAR_OPEN_ISSUE_WINDOW"),
+    ("pi_prompt", "LINEAR_OPEN_ISSUE_PI_PROMPT"),
+    ("action", "LINEAR_OPEN_ISSUE_ACTION"),
+    ("issue", "LINEAR_OPEN_ISSUE_ISSUE"),
+):
+    print(f"export {env}={shlex.quote(str(d.get(k, '') or ''))}")
+PY
+)"
+  pc_bin="${PC_BIN:-$(command -v pc || true)}"
+  [ -n "$pc_bin" ] || die "pc not on PATH"
+  if [ "${LINEAR_OPEN_ISSUE_ACTION}" = "attach-inject" ]; then
+    inject_existing \
+      "${LINEAR_OPEN_ISSUE_SESSION}" \
+      "${LINEAR_OPEN_ISSUE_WINDOW}" \
+      "${LINEAR_OPEN_ISSUE_PROMPT_FILE}" \
+      "${LINEAR_OPEN_ISSUE_ISSUE}"
+    exec "${pc_bin}" "${LINEAR_OPEN_ISSUE_PROJECT}"
+  fi
+  launch_pc \
+    "$pc_bin" \
+    "${LINEAR_OPEN_ISSUE_PROJECT}" \
+    "${LINEAR_OPEN_ISSUE_ISSUE}" \
+    "${LINEAR_OPEN_ISSUE_PI_PROMPT}" \
+    "${LINEAR_OPEN_ISSUE_PROMPT_FILE}"
+fi
+
+src="${PC_SRC_DIR:-$HOME/src}"
+workdir="$(resolve_workdir "${LINEAR_WORK_DIR:-}")"
+mapped="$(resolve_project "$workdir" "$src")"
+project="${mapped%%$'\t'*}"
+issue="$(sanitize_id "${ISSUE_OVERRIDE:-${LINEAR_ISSUE_IDENTIFIER:-linear-issue}}")"
+branch="${LINEAR_ISSUE_BRANCH_NAME:-}"
+session="pi_$(sanitize_tmux "$project")"
+window="$(sanitize_tmux "$project")"
+prompt_file="$(cache_dir)/${issue}.md"
+state_file="$(cache_dir)/${issue}.json"
+pc_bin="${PC_BIN:-$(command -v pc || true)}"
+[ -n "$pc_bin" ] || [ "$DRY_RUN" -eq 1 ] || die "pc not on PATH; run just pc"
+
+if session_exists "$session"; then
+  action="attach-inject"
+else
+  action="create"
+fi
+
+write_prompt "$prompt_file" "$issue" "$project" "$workdir" "$branch" "${LINEAR_PROJECT_NAME:-}"
+
+export LINEAR_OPEN_ISSUE_ISSUE="$issue"
+export LINEAR_OPEN_ISSUE_PROJECT="$project"
+export LINEAR_OPEN_ISSUE_WORKDIR="$workdir"
+export LINEAR_OPEN_ISSUE_BRANCH="$branch"
+export LINEAR_OPEN_ISSUE_PROMPT_FILE="$prompt_file"
+export LINEAR_OPEN_ISSUE_SESSION="$session"
+export LINEAR_OPEN_ISSUE_WINDOW="$window"
+export LINEAR_OPEN_ISSUE_PI_PROMPT="$PI_PROMPT"
+export LINEAR_OPEN_ISSUE_ACTION="$action"
+export LINEAR_OPEN_ISSUE_PC_BIN="$pc_bin"
+write_state "$state_file"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  emit_plan
+  exit 0
+fi
+
+[ -n "$pc_bin" ] || die "pc not on PATH; run just pc"
+command -v tmux >/dev/null 2>&1 || die "tmux not on PATH"
+
+if [ -t 0 ] && [ -t 1 ]; then
+  if [ "$action" = "attach-inject" ]; then
+    inject_existing "$session" "$window" "$prompt_file" "$issue"
+    exec "$pc_bin" "$project"
+  fi
+  launch_pc "$pc_bin" "$project" "$issue" "$PI_PROMPT" "$prompt_file"
+fi
+
+open_ghostty "$SELF" "$issue"
+printf 'linear-open-issue: launched Ghostty for %s → %s (%s)\n' "$issue" "$project" "$action" >&2

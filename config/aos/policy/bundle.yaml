@@ -1,0 +1,12 @@
+schema: aos.policy.bundle.v1
+name: aos-default
+description: First-class AOS filter + policy engine. Bundled docs plus optional overlay.
+roots:
+  - policies
+overlay: ${AOS_POLICY_HOME}/overlay
+acl: acl/grants.yaml
+load_order:
+  - granola-class-gate
+  - cursor-pi-bridge-task-exclusive
+  - voice-tts-transcript
+  - herm-tui-cursor-exclusive

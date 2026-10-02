@@ -1,0 +1,28 @@
+[package]
+name = "aos-buf"
+version = "0.1.0"
+edition = "2021"
+description = "AOS buffer apply: catalog / get / queued set. Never send-keys."
+authors = ["Karan Hiremath"]
+
+[[bin]]
+name = "aos-buf"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+libc = "0.2"
+rmpv = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+walkdir = "2"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

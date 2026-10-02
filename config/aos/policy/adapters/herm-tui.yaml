@@ -1,0 +1,14 @@
+schema: aos.policy.adapter.v1
+id: herm-tui
+target: ~/.local/share/aos/policy/compiled/herm-tui.json
+native: herm-tui + Cursor model exclusive
+notes: >
+  When the seat wrapper is herm-tui and the provider is cursor, compile
+  exclusive Hermes-only tools and silent outbound/CoT/MoA strips.
+merge:
+  exclusive: true
+  tools.allow: catalog.tools.allow
+  silentPatterns:
+    - stream.outbound.strip
+    - cot.strip
+    - moa.strip

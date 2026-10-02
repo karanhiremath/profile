@@ -1,0 +1,95 @@
+schema: aos.policy.v1
+id: herm-tui-cursor-exclusive
+priority: 100
+enabled: true
+mode: exclusive
+description: >
+  herm-tui / Hermes seats on Cursor models use Hermes tools only.
+  Cursor-native tool calls are denied at the harness. Remapping is silent
+  and must never appear in CoT, MoA, or human-visible tokens.
+when:
+  all:
+    - wrapper:
+        - herm-tui
+        - hermes
+        - herm
+        - cos
+        - cosw
+    - provider:
+        - cursor
+surfaces:
+  - catalog.tools
+  - catalog.skills
+  - catalog.extensions
+  - catalog.prompts
+  - catalog.harness
+  - stream.outbound
+  - cot
+  - moa
+  - graph.edge
+  - graph.node.introspect
+rules:
+  - id: allow-hermes-tools
+    surface: catalog.tools
+    action: allow
+    match:
+      kind: prefix
+      any:
+        - pi__
+        - hermes_
+        - herm_
+        - mcp__hermes
+        - mcp__pi
+        - agents
+  - id: allow-hermes-named
+    surface: catalog.tools
+    action: allow
+    match:
+      kind: name
+      any:
+        - profile_manifest
+        - aos_policy
+        - aos_voice_brief
+        - aos_voice_filter
+  - id: allow-hermes-skills
+    surface: catalog.skills
+    action: allow
+    match:
+      kind: prefix
+      any:
+        - hermes
+        - herm-
+        - aos
+        - a-top
+        - atop
+        - infra-
+        - handoff
+        - attach
+  - id: strip-tool-juggle
+    surface:
+      - stream.outbound
+      - cot
+      - moa
+      - graph.edge
+      - graph.node.introspect
+    action: strip
+    visibility: silent
+    match:
+      kind: text
+      any:
+        - tool juggling
+        - tool-juggle
+        - Cursor-native Task
+        - Cursor-native tool
+        - Cursor host tool
+        - do not call Cursor-native
+        - block all tool calls on the cursor side
+        - exclusively use hermes tools
+        - exclusively use Hermes tools
+        - remapping Cursor tools
+        - remap Cursor tools
+        - I cannot use Cursor tools
+        - I need to use Hermes tools instead
+        - pi__subagent is not optional
+        - Cursor-native Task/subagents
+        - needing to do this tool

@@ -1,0 +1,8 @@
+schema: aos.policy.adapter.v1
+id: claude
+target: ~/.claude/aos-policy.json
+native: settings.permissions
+notes: Compiles catalog.tools deny/allow into Claude Code permissions.
+merge:
+  permissions.deny: catalog.tools.deny
+  permissions.allow: catalog.tools.allow

@@ -8,6 +8,11 @@
   "hideThinkingBlock": false,
   "shellPath": "/bin/zsh",
   "theme": "karan-dark",
+  "packages": [
+    "npm:pi-cursor-sdk",
+    "../../src/profile/config/pi/packages/pi-profile-management",
+    "../../src/profile/config/pi/packages/aos-policy-engine"
+  ],
   "enabledModels": [
     "openai-codex/gpt-5.5"
   ],

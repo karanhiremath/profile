@@ -18,16 +18,18 @@ install:
 # Usage: just dev [--help]
 dev *FLAGS:
     #!/usr/bin/env bash
-    # NOTE: intentionally NOT `set -e` — this recipe must continue past a single
-    # installer failure. Each step's rc is captured explicitly instead.
     set -uo pipefail
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/agentic-dev/install {{FLAGS}}
 
-    case "{{FLAGS}}" in
-        --help|-h)
-            cat <<'EOF'
-    just dev — stand up the full coding-dev environment (idempotent).
+# Alias for just dev — host or sandbox agentic install + CosW provision
+agentic-dev *FLAGS:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/agentic-dev/install {{FLAGS}}
 
     Runs, in order:
       1. bin/mise/install         mise + node, pnpm, uv, neovim
@@ -313,7 +315,11 @@ pc:
         mkdir -p "$HOME/.pi/agent/skills"
         for skill in "$(pwd)"/skills/pi/*; do
             [ -d "$skill" ] || continue
-            ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
+            dest="$HOME/.pi/agent/skills/$(basename "$skill")"
+            if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+                rm -rf "$dest"
+            fi
+            ln -fns "$skill" "$dest"
         done
         echo "✓ Linked profile Pi skills"
     fi
@@ -323,6 +329,14 @@ pc:
         ln -fns "$(pwd)/extensions/datadog-mcp.ts" "$HOME/.pi/agent/extensions/datadog-mcp.ts"
         echo "✓ Linked Datadog MCP extension"
     fi
+
+# Linear Work on issue → Custom script (pc workspace + prompt template)
+linear:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/linear/install
 
 obsidian:
     #!/usr/bin/env bash
@@ -445,8 +459,13 @@ pi-skills:
     mkdir -p "$HOME/.pi/agent/skills"
     for skill in "$(pwd)"/skills/pi/*; do
         [ -d "$skill" ] || continue
-        ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
+        dest="$HOME/.pi/agent/skills/$(basename "$skill")"
+        if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+            rm -rf "$dest"
+        fi
+        ln -fns "$skill" "$dest"
     done
+    ./bin/atop/resolve-skill-conflicts
 
 # Install/upgrade Codex CLI via pnpm (node + pnpm from mise)
 codex:
@@ -590,6 +609,10 @@ hermes-doctor:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/hermes/doctor
 
+# Status of karanhiremath/hermes-agent + herm forks vs upstream
+hermes-fork-sync *FLAGS:
+    ./bin/hermes/fork-sync {{FLAGS}}
+
 # Install/upgrade Helm
 helm:
     #!/usr/bin/env bash
@@ -669,6 +692,14 @@ alt-tab:
     export PROFILE_DIR="$(pwd)"
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/alt-tab/install
+
+# Install/upgrade Vorssaint (macOS menu bar toolkit)
+vorssaint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/vorssaint/install
 
 # Install/upgrade DockDoor (macOS window peeking utility)
 dockdoor:

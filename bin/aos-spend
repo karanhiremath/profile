@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""aos-spend — CAI-AOS spend eval (stdout JSON only).
+
+Mirrors CaiAos.Spend: classify → partition → price → compose windows → gate.
+Cursor dashboard Cost=Free is included quota, not $0.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+PROFILE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROFILE / "config/aos/pricing"))
+
+from cursor_usage_events import (  # noqa: E402
+    DEFAULT_LEDGER,
+    bucket_rates,
+    classify,
+    ingest_csv_path,
+    ingest_csv_text,
+    load_ledger,
+    parse_export_url,
+    usd_per_m as csv_usd_per_m,
+    write_ledger,
+    status_of,
+)
+
+FEE_PATH = PROFILE / "config/aos/pricing/cursor-token-fee.v1.json"
+WINDOWS_PATH = PROFILE / "config/aos/pricing/usage-windows.v1.json"
+USAGE_CACHE = Path.home() / ".pi/agent/atop/usage-cache.json"
+EXPORT_URL_TMPL = (
+    "https://cursor.com/api/dashboard/export-usage-events-csv"
+    "?teamId={team_id}&isEnterprise=true&startDate={start_ms}&endDate={end_ms}&strategy=tokens"
+)
+
+
+def _load(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text())
+
+
+def fee_table(doc: dict[str, Any]) -> dict[str, float]:
+    return {str(k): float(v) for k, v in doc.get("fee_pct", {}).items()}
+
+
+def harness_of(classified: str, harness: str) -> str:
+    if harness in {"cursor", "claude", "codex", "together"}:
+        return harness
+    if classified.startswith("deepseek"):
+        return "together"
+    if classified.startswith("grok") or classified.startswith("composer") or classified.startswith("cursor"):
+        return "cursor"
+    if "claude" in classified:
+        return "claude"
+    if "codex" in classified or classified.startswith("gpt-"):
+        return "codex"
+    return harness or "unknown"
+
+
+def price_event(event: dict[str, Any], fees: dict[str, float]) -> dict[str, Any]:
+    classified = classify(str(event.get("model") or event.get("last_model") or event.get("classified") or ""))
+    tokens = {
+        "input": int(event.get("input") or event.get("tokens_in") or 0),
+        "output": int(event.get("output") or event.get("tokens_out") or 0),
+        "cache_read": int(event.get("cache_read") or 0),
+        "cache_write": int(event.get("cache_write") or 0),
+    }
+    if event.get("tokens") and isinstance(event["tokens"], dict):
+        for key in tokens:
+            if event["tokens"].get(key) is not None:
+                tokens[key] = int(event["tokens"][key])
+    tokens["billed"] = int(event.get("billed") or sum(tokens.values()))
+    buckets = bucket_rates(classified)
+    if buckets:
+        cost_in = tokens["input"] * buckets["input"] / 1_000_000.0
+        cost_out = tokens["output"] * buckets["output"] / 1_000_000.0
+        cost_read = tokens["cache_read"] * buckets["cache_read"] / 1_000_000.0
+        cost_write = tokens["cache_write"] * buckets["cache_write"] / 1_000_000.0
+        cost = {
+            "usd_per_m": buckets,
+            "fee_pct": None,
+            "status": status_of(classified, fees),
+            "input": cost_in,
+            "output": cost_out,
+            "cache_read": cost_read,
+            "cache_write": cost_write,
+            "total": cost_in + cost_out + cost_read + cost_write,
+        }
+    else:
+        rate = csv_usd_per_m(classified, fees)
+        per = rate / 1_000_000.0
+        cost = {
+            "usd_per_m": rate,
+            "fee_pct": fees.get(classified),
+            "status": status_of(classified, fees),
+            "input": tokens["input"] * per,
+            "output": tokens["output"] * per,
+            "cache_read": tokens["cache_read"] * per,
+            "cache_write": tokens["cache_write"] * per,
+            "total": tokens["billed"] * per,
+        }
+    return {
+        "model": event.get("model") or event.get("last_model") or classified,
+        "classified": classified,
+        "harness": harness_of(classified, str(event.get("harness") or "")),
+        "tokens": tokens,
+        "cost": cost,
+    }
+
+
+def compose_windows(priced: dict[str, Any], windows: dict[str, Any], session_usd: float, weekly_usd: float) -> dict[str, Any]:
+    harness = priced["harness"]
+    caps = (windows.get("windows") or {}).get(harness) or {}
+    session_cap = caps.get("session_usd")
+    weekly_cap = caps.get("weekly_usd")
+    turn = float(priced["cost"]["total"])
+    session_after = session_usd + turn
+    weekly_after = weekly_usd + turn
+    window = {
+        "harness": harness,
+        "session_usd": session_usd,
+        "weekly_usd": weekly_usd,
+        "session_after": session_after,
+        "weekly_after": weekly_after,
+        "session_cap": session_cap,
+        "weekly_cap": weekly_cap,
+        "over_session": session_cap is not None and session_after > float(session_cap),
+        "over_weekly": weekly_cap is not None and weekly_after > float(weekly_cap),
+    }
+    if window["over_session"] or window["over_weekly"]:
+        gate = "no-go"
+    elif priced["cost"]["status"] == "unknown":
+        gate = "needs-check"
+    else:
+        gate = "go"
+    priced["window"] = window
+    priced["gate"] = gate
+    return priced
+
+
+def parse_ts(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def ledger_from_usage_cache(cache: dict[str, Any], fees: dict[str, float], now: datetime) -> dict[str, Any]:
+    week_start = now - timedelta(days=7)
+    by_h: dict[str, dict[str, float]] = {}
+    files = cache.get("files") or {}
+    for _path, acc in files.items():
+        event = price_event(acc, fees)
+        ts = parse_ts(str(acc.get("last_ts") or ""))
+        recorded = float(acc.get("cost_usd") or 0.0)
+        usd = recorded if recorded > 0 else float(event["cost"]["total"])
+        bucket = by_h.setdefault(
+            event["harness"],
+            {"session_usd": 0.0, "weekly_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "cache_read": 0, "cache_write": 0},
+        )
+        bucket["tokens_in"] += event["tokens"]["input"]
+        bucket["tokens_out"] += event["tokens"]["output"]
+        bucket["cache_read"] += event["tokens"]["cache_read"]
+        bucket["cache_write"] += event["tokens"]["cache_write"]
+        if ts is None or ts >= week_start:
+            bucket["weekly_usd"] += usd
+        if ts is None or ts >= now - timedelta(hours=12):
+            bucket["session_usd"] += usd
+    return {"by_harness": by_h, "source": "usage-cache"}
+
+
+def merge_cursor_csv(by_h: dict[str, Any], csv_ledger: dict[str, Any] | None) -> dict[str, Any]:
+    if not csv_ledger:
+        return by_h
+    cursor = (csv_ledger.get("by_harness") or {}).get("cursor") or {}
+    tokens = cursor.get("tokens") or {}
+    by_h["cursor"] = {
+        "session_usd": float(cursor.get("api_equivalent_usd") or 0.0),
+        "weekly_usd": float(cursor.get("api_equivalent_usd") or 0.0),
+        "tokens_in": int(tokens.get("input") or 0),
+        "tokens_out": int(tokens.get("output") or 0),
+        "cache_read": int(tokens.get("cache_read") or 0),
+        "cache_write": int(tokens.get("cache_write") or 0),
+        "source": "cursor-usage-events",
+        "dashboard_cost_is_included": bool(csv_ledger.get("dashboard_cost_is_included")),
+        "events": int(cursor.get("events") or 0),
+        "window": csv_ledger.get("window"),
+    }
+    return by_h
+
+
+def cmd_eval(args: argparse.Namespace) -> dict[str, Any]:
+    fees = fee_table(_load(Path(args.fee)))
+    windows = _load(Path(args.windows))
+    cache = _load(Path(args.usage_cache)) if Path(args.usage_cache).exists() else {"files": {}}
+    now = datetime.now(timezone.utc)
+    ledger = ledger_from_usage_cache(cache, fees, now)
+    merge_cursor_csv(ledger["by_harness"], load_ledger(Path(args.cursor_ledger)))
+    event = {
+        "model": args.model,
+        "harness": args.harness,
+        "input": args.input,
+        "output": args.output,
+        "cache_read": args.cache_read,
+        "cache_write": args.cache_write,
+    }
+    priced = price_event(event, fees)
+    harness = priced["harness"]
+    totals = ledger["by_harness"].get(harness, {"session_usd": 0.0, "weekly_usd": 0.0})
+    return compose_windows(priced, windows, float(totals["session_usd"]), float(totals["weekly_usd"]))
+
+
+def cmd_ledger(args: argparse.Namespace) -> dict[str, Any]:
+    fees = fee_table(_load(Path(args.fee)))
+    windows = _load(Path(args.windows))
+    cache = _load(Path(args.usage_cache)) if Path(args.usage_cache).exists() else {"files": {}}
+    now = datetime.now(timezone.utc)
+    cache_ledger = ledger_from_usage_cache(cache, fees, now)
+    csv_ledger = load_ledger(Path(args.cursor_ledger))
+    by_h = merge_cursor_csv(cache_ledger["by_harness"], csv_ledger)
+    gates = {}
+    for harness, totals in by_h.items():
+        dummy = compose_windows(
+            {"classified": harness, "harness": harness, "cost": {"total": 0.0, "status": "explicit"}},
+            windows,
+            float(totals["session_usd"]),
+            float(totals["weekly_usd"]),
+        )
+        gates[harness] = dummy["gate"]
+    return {
+        "schema": "aos.spend.ledger.v1",
+        "as_of": now.isoformat(),
+        "by_harness": by_h,
+        "gates": gates,
+        "cursor_csv": {
+            "present": csv_ledger is not None,
+            "path": str(Path(args.cursor_ledger)),
+            "window": (csv_ledger or {}).get("window"),
+            "by_model": {
+                k: {
+                    "events": v.get("events"),
+                    "tokens": v.get("tokens"),
+                    "api_equivalent_usd": (v.get("cost") or {}).get("api_equivalent_usd"),
+                    "status": (v.get("cost") or {}).get("status"),
+                }
+                for k, v in ((csv_ledger or {}).get("by_model") or {}).items()
+            },
+        },
+    }
+
+
+def cmd_ingest(args: argparse.Namespace) -> dict[str, Any]:
+    fees = fee_table(_load(Path(args.fee)))
+    meta = parse_export_url(args.url) if args.url else None
+    payload = ingest_csv_path(Path(args.csv), fees=fees, export_meta=meta)
+    dest = write_ledger(payload, Path(args.cursor_ledger))
+    return {
+        "schema": "aos.spend.ingest.v1",
+        "ledger": str(dest),
+        "events": payload["events"],
+        "window": payload["window"],
+        "by_harness": payload["by_harness"],
+        "dashboard_cost_is_included": payload["dashboard_cost_is_included"],
+    }
+
+
+def _week_bounds_ms(now: datetime | None = None) -> tuple[int, int]:
+    now = now or datetime.now(timezone.utc)
+    end = datetime(now.year, now.month, now.day, 23, 59, 59, tzinfo=timezone.utc)
+    start = end - timedelta(days=6)
+    start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+
+def cmd_fetch(args: argparse.Namespace) -> dict[str, Any]:
+    team_id = args.team_id or os.environ.get("CURSOR_TEAM_ID")
+    cookie = os.environ.get("CURSOR_DASHBOARD_COOKIE")
+    if not team_id:
+        raise SystemExit("aos-spend: set CURSOR_TEAM_ID or --team-id")
+    if not cookie:
+        raise SystemExit("aos-spend: set CURSOR_DASHBOARD_COOKIE for dashboard export")
+    start_ms, end_ms = _week_bounds_ms()
+    if args.start_ms:
+        start_ms = int(args.start_ms)
+    if args.end_ms:
+        end_ms = int(args.end_ms)
+    url = args.url or EXPORT_URL_TMPL.format(team_id=team_id, start_ms=start_ms, end_ms=end_ms)
+    req = urllib.request.Request(url, headers={"Cookie": cookie, "Accept": "text/csv"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            text = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(f"aos-spend: export HTTP {exc.code}") from exc
+    if not text.startswith("Date,"):
+        raise SystemExit("aos-spend: export did not return a usage-events CSV")
+    fees = fee_table(_load(Path(args.fee)))
+    payload = ingest_csv_text(text, fees=fees, source="cursor-dashboard-export", export_meta=parse_export_url(url))
+    dest = write_ledger(payload, Path(args.cursor_ledger))
+    return {
+        "schema": "aos.spend.fetch.v1",
+        "ledger": str(dest),
+        "events": payload["events"],
+        "window": payload["window"],
+        "by_harness": payload["by_harness"],
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="aos-spend")
+    parser.add_argument("--fee", default=str(FEE_PATH))
+    parser.add_argument("--windows", default=str(WINDOWS_PATH))
+    parser.add_argument("--usage-cache", default=str(USAGE_CACHE))
+    parser.add_argument("--cursor-ledger", default=str(DEFAULT_LEDGER))
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    ev = sub.add_parser("eval")
+    ev.add_argument("--model", required=True)
+    ev.add_argument("--harness", default="")
+    ev.add_argument("--input", type=int, default=0)
+    ev.add_argument("--output", type=int, default=0)
+    ev.add_argument("--cache-read", type=int, default=0)
+    ev.add_argument("--cache-write", type=int, default=0)
+
+    sub.add_parser("ledger")
+
+    ing = sub.add_parser("ingest-cursor-csv")
+    ing.add_argument("--csv", required=True)
+    ing.add_argument("--url", default="")
+
+    fet = sub.add_parser("fetch-cursor-csv")
+    fet.add_argument("--url", default="")
+    fet.add_argument("--team-id", default="")
+    fet.add_argument("--start-ms", default="")
+    fet.add_argument("--end-ms", default="")
+
+    args = parser.parse_args()
+    try:
+        if args.cmd == "eval":
+            payload = cmd_eval(args)
+        elif args.cmd == "ledger":
+            payload = cmd_ledger(args)
+        elif args.cmd == "ingest-cursor-csv":
+            payload = cmd_ingest(args)
+        else:
+            payload = cmd_fetch(args)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"aos-spend: {exc}", file=sys.stderr)
+        return 1
+    json.dump(payload, sys.stdout, separators=(",", ":"))
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

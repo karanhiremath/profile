@@ -67,6 +67,33 @@ _DEFAULT_PROFILE_DIRS = [
 ]
 
 
+def _apply_host_env() -> None:
+    """Load class-gated Hermes paths unless the operator already exported them."""
+    if os.environ.get("HERMES_AGENT_PROFILE_PATH") and os.environ.get("AGENTIC_HOST_CLASS"):
+        return
+    script = Path(__file__).resolve().parent.parent / "agentic-dev" / "host-env.sh"
+    if not script.is_file():
+        return
+    try:
+        raw = subprocess.check_output(["bash", str(script), "--json"], text=True)
+        data = json.loads(raw)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        return
+    os.environ.setdefault("AGENTIC_HOST_CLASS", str(data.get("class") or ""))
+    os.environ.setdefault("AGENTIC_COSW_PLANE", str(data.get("plane") or ""))
+    os.environ.setdefault("HERMES_AGENT_PROFILE_PATH", str(data.get("HERMES_AGENT_PROFILE_PATH") or ""))
+    os.environ.setdefault(
+        "HERMES_PROJECT_REGISTRY_PATH", str(data.get("HERMES_PROJECT_REGISTRY_PATH") or "")
+    )
+    os.environ.setdefault(
+        "HERMES_PROJECT_REGISTRY_DIRS",
+        os.environ.get("HERMES_PROJECT_REGISTRY_PATH", ""),
+    )
+
+
+_apply_host_env()
+
+
 def profile_path() -> list[Path]:
     raw = os.environ.get("HERMES_AGENT_PROFILE_PATH")
     if raw:
@@ -521,6 +548,20 @@ def _stage_cursor_key_slots(key: str) -> None:
     agent_env.chmod(0o600)
 
 
+def _stage_cursor_key_slots(key: str) -> None:
+    """Write the Cursor key to the slots Hermes / cursor-agent actually read."""
+    if not key:
+        return
+    _upsert_env(MAIN_HOME / ".env", {"CURSOR_API_KEY": key})
+    agent_env = Path.home() / ".cursor" / "agent.env"
+    agent_env.parent.mkdir(parents=True, exist_ok=True)
+    existing = _read_env_file(agent_env)
+    existing["CURSOR_API_KEY"] = key
+    lines = [f"{k}={v}" for k, v in existing.items() if v]
+    agent_env.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    agent_env.chmod(0o600)
+
+
 def load_profile(name: str) -> Dict[str, Any]:
     path = find_profile(name)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -713,7 +754,7 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
     cfg: Dict[str, Any] = {
         "model": model_cfg,
         "toolsets": toolsets,
-        "plugins": {"enabled": ["cartesia"] if (tts_on or stt_on) else []},
+        "plugins": {"enabled": plugins_enabled},
     }
     if thinking:
         # Hermes reads agent.reasoning_effort; keep the profile field portable
@@ -815,12 +856,12 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         if cleaned:
             cfg["fallback_model"] = cleaned
     if tts_on:
-        cfg["tts"] = {"provider": "cartesia", "model": tts.get("model", "sonic-3.5"), "voice": voice}
+        cfg["tts"] = {"provider": "cartesia", "model": tts.get("model", "sonic-3.6"), "voice": voice}
     if stt_on:
         cfg["stt"] = {
             "enabled": True,
             "provider": "cartesia",
-            "cartesia": {"model": stt.get("model", "ink-2"), "language": stt.get("language", "en")},
+            "cartesia": {"model": stt.get("model", "ink-preview"), "language": stt.get("language", "en")},
         }
     else:
         cfg["stt"] = {"enabled": False}
@@ -939,9 +980,138 @@ def _merge_json_file(path: Path, updates: Dict[str, Any]) -> None:
                 existing = loaded
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             existing = {}
-    existing.update(updates)
+    pinned = existing.get("nighttideDefault")
+    protect_theme = bool(pinned or existing.get("theme")) and not force
+    merged = dict(existing)
+    for key, value in updates.items():
+        if protect_theme and key in {"theme", "themeMode"}:
+            continue
+        merged[key] = value
+    if protect_theme and pinned and not merged.get("theme"):
+        merged["theme"] = pinned
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+
+
+def _merge_existing_config(path: Path, cfg: Dict[str, Any], *, force: bool = False) -> Dict[str, Any]:
+    """Keep TUI-owned config.yaml keys across agents-up rematerialize."""
+    if force or not path.exists():
+        return cfg
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return cfg
+    if not isinstance(loaded, dict):
+        return cfg
+    out = dict(cfg)
+    for key in ("toolsets", "display"):
+        if key in loaded:
+            out[key] = loaded[key]
+    # Enabling voice on rematerialize must not lose TUI-owned toolsets, but it
+    # also must add `tts` when the new profile render includes it.
+    new_toolsets = cfg.get("toolsets")
+    old_toolsets = out.get("toolsets")
+    if isinstance(new_toolsets, list) and isinstance(old_toolsets, list):
+        merged_toolsets = list(old_toolsets)
+        for item in new_toolsets:
+            if item not in merged_toolsets:
+                merged_toolsets.append(item)
+        out["toolsets"] = merged_toolsets
+    new_plugins = (cfg.get("plugins") or {}).get("enabled") if isinstance(cfg.get("plugins"), dict) else None
+    old_plugins = (loaded.get("plugins") or {}).get("enabled") if isinstance(loaded.get("plugins"), dict) else None
+    if isinstance(new_plugins, list) or isinstance(old_plugins, list):
+        merged_plugins: List[str] = []
+        for item in list(new_plugins or []) + list(old_plugins or []):
+            if item not in merged_plugins:
+                merged_plugins.append(item)
+        out.setdefault("plugins", {})
+        if isinstance(out["plugins"], dict):
+            out["plugins"] = dict(out["plugins"])
+            out["plugins"]["enabled"] = merged_plugins
+    model = loaded.get("model")
+    if isinstance(model, dict) and model.get("default"):
+        out.setdefault("model", {})
+        if isinstance(out["model"], dict):
+            out["model"] = dict(out["model"])
+            out["model"]["default"] = model["default"]
+            if model.get("provider"):
+                out["model"]["provider"] = model["provider"]
+    return out
+
+
+def _link_skill_tree(dest: Path, src: Path) -> None:
+    if not src.exists():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.is_symlink() or dest.is_file():
+        try:
+            dest.unlink()
+        except FileNotFoundError:
+            pass
+    if dest.exists() and not dest.is_symlink():
+        return
+    try:
+        dest.symlink_to(src)
+    except FileExistsError:
+        return
+
+
+def _link_autonomous_family(dest: Path, *src_roots: Path) -> None:
+    """Real dir of per-skill links so optional grok sits beside bundled names."""
+    if dest.is_symlink() or dest.is_file():
+        try:
+            dest.unlink()
+        except FileNotFoundError:
+            pass
+    dest.mkdir(parents=True, exist_ok=True)
+    for src_root in src_roots:
+        if not src_root.is_dir():
+            continue
+        for child in sorted(src_root.iterdir()):
+            if child.is_dir() and (child / "SKILL.md").exists():
+                _link_skill_tree(dest / child.name, child)
+
+
+def _ensure_skill_links(home: Path) -> None:
+    """Point isolated HERMES_HOME skills at Hermes official + profile trees."""
+    skills = home / "skills"
+    skills.mkdir(parents=True, exist_ok=True)
+    hermes_root = Path.home() / "src" / "hermes-agent"
+    bundled = hermes_root / "skills" / "autonomous-ai-agents"
+    optional = hermes_root / "optional-skills" / "autonomous-ai-agents"
+    _link_autonomous_family(skills / "autonomous-ai-agents", bundled, optional)
+    profile_skills = SCRIPT_DIR.parent.parent / "skills" / "pi"
+    if profile_skills.is_dir():
+        for child in sorted(profile_skills.iterdir()):
+            if child.is_dir() and (child / "SKILL.md").exists():
+                _link_skill_tree(skills / child.name, child)
+    shared = SCRIPT_DIR.parent.parent / "skills" / "shared"
+    if shared.is_dir():
+        for child in sorted(shared.iterdir()):
+            if child.is_dir() and (child / "SKILL.md").exists():
+                _link_skill_tree(skills / child.name, child)
+
+
+def _ensure_cartesia_plugin(home: Path) -> None:
+    plugins = home / "plugins"
+    plugins.mkdir(exist_ok=True)
+    link = plugins / "cartesia"
+    try:
+        if link.is_symlink() and link.resolve() == PLUGIN_DIR.resolve():
+            return
+    except OSError:
+        pass
+    if link.is_symlink() or link.is_file():
+        try:
+            link.unlink()
+        except FileNotFoundError:
+            pass
+    if link.exists():
+        return
+    try:
+        link.symlink_to(PLUGIN_DIR)
+    except FileExistsError:
+        return
 
 
 def _ensure_cartesia_plugin(home: Path) -> None:
@@ -974,7 +1144,9 @@ def materialize(name: str) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     home.chmod(0o700)
 
+    force_cfg = _force_config()
     cfg = _render_config(profile)
+    cfg = _merge_existing_config(home / "config.yaml", cfg, force=force_cfg)
     herm_prefs = (profile.get("herm") or {}).get("preferences") or {}
     if not isinstance(herm_prefs, dict):
         herm_prefs = {}
@@ -989,7 +1161,8 @@ def materialize(name: str) -> Path:
     # config.yaml — always regenerated (fully derived from the profile).
     (home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     if herm_prefs:
-        _merge_json_file(home / "herm" / "tui.json", herm_prefs)
+        _merge_json_file(home / "herm" / "tui.json", herm_prefs, force=force_cfg)
+    _ensure_skill_links(home)
 
     # SOUL.md — persona plus a launcher-supplied, generic bootstrap contract.
     # The append file is intentionally explicit rather than discovered from the
@@ -1086,9 +1259,11 @@ def materialize(name: str) -> Path:
         """
         runtime_home.mkdir(parents=True, exist_ok=True)
         runtime_home.chmod(0o700)
-        (runtime_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+        runtime_cfg = _merge_existing_config(runtime_home / "config.yaml", cfg, force=force_cfg)
+        (runtime_home / "config.yaml").write_text(yaml.safe_dump(runtime_cfg, sort_keys=False), encoding="utf-8")
         if herm_prefs:
-            _merge_json_file(runtime_home / "herm" / "tui.json", herm_prefs)
+            _merge_json_file(runtime_home / "herm" / "tui.json", herm_prefs, force=force_cfg)
+        _ensure_skill_links(runtime_home)
         if persona:
             (runtime_home / "SOUL.md").write_text(persona + "\n", encoding="utf-8")
         _upsert_env(runtime_home / ".env", env_updates, remove=env_remove)

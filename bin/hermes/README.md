@@ -105,7 +105,7 @@ New profile colors/eikons: `skills/herm-tui-profiles/SKILL.md`.
 
 ## CoS / PM / PL command model
 
-These commands are generic profile-level wrappers. They do not embed work/private project state; they resolve profiles and project session registries from the normal Hermes search paths.
+These commands are generic profile-level wrappers. They do not embed work/private project state; they resolve profiles and project session registries from the class-gated Hermes search paths (`bin/agentic-dev/host-env.sh`). Personal hosts load `~/src/hermes` only (krop CosW). Work hosts load the work-checkout registry and never bootstrap krop-*.
 
 ```bash
 cos                         # agents up chief-of-staff
@@ -231,6 +231,9 @@ bin/hermes/agents new my-voice          # scaffold profiles/my-voice.yaml from T
   - `profile` → `bin/hermes/profiles/` (this repo — generic `TEMPLATE` only)
   Override the whole path with `HERMES_AGENT_PROFILE_PATH` (os.pathsep-separated).
   Create into a specific repo: `agents new <name> --dir work|personal|profile|<path>`.
+- TUI: many panes per home. Each pane owns its `tui_gateway` pipe and Hermes
+  session. Extra panes start `herm --fresh` so they do not resume the live
+  session (that closed the pipe). Steer via `atop vi`, not a shared TUI.
 - Isolated homes live under `${XDG_DATA_HOME:-~/.local/share}/hermes-validation/<profile>/`.
 - Secrets: `CARTESIA_API_KEY` (+ internal endpoint hosts like
   `CARTESIA_STAGING_URL`) live in machine-local `~/.hermes/.env`, never here.
@@ -248,7 +251,15 @@ The installer uses `uv venv`, installs the small Python helper dependency (`PyYA
 
 The TUI installer downloads the Bun release asset for the current OS/arch, verifies it against `SHASUMS256.txt`, and installs it under the Hermes toolchain instead of using the global Bun installer. `herm` always execs the local fork (`~/src/herm-tui` or `~/src/herm` via `herm-fork-env.sh`), never published npm `herm-tui`. `just hermes` / `install` / `install-tui` / shell profile all rewrite `~/.local/bin/herm` to that checkout.
 
-`install` writes user-local shims to `${HERMES_SHIM_DIR:-$HOME/.local/bin}` for `hermes`, `hermes-agent`, and `herm`. If that directory is already on PATH, no `source <(.../env)` step is needed.
+`install` writes user-local shims to `${HERMES_SHIM_DIR:-$HOME/.local/bin}` for `hermes`, `hermes-agent`, and `herm`. Shims put that directory first on PATH so `cos`/`agents` cannot pick up a published npm/pnpm `herm-tui`. If `~/src/herm` exists, toolchain `herm` wrappers are overwritten to exec the fork.
+
+Hermes Python aliases (`hermes`, `hermes-agent`, `cosw`, `cos`, `agents`, `pm`, `pl`) source `fork-env.sh` and prefer the `karanhiremath/hermes-agent` checkout (timeout-free Cursor SDK overlay) over the published PyPI/npm wheel. `fork-env.sh` also sets `HERMES_AGENT_ROOT` so herm's gateway does not prepend `~/.hermes/hermes-agent` and drop the Cursor provider. `herm` prefers `~/src/herm` (fork of liftaris/herm). Keep forks current with:
+
+```bash
+bin/hermes/fork-sync status
+bin/hermes/fork-sync ensure
+bin/hermes/fork-sync fetch
+```
 
 Hermes Python aliases (`hermes`, `hermes-agent`, `cosw`, `cos`, `agents`, `pm`, `pl`) source `fork-env.sh` and prefer the `karanhiremath/hermes-agent` checkout (timeout-free Cursor SDK overlay) over the published PyPI/npm wheel. `herm` prefers `~/src/herm` (fork of liftaris/herm). Keep forks current with:
 

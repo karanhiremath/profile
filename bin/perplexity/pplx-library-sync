@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Draft operator entry for periodic Perplexity Library ingest.
+# Does not scrape cookies, does not install launchd, does not call the API.
+# Usage: pplx-library-sync --help
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+SKILL_DIR="$PROFILE_DIR/skills/pi/perplexity-web-research"
+PROMPT_FILE="$SKILL_DIR/jobs/library-sync-prompt.md"
+PLIST_FILE="$PROFILE_DIR/config/perplexity/com.karanhiremath.pplx-library-sync.plist.example"
+NOTES_INBOX="${PPLX_LIBRARY_INBOX:-$HOME/src/notes/01_in/perplexity-library}"
+CUSE_PROFILE="${CUSE_PROFILE_DIR:-$HOME/.config/cuse/profile}"
+STATE_DIR="${PPLX_STATE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pplx-research}"
+STATE_FILE="$STATE_DIR/library-sync-state.json"
+
+usage() {
+  cat <<'EOF'
+Usage: pplx-library-sync [--check | --print-prompt | --print-launchd]
+
+Draft periodic ingest of Perplexity Library/Comet threads into the personal
+notes inbox via headed computer-use (Codex/Claude). Uses the Pro session,
+not API credits.
+
+  --check          verify inbox, cuse profile, prompt, state dir
+  --print-prompt   emit the Codex/Claude job prompt (default)
+  --print-launchd  print the example plist path (not loaded)
+  -h, --help
+
+Does not: export cookies, call Perplexity APIs, launch a browser, or
+`launchctl load`. First SSO stays in ~/.config/cuse/profile/ (chmod 700).
+
+Writes (when a human/agent later runs the prompt):
+  ~/src/notes/01_in/perplexity-library/
+  ~/.local/share/pplx-research/library-sync-state.json
+EOF
+}
+
+die() {
+  printf 'pplx-library-sync: %s\n' "$*" >&2
+  exit 1
+}
+
+ACTION="print-prompt"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --check) ACTION="check"; shift ;;
+    --print-prompt) ACTION="print-prompt"; shift ;;
+    --print-launchd) ACTION="print-launchd"; shift ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$ACTION" in
+  print-prompt)
+    [ -f "$PROMPT_FILE" ] || die "missing $PROMPT_FILE"
+    cat "$PROMPT_FILE"
+    ;;
+  print-launchd)
+    [ -f "$PLIST_FILE" ] || die "missing $PLIST_FILE"
+    printf '%s\n' "$PLIST_FILE"
+    ;;
+  check)
+    fail=0
+    if [ -d "$HOME/src/notes/.git" ]; then
+      printf 'ok notes-repo %s\n' "$HOME/src/notes"
+    else
+      printf 'missing notes-repo %s\n' "$HOME/src/notes" >&2
+      fail=1
+    fi
+    if [ -d "$NOTES_INBOX" ]; then
+      printf 'ok inbox %s\n' "$NOTES_INBOX"
+    else
+      printf 'missing inbox %s\n' "$NOTES_INBOX" >&2
+      fail=1
+    fi
+    if [ -d "$CUSE_PROFILE" ]; then
+      printf 'ok cuse-profile %s\n' "$CUSE_PROFILE"
+    else
+      printf 'missing cuse-profile %s (SSO once via computer-use)\n' "$CUSE_PROFILE" >&2
+      fail=1
+    fi
+    if [ -f "$PROMPT_FILE" ]; then
+      printf 'ok prompt %s\n' "$PROMPT_FILE"
+    else
+      printf 'missing prompt %s\n' "$PROMPT_FILE" >&2
+      fail=1
+    fi
+    mkdir -p "$STATE_DIR"
+    chmod 700 "$STATE_DIR" 2>/dev/null || true
+    if [ ! -f "$STATE_FILE" ]; then
+      printf '{"schema_version":"perplexity-library-sync.v1","seen_titles":[],"last_run":null}\n' > "$STATE_FILE"
+      chmod 600 "$STATE_FILE"
+    fi
+    printf 'ok state %s\n' "$STATE_FILE"
+    if [ "$fail" -ne 0 ]; then
+      exit 1
+    fi
+    ;;
+esac

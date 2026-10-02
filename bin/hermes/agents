@@ -34,6 +34,10 @@
 #       --force-tui                 Fail instead of attaching when a TUI already holds the home
 #       -- <args>                   Pass remaining args through to hermes/herm
 #
+# TUI: many panes per HERMES_HOME. Each pane owns its gateway pipe + Hermes
+# session. Extra panes start `--fresh` (do not resume the live session).
+# Coordinate via `atop vi` buffers, not a shared rendered TUI.
+#
 # Each agent runs under its own HERMES_HOME so it never touches ~/.hermes.
 set -euo pipefail
 
@@ -57,7 +61,13 @@ PLUGIN_DIR="$SCRIPT_DIR/plugins/cartesia"
 # Resolve a `new --dir` target: keyword shorthand or a literal path.
 resolve_profile_dir() {
   case "$1" in
-    work)     echo "$HOME/src/karan.hiremath/agentic/hermes/profiles" ;;
+    work)
+      if [ "${AGENTIC_HOST_CLASS:-}" = personal ]; then
+        echo "ERROR: work profile dir is not available on a personal host" >&2
+        exit 1
+      fi
+      echo "$HOME/src/karan.hiremath/agentic/hermes/profiles"
+      ;;
     personal) echo "$HOME/src/hermes/profiles" ;;
     profile)  echo "$SCRIPT_DIR/profiles" ;;
     *)        echo "$1" ;;

@@ -1,0 +1,15 @@
+schema: aos.policy.adapter.v1
+id: graph-edge
+target: ~/.local/share/aos/policy/compiled/graph-edge.json
+native: graph-eng / fleet-eng edge + introspect wrap
+notes: >
+  Same engine wraps edges between graph nodes and introspection views.
+  Payload bytes and catalogs take the surface that matches the hop.
+wrap:
+  edges: true
+  introspect: true
+  surfaces:
+    - graph.edge
+    - graph.node.introspect
+    - moa
+    - cot

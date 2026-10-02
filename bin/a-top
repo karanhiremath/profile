@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# a-top / atop dispatcher.
+#   atop vi     — new nvim + telescope over all harness prompts
+#   atop tty    — PTY/QEMU eval (never send-keys to Cos)
+#   atop        — rust fleet TUI (atop-tui), TTY required
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+INVOKED="$(basename "$0")"
+ATOP_TUI="${ATOP_TUI:-$HOME/.local/bin/atop-tui}"
+
+usage() {
+  cat <<EOF
+Usage: atop vi | atop tty | a-top vi [args]
+
+  atop vi [list|open|get|set|jobs|catalog|tty]  nvim + telescope (all harnesses)
+  atop buf|aos buf ...                          aos-buf primitives (catalog/apply)
+  atop tty [--probe|--mode pty|qemu] -- CMD PTY/QEMU screen capture
+  atop                                  rust fleet TUI (needs a TTY)
+
+\`a-top\` with no args is the same as \`a-top vi\`.
+EOF
+}
+
+exec_tui() {
+  if [[ ! -x "$ATOP_TUI" ]]; then
+    printf '%s: missing rust TUI at %s (run bin/atop/install)\n' "$INVOKED" "$ATOP_TUI" >&2
+    exit 1
+  fi
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    printf '%s: fleet TUI needs a TTY. Use: atop vi | atop tty -- CMD\n' "$INVOKED" >&2
+    exit 1
+  fi
+  exec "$ATOP_TUI" "$@"
+}
+
+case "${1:-}" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  vi)
+    shift
+    exec "$SCRIPT_DIR/atop/vi" "$@"
+    ;;
+  buf|apply)
+    exec "$SCRIPT_DIR/aos" "$@"
+    ;;
+  tty|eval)
+    shift
+    exec "$SCRIPT_DIR/atop/tty-eval" "$@"
+    ;;
+  "")
+    if [[ "$INVOKED" == atop ]]; then
+      exec_tui
+    fi
+    exec "$SCRIPT_DIR/atop/vi"
+    ;;
+  *)
+    if [[ "$INVOKED" == atop ]]; then
+      exec_tui "$@"
+    fi
+    printf '%s: unknown command: %s\n' "$INVOKED" "$1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

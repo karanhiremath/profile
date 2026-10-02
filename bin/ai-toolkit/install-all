@@ -183,6 +183,16 @@ else
 fi
 echo ""
 
+# Linear custom-script hook
+echo "==> Installing Linear open-issue hook..."
+if "${APP_BIN}/linear/install"; then
+    echo "✓ Linear open-issue hook completed successfully"
+else
+    echo "✗ Linear open-issue hook failed"
+    failed_installs+=("linear")
+fi
+echo ""
+
 # vLLM
 echo "==> Installing/upgrading vLLM..."
 if "${APP_BIN}/vllm/install"; then

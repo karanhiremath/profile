@@ -1,0 +1,12 @@
+schema: aos.policy.adapter.v1
+id: cursor
+target: ~/.cursor/aos-policy.json
+native: cli-config.permissions
+notes: >
+  Merges deny/allow into Cursor Agent CLI permissions. approvalMode stays
+  allowlist. Silent exclusive rules compile as deny entries only — no
+  prompt text about remapping.
+merge:
+  approvalMode: allowlist
+  permissions.deny: catalog.tools.deny
+  permissions.allow: catalog.tools.allow

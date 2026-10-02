@@ -1,0 +1,14 @@
+{
+  "schema": "aos.together-api.v1",
+  "captured": "2026-09-15",
+  "source": "pi models-store / Together catalog",
+  "models": {
+    "deepseek-v4-flash-0731": {
+      "id": "together/deepseek-ai/DeepSeek-V4-Flash-0731",
+      "input": 0.14,
+      "output": 0.28,
+      "cache_read": 0.03,
+      "cache_write": 0
+    }
+  }
+}
