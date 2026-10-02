@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""aos-model render — model-profile.v1 → harness-native config fragment (stdout JSON only).
+
+Dry by design: never writes config files. `--apply` is NOT implemented (wave 1).
+
+Usage:
+  aos-model render --harness pi|hermes|claude <profile.json|->
+  aos-model render --check <profile.json|->
+
+Exit codes:
+  0  success (fragment or verdict on stdout)
+  1  profile/render failure (typed JSON error on stderr, stdout stays clean)
+  2  usage error
+
+Pipeline contract: stdout = structured payload only; stderr = diagnostics.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SCHEMA_PATH = ROOT / "config" / "aos" / "model-profile.v1.schema.json"
+
+HARNESSES = ("pi", "hermes", "claude")
+
+EXIT_OK = 0
+EXIT_PROFILE_ERROR = 1
+EXIT_USAGE = 2
+
+
+class ProfileError(Exception):
+    """Typed failure → single JSON line on stderr, exit 1, stdout stays clean."""
+
+    def __init__(self, code: str, message: str, **context: Any) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.context = context
+
+    def payload(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"error": self.code, "message": self.message}
+        out.update(self.context)
+        return out
+
+
+def load_profile_text(path: str) -> str:
+    if path == "-":
+        return sys.stdin.read()
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ProfileError(
+            "input_unreadable", f"cannot read profile input: {exc}", path=str(path)
+        ) from exc
+
+
+def parse_profile(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProfileError(
+            "invalid_json",
+            f"profile input is not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})",
+        ) from exc
+
+
+def load_schema() -> dict[str, Any]:
+    try:
+        text = DEFAULT_SCHEMA_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ProfileError(
+            "schema_unavailable",
+            f"cannot read model-profile schema: {exc}",
+            path=str(DEFAULT_SCHEMA_PATH),
+        ) from exc
+    try:
+        schema = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProfileError(
+            "schema_unavailable",
+            f"model-profile schema is not valid JSON: {exc.msg}",
+            path=str(DEFAULT_SCHEMA_PATH),
+        ) from exc
+    if not isinstance(schema, dict):
+        raise ProfileError(
+            "schema_unavailable",
+            "model-profile schema must be a JSON object",
+            path=str(DEFAULT_SCHEMA_PATH),
+        )
+    return schema
+
+
+def _err_path(err: Any) -> str:
+    parts: list[str] = []
+    for seg in err.absolute_path:
+        parts.append(f"[{seg}]" if isinstance(seg, int) else f".{seg}")
+    return "$" + "".join(parts)
+
+
+def validate_profile(profile: Any) -> list[dict[str, str]]:
+    """Validate against model-profile.v1; returns [] when valid."""
+    try:
+        import jsonschema
+    except ImportError as exc:  # pragma: no cover - environment failure
+        raise ProfileError(
+            "validator_unavailable",
+            f"jsonschema module is required for validation: {exc}",
+        ) from exc
+    schema = load_schema()
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator = validator_cls(schema)
+    errors = sorted(validator.iter_errors(profile), key=lambda e: str(e.absolute_path))
+    return [
+        {"path": _err_path(err), "message": err.message} for err in errors
+    ]
+
+
+def render_fragment(profile: dict[str, Any], harness: str) -> dict[str, Any]:
+    if profile["kind"] == "moa" and harness != "hermes":
+        raise ProfileError(
+            "moa_unsupported_harness",
+            f"kind=moa profiles render only for harness 'hermes' (got '{harness}')",
+            profile_id=profile["id"],
+            kind="moa",
+            harness=harness,
+        )
+    if profile["harness_support"].get(harness) is not True:
+        raise ProfileError(
+            "harness_unsupported",
+            f"profile does not declare support for harness '{harness}'",
+            profile_id=profile["id"],
+            harness=harness,
+        )
+
+    if harness == "pi":
+        return {
+            "defaultProvider": profile["provider"],
+            "defaultModel": profile["model"],
+            "enabledModels": [profile["model"]],
+        }
+    if harness == "hermes":
+        fragment: dict[str, Any] = {
+            "llm": {"provider": profile["provider"], "model": profile["model"]},
+            "fallback_model": [],
+        }
+        if profile["kind"] == "moa":
+            # Provider moa overlay: hermes routes via the moa provider.
+            fragment["llm"]["provider"] = "moa"
+            fragment["moa"] = {
+                "proposers": list(profile["moa"]["proposers"]),
+                "aggregator": profile["moa"]["aggregator"],
+                "rounds": profile["moa"]["rounds"],
+            }
+        return fragment
+    if harness == "claude":
+        return {"args": ["--model", profile["model"]]}
+    raise ProfileError("harness_unknown", f"unknown harness '{harness}'", harness=harness)
+
+
+def _emit(data: dict[str, Any]) -> None:
+    json.dump(data, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="aos-model render",
+        description="Render a model-profile.v1 JSON profile as a harness-native config fragment (dry; never writes config files).",
+    )
+    parser.add_argument(
+        "--harness",
+        choices=HARNESSES,
+        help="target harness for the config fragment",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate only; emit a verdict JSON object on stdout (exit 0 valid, 1 invalid)",
+    )
+    parser.add_argument(
+        "profile",
+        help="path to a model-profile.v1 JSON file, or '-' to read the profile from stdin",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.check and args.harness:
+        parser.error("--check and --harness are mutually exclusive")
+    if not args.check and args.harness is None:
+        parser.error("--harness is required unless --check is used")
+
+    try:
+        profile = parse_profile(load_profile_text(args.profile))
+        errors = validate_profile(profile)
+        if args.check:
+            verdict: dict[str, Any] = {
+                "schema": "model-profile.v1",
+                "valid": not errors,
+                "profile_id": profile.get("id") if isinstance(profile, dict) else None,
+                "kind": profile.get("kind") if isinstance(profile, dict) else None,
+            }
+            if errors:
+                verdict["errors"] = errors
+            _emit(verdict)
+            return EXIT_OK if not errors else EXIT_PROFILE_ERROR
+
+        if errors:
+            raise ProfileError(
+                "schema_validation",
+                f"profile rejected by model-profile.v1 schema ({len(errors)} error(s))",
+                errors=errors,
+            )
+        if not isinstance(profile, dict):
+            raise ProfileError(
+                "schema_validation", "profile must be a JSON object"
+            )
+        _emit(render_fragment(profile, args.harness))
+        return EXIT_OK
+    except ProfileError as exc:
+        sys.stderr.write(json.dumps(exc.payload()) + "\n")
+        return EXIT_PROFILE_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

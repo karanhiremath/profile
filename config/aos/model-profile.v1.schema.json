@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aos/model-profile.v1",
+  "title": "model-profile.v1",
+  "description": "Frozen contract: model profile for aos-model render. Extend only via x_-prefixed fields.",
+  "type": "object",
+  "required": [
+    "schema",
+    "id",
+    "kind",
+    "provider",
+    "model",
+    "effort",
+    "rung",
+    "context_tokens",
+    "cost",
+    "roles_known_good",
+    "harness_support",
+    "moa",
+    "status",
+    "verdict_ref"
+  ],
+  "properties": {
+    "schema": {
+      "const": "model-profile.v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "enum": ["single", "moa"]
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "effort": {
+      "anyOf": [
+        { "enum": ["low", "medium", "high", "xhigh"] },
+        { "type": "null" }
+      ]
+    },
+    "rung": {
+      "enum": ["primary", "fallback", "candidate"]
+    },
+    "context_tokens": {
+      "anyOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "null" }
+      ]
+    },
+    "cost": {
+      "type": "object",
+      "required": ["in_per_mtok", "out_per_mtok"],
+      "additionalProperties": false,
+      "properties": {
+        "in_per_mtok": {
+          "anyOf": [
+            { "type": "number", "minimum": 0 },
+            { "type": "null" }
+          ]
+        },
+        "out_per_mtok": {
+          "anyOf": [
+            { "type": "number", "minimum": 0 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "roles_known_good": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["orchestrate", "implement", "review", "steward"]
+      }
+    },
+    "harness_support": {
+      "type": "object",
+      "required": ["pi", "hermes", "claude", "codex"],
+      "additionalProperties": false,
+      "properties": {
+        "pi": { "type": "boolean" },
+        "hermes": { "type": "boolean" },
+        "claude": { "type": "boolean" },
+        "codex": { "type": "boolean" }
+      }
+    },
+    "moa": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["proposers", "aggregator", "rounds"],
+          "additionalProperties": false,
+          "properties": {
+            "proposers": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "aggregator": { "type": "string", "minLength": 1 },
+            "rounds": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "status": {
+      "enum": ["candidate", "validated", "retired"]
+    },
+    "verdict_ref": {
+      "anyOf": [
+        { "type": "string" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "single" } }, "required": ["kind"] },
+      "then": { "properties": { "moa": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "moa" } }, "required": ["kind"] },
+      "then": { "properties": { "moa": { "type": "object" } } }
+    }
+  ],
+  "propertyNames": {
+    "anyOf": [
+      {
+        "enum": [
+          "schema",
+          "id",
+          "kind",
+          "provider",
+          "model",
+          "effort",
+          "rung",
+          "context_tokens",
+          "cost",
+          "roles_known_good",
+          "harness_support",
+          "moa",
+          "status",
+          "verdict_ref"
+        ]
+      },
+      { "pattern": "^x_" }
+    ]
+  }
+}
