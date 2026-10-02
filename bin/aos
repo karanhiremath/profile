@@ -27,7 +27,7 @@ usage() {
 	cat <<'EOF'
 Usage: aos <subcommand> [args]
 
-  status          AOS inventory: harness-sync status + tool presence + bus config
+  status [--json] AOS inventory: harness-sync status + tool presence + bus config
   sync [args]     harness-sync apply (link skills/extensions, merge packages)
   pull [args]     harness-sync pull [--all] [ssh-host]  (personal-safe set)
   doctor          harness-sync status + hermes doctor (if present)
@@ -46,7 +46,52 @@ EOF
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+cmd_status_json() {
+	local harness="$PROFILE_DIR/bin/atop/harness-sync" harness_present=0 harness_rc=127
+	if [ -x "$harness" ]; then
+		harness_present=1
+		harness_rc=0
+		"$harness" status >&2 || harness_rc=$?
+	else
+		printf 'harness-sync: missing at bin/atop/harness-sync\n' >&2
+	fi
+	PROFILE_DIR="$PROFILE_DIR" PI_AGENT="$PI_AGENT" AOS_HARNESS_SYNC="$harness" \
+		AOS_HARNESS_PRESENT="$harness_present" AOS_HARNESS_RC="$harness_rc" \
+		python3 - <<'PY'
+import json
+import os
+import shutil
+
+profile_dir = os.environ["PROFILE_DIR"]
+pi_agent = os.environ["PI_AGENT"]
+tools = {name: bool(shutil.which(name)) for name in ["aos-buf", "atop", "atop-tui", "aos-data", "node"]}
+payload = {
+    "schema": "aos-status.v1",
+    "profile": profile_dir,
+    "pi": pi_agent,
+    "harness_sync": {
+        "path": os.environ["AOS_HARNESS_SYNC"],
+        "present": os.environ["AOS_HARNESS_PRESENT"] == "1",
+        "status_rc": int(os.environ["AOS_HARNESS_RC"]),
+    },
+    "tools": tools,
+    "job_bus": {
+        "configured": os.path.isfile(os.path.join(pi_agent, "job-bus.json")),
+        "config": os.path.join(pi_agent, "job-bus.json"),
+        "extension_present": os.path.isfile(os.path.join(pi_agent, "extensions", "job-bus.ts")),
+    },
+}
+print(json.dumps(payload, separators=(",", ":")))
+PY
+}
+
 cmd_status() {
+	if [ "${1:-}" = "--json" ]; then
+		shift
+		[ "$#" -eq 0 ] || { printf 'aos status --json: unexpected args\n' >&2; return 2; }
+		cmd_status_json
+		return
+	fi
 	local t
 	printf 'aos: profile=%s pi=%s\n' "$PROFILE_DIR" "$PI_AGENT"
 	if [ -x "$PROFILE_DIR/bin/atop/harness-sync" ]; then

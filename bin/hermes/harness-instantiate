@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
 # harness-instantiate — plane-routed harness instantiation gate (generic).
 #
-# Directive (operator, 2026-10-02): ALL harness launchers (cos, cos-voice, pm,
-# pl, cosw, dreamw, ...) route instantiation through the owning plane:
-#   - WORK profile   -> cai-aos plane (karan.hiremath/scripts/cdev/cai-aos)
-#   - PERSONAL prof. -> AOS plane (profile bin/aos dispatcher)
-# Classification is by resolved profile source dir (SOP source-of-truth table):
-#   work     = */src/karan.hiremath/**/hermes/profiles/<name>.yaml
-#   personal = */src/hermes/profiles/<name>.yaml
-#   tooling  = profile bin/hermes/profiles (TEMPLATE) -> treated as personal
-#
 # Dual mode:
 #   harness-instantiate classify <profile>            -> JSON line on stdout
 #   harness-instantiate prep     <profile> [args...]  -> plane pre-flight; never spawns
 #
-# The plane verb (cai-aos instantiate / aos instantiate) is the extension
-# point: when absent, prep degrades to a structured fallback event and the
-# caller proceeds with its existing inline instantiation. NEVER guess.
-# stdout = one JSON line; diagnostics = stderr. No credential material.
+# Plane/lane routing is read from typed profile YAML first. Path inference is
+# fallback-only and reports reason "plane-inferred-from-path". stdout is one
+# JSON line; diagnostics are stderr; no credential material.
 set -euo pipefail
 
-emit() { # emit <plane> <entrypoint> <action> <profile> <reason>
-  printf '{"schema":"harness-instantiate.v1","plane":"%s","entrypoint":"%s","action":"%s","profile":"%s","reason":"%s"}\n' \
-    "$1" "$2" "$3" "$4" "$5"
+json_emit() { # json_emit <plane> <lane> <entrypoint> <action> <profile> <reason>
+  PLANE="$1" LANE="$2" ENTRYPOINT="$3" ACTION="$4" PROFILE_NAME="$5" REASON="$6" \
+    python3 - <<'PY'
+import json
+import os
+
+payload = {
+    "schema": "harness-instantiate.v1",
+    "plane": os.environ["PLANE"],
+    "entrypoint": os.environ["ENTRYPOINT"],
+    "action": os.environ["ACTION"],
+    "profile": os.environ["PROFILE_NAME"],
+    "reason": os.environ["REASON"],
+}
+lane = os.environ.get("LANE") or ""
+if lane:
+    payload["lane"] = lane
+print(json.dumps(payload, separators=(",", ":")))
+PY
 }
 
 resolve_profile() { # -> absolute yaml path or empty
@@ -45,51 +51,87 @@ resolve_profile() { # -> absolute yaml path or empty
   return 1
 }
 
-classify_plane() { # classify_plane <resolved-path> -> work|personal
-  case "$1" in
-    */src/karan.hiremath/*) printf 'work' ;;
-    *) printf 'personal' ;;
-  esac
+profile_route() { # profile_route <resolved-path> -> plane|lane|reason
+  local path="$1"
+  PROFILE_PATH="$path" python3 - <<'PY'
+import os
+import sys
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+path = os.environ["PROFILE_PATH"]
+plane = ""
+lane = ""
+if yaml is not None:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except Exception:
+        doc = {}
+    if isinstance(doc, dict):
+        p = doc.get("plane")
+        l = doc.get("lane")
+        if isinstance(p, str) and p.strip() in {"personal", "work"}:
+            plane = p.strip()
+        if isinstance(l, str) and l.strip():
+            lane = l.strip()
+if plane:
+    reason = "plane-from-profile"
+else:
+    if "/src/karan.hiremath/" in path:
+        plane = "work"
+    else:
+        plane = "personal"
+    reason = "plane-inferred-from-path"
+sys.stdout.write("%s|%s|%s\n" % (plane, lane, reason))
+PY
 }
 
-plane_prep() { # plane_prep <plane> <profile-name> <resolved-path>; rc 0 = handled
-  local plane="$1" name="$2" path="$3"
+plane_prep() { # plane_prep <plane> <lane> <profile-name> <resolved-path>; rc 0 = handled
+  local plane="$1" lane="$2" name="$3" path="$4"
   case "$plane" in
     work)
       if command -v cai-aos >/dev/null 2>&1; then
         if cai-aos instantiate --profile "$name" --profile-path "$path" >/dev/null 2>&1; then
-          emit work cai-aos handled "$name" ""; return 0
+          json_emit work "$lane" cai-aos handled "$name" ""
+          return 0
         fi
-        emit work cai-aos fallback "$name" "cai-aos-instantiate-failed"
+        json_emit work "$lane" cai-aos fallback "$name" "cai-aos-instantiate-failed"
         return 1
       fi
-      emit work none fallback "$name" "cai-aos-not-installed"
+      json_emit work "$lane" none fallback "$name" "cai-aos-not-installed"
       return 1
       ;;
     personal)
       if command -v aos >/dev/null 2>&1; then
         if aos instantiate --profile "$name" --profile-path "$path" >/dev/null 2>&1; then
-          emit personal aos handled "$name" ""; return 0
+          json_emit personal "$lane" aos handled "$name" ""
+          return 0
         fi
-        emit personal aos fallback "$name" "aos-instantiate-failed"
+        json_emit personal "$lane" aos fallback "$name" "aos-instantiate-failed"
         return 1
       fi
-      emit personal none fallback "$name" "aos-not-installed"
+      json_emit personal "$lane" none fallback "$name" "aos-not-installed"
       return 1
       ;;
   esac
   return 1
 }
 
-cmd="${1:-}"; [ -n "$cmd" ] || { printf 'usage: harness-instantiate classify|prep <profile>\n' >&2; exit 2; }
+cmd="${1:-}"
+[ -n "$cmd" ] || { printf 'usage: harness-instantiate classify|prep <profile>\n' >&2; exit 2; }
 shift || true
 case "$cmd" in
   classify)
     [ "$#" -ge 1 ] || { printf 'classify needs a profile name\n' >&2; exit 2; }
     if path="$(resolve_profile "$1")"; then
-      emit "$(classify_plane "$path")" none classified "$1" "$path"
+      IFS='|' read -r plane lane reason < <(profile_route "$path")
+      json_emit "$plane" "$lane" none classified "$1" "$reason"
     else
-      emit unknown none unclassified "$1" "profile-not-found"
+      json_emit unknown "" none unclassified "$1" "profile-not-found"
       exit 1
     fi
     ;;
@@ -97,10 +139,11 @@ case "$cmd" in
     [ "$#" -ge 1 ] || { printf 'prep needs a profile name\n' >&2; exit 2; }
     name="$1"
     if ! path="$(resolve_profile "$name")"; then
-      emit unknown none fallback "$name" "profile-not-found"
+      json_emit unknown "" none fallback "$name" "profile-not-found"
       exit 1
     fi
-    plane_prep "$(classify_plane "$path")" "$name" "$path" || exit 1
+    IFS='|' read -r plane lane _reason < <(profile_route "$path")
+    plane_prep "$plane" "$lane" "$name" "$path" || exit 1
     ;;
   *) printf 'unknown command: %s\n' "$cmd" >&2; exit 2 ;;
 esac

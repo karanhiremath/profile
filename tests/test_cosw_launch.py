@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -31,46 +33,105 @@ requires_personal_devbox = unittest.skipUnless(
 )
 
 
-def run_plan(*args: str, env: dict[str, str] | None = None) -> dict[str, str]:
+def run_plan(
+    *args: str,
+    env: dict[str, str] | None = None,
+    profile_text: str | None = None,
+) -> dict[str, str]:
     merged = os.environ.copy()
     merged.pop("COSW_SANDBOX", None)
     merged.pop("HERMES_AGENT_TERMINAL_BACKEND", None)
     merged.pop("TERMINAL_ENV", None)
     if env:
         merged.update(env)
-    proc = subprocess.run(
-        [str(COSW), "--print-plan", *args],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=merged,
-    )
-    out: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        out[key] = value
-    return out
+
+    def invoke() -> dict[str, str]:
+        proc = subprocess.run(
+            [str(COSW), "--print-plan", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=merged,
+        )
+        out: dict[str, str] = {}
+        for line in proc.stdout.splitlines():
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            out[key] = value
+        return out
+
+    if profile_text is None:
+        return invoke()
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "chief-of-staff-work.yaml").write_text(profile_text, encoding="utf-8")
+        merged["HERMES_AGENT_PROFILE_PATH"] = tmp
+        return invoke()
+
+
+DECLARED_TIERS_PROFILE = """\
+name: chief-of-staff-work
+tiers:
+  - rung: primary
+    provider: together
+    model: zai-org/GLM-5.3-Flash
+    effort: medium
+  - rung: fallback
+    provider: openai-codex
+    model: gpt-6.1-sol
+    effort: high
+  - rung: candidate
+    provider: cursor
+    model: grok-4.6:fast
+"""
+
+NO_MODEL_PROFILE = "name: chief-of-staff-work\n"
+
+LLM_FALLBACK_PROFILE = """\
+name: chief-of-staff-work
+llm:
+  provider: cursor
+  model: grok-4.6:fast
+  thinking: high
+fallback_model:
+  - provider: openai-codex
+    model: gpt-6.1-sol
+"""
+
+
+def run_plan_json(*args: str, profile_text: str) -> dict[str, object]:
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "chief-of-staff-work.yaml").write_text(profile_text, encoding="utf-8")
+        env = os.environ.copy()
+        env["HERMES_AGENT_PROFILE_PATH"] = tmp
+        proc = subprocess.run(
+            [str(COSW), "--print-plan", "--json", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 1, proc.stdout
+    return json.loads(lines[0])
 
 
 class CoswLaunchPlanTest(unittest.TestCase):
-    @requires_host_checkout
-    def test_default_is_host_timeout_free_cursor_grok(self):
-        plan = run_plan()
+    def test_profile_tiers_default_to_primary_rung(self):
+        plan = run_plan(profile_text=DECLARED_TIERS_PROFILE)
         self.assertEqual(plan["backend"], "local")
         self.assertEqual(plan["sandbox"], "0")
-        self.assertEqual(plan["provider"], "cursor")
-        self.assertEqual(plan["model"], "grok-4.6:fast")
-        self.assertEqual(plan["cursor_sdk"], "1")
-        self.assertEqual(plan["timeout_free"], "1")
-        self.assertEqual(plan["compose"], "0")
-        self.assertEqual(plan["compose_service"], "")
-        self.assertTrue(plan["pythonpath"].endswith("timeout-free-cursor-sdk-20260831T1834"))
+        self.assertEqual(plan["provider"], "together")
+        self.assertEqual(plan["model"], "zai-org/GLM-5.3-Flash")
+        self.assertEqual(plan["thinking"], "medium")
+        self.assertEqual(plan["cursor_sdk"], "0")
+        self.assertEqual(plan["timeout_free"], "0")
+        self.assertEqual(plan["model_source"], "tiers")
+        self.assertEqual(plan["rung"], "primary")
         self.assertTrue(plan["persona"].endswith("cosw-host-dispatch.md"))
 
     def test_codex_seat(self):
-        plan = run_plan("--codex")
+        plan = run_plan("--codex", profile_text=NO_MODEL_PROFILE)
         self.assertEqual(plan["backend"], "local")
         self.assertEqual(plan["provider"], "openai-codex")
         # Default flipped to gpt-6.1-sol in 2567d8c; --gpt-5.5 remains legacy.
@@ -80,7 +141,7 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertEqual(plan["pythonpath"], "")
 
     def test_xai_grok_seat_is_not_cursor(self):
-        plan = run_plan("--xai-grok")
+        plan = run_plan("--xai-grok", profile_text=NO_MODEL_PROFILE)
         self.assertEqual(plan["provider"], "xai")
         self.assertEqual(plan["model"], "grok-4.6")
         self.assertEqual(plan["cursor_sdk"], "0")
@@ -158,7 +219,7 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertIn("conflicting seats", proc.stderr)
 
     def test_model_flag_splits_known_provider(self):
-        plan = run_plan("--model", "together/zai-org/GLM-5.3-Flash")
+        plan = run_plan("--model", "together/zai-org/GLM-5.3-Flash", profile_text=NO_MODEL_PROFILE)
         self.assertEqual(plan["seat"], "custom")
         self.assertEqual(plan["provider"], "together")
         self.assertEqual(plan["model"], "zai-org/GLM-5.3-Flash")
@@ -167,22 +228,64 @@ class CoswLaunchPlanTest(unittest.TestCase):
 
     def test_provider_model_thinking_flags(self):
         plan = run_plan(
-            "--provider", "openai-codex", "--model", "gpt-5.6-luna", "--thinking", "high"
+            "--provider", "openai-codex", "--model", "gpt-5.6-luna", "--thinking", "high",
+            profile_text=NO_MODEL_PROFILE,
         )
         self.assertEqual(plan["seat"], "custom")
         self.assertEqual(plan["provider"], "openai-codex")
         self.assertEqual(plan["model"], "gpt-5.6-luna")
         self.assertEqual(plan["thinking"], "high")
 
-    @requires_host_checkout
-    def test_thinking_only_flag_keeps_default_seat(self):
-        plan = run_plan("--thinking", "low")
-        self.assertEqual(plan["seat"], "cursor-grok")
-        self.assertEqual(plan["provider"], "cursor")
-        self.assertEqual(plan["model"], "grok-4.6:fast")
+    def test_thinking_only_flag_keeps_profile_primary_rung(self):
+        plan = run_plan("--thinking", "low", profile_text=DECLARED_TIERS_PROFILE)
+        self.assertEqual(plan["provider"], "together")
+        self.assertEqual(plan["model"], "zai-org/GLM-5.3-Flash")
         self.assertEqual(plan["thinking"], "low")
-        self.assertEqual(plan["cursor_sdk"], "1")
-        self.assertEqual(plan["timeout_free"], "1")
+        self.assertEqual(plan["model_source"], "tiers")
+        self.assertEqual(plan["rung"], "primary")
+        self.assertEqual(plan["cursor_sdk"], "0")
+        self.assertEqual(plan["timeout_free"], "0")
+
+    def test_llm_fallback_profile_is_source_of_truth(self):
+        default_plan = run_plan(profile_text=LLM_FALLBACK_PROFILE)
+        self.assertEqual(default_plan["provider"], "cursor")
+        self.assertEqual(default_plan["model"], "grok-4.6:fast")
+        self.assertEqual(default_plan["model_source"], "llm+fallback_model")
+        fallback_plan = run_plan("--codex", profile_text=LLM_FALLBACK_PROFILE)
+        self.assertEqual(fallback_plan["provider"], "openai-codex")
+        self.assertEqual(fallback_plan["model"], "gpt-6.1-sol")
+        self.assertEqual(fallback_plan["rung"], "fallback")
+
+    def test_profile_flag_selects_declared_rung(self):
+        plan = run_plan("--codex", profile_text=DECLARED_TIERS_PROFILE)
+        self.assertEqual(plan["provider"], "openai-codex")
+        self.assertEqual(plan["model"], "gpt-6.1-sol")
+        self.assertEqual(plan["thinking"], "high")
+        self.assertEqual(plan["model_source"], "tiers")
+        self.assertEqual(plan["rung"], "fallback")
+
+    def test_profile_source_rejects_undeclared_model_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "chief-of-staff-work.yaml").write_text(DECLARED_TIERS_PROFILE, encoding="utf-8")
+            env = os.environ.copy()
+            env["HERMES_AGENT_PROFILE_PATH"] = tmp
+            proc = subprocess.run(
+                [str(COSW), "--print-plan", "--model", "openai-codex/gpt-5.5"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requested model rung not declared", proc.stderr)
+
+    def test_print_plan_json_is_one_object(self):
+        payload = run_plan_json("--codex", profile_text=DECLARED_TIERS_PROFILE)
+        self.assertEqual(payload["schema"], "cosw-plan.v1")
+        self.assertEqual(payload["provider"], "openai-codex")
+        self.assertEqual(payload["model"], "gpt-6.1-sol")
+        self.assertEqual(payload["model_source"], "tiers")
+        self.assertEqual(payload["rung"], "fallback")
+        self.assertIs(payload["sandbox"], False)
 
     def test_flag_conflicts_with_seat_preset_fail(self):
         proc = subprocess.run(

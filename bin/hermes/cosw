@@ -67,6 +67,7 @@ Lane isolation:
 
 Other:
   --print-plan                         print resolved launch plan and exit
+  --json                               with --print-plan, emit one JSON line
   --dispatch-doctor                    probe host-control only
   --refresh-gh-auth                    restage sandbox GitHub auth
   -h, --help                           this help
@@ -77,6 +78,7 @@ Env:
   COSW_TIMEOUT_FREE_PYTHONPATH         override timeout-free worktree
   COSW_TERMINAL_CWD                    host/sandbox cwd
   COSW_PRINT_PLAN=1                    same as --print-plan
+  COSW_PRINT_PLAN_JSON=1               same as --print-plan --json
   COSW_WORK_DEVBOX                     override work-devbox helper
 EOF
 }
@@ -183,6 +185,7 @@ strip_cosw_args() {
   COSW_ARGS=()
   COSW_DISPATCH_DOCTOR="${COSW_DISPATCH_DOCTOR:-0}"
   COSW_PRINT_PLAN="${COSW_PRINT_PLAN:-0}"
+  COSW_PRINT_PLAN_JSON="${COSW_PRINT_PLAN_JSON:-0}"
   COSW_SANDBOX_STACK="${COSW_SANDBOX_STACK:-0}"
   COSW_SANDBOX_STACK_ARGS=()
   COSW_COMPOSE="${COSW_COMPOSE:-1}"
@@ -209,6 +212,9 @@ strip_cosw_args() {
         ;;
       --print-plan|--dry-run)
         COSW_PRINT_PLAN=1
+        ;;
+      --json)
+        COSW_PRINT_PLAN_JSON=1
         ;;
       --refresh-gh-auth|--refresh-sandbox-auth)
         COSW_REFRESH_GH_AUTH_ONLY=1
@@ -306,6 +312,184 @@ strip_cosw_args() {
   done
 }
 
+resolve_cosw_profile_path() {
+  local name="${1:-$COSW_PROFILE}" cand
+  if [ -n "${HERMES_AGENT_PROFILE_PATH:-}" ]; then
+    local IFS=':'
+    for d in ${HERMES_AGENT_PROFILE_PATH}; do
+      cand="$d/$name.yaml"
+      [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+    done
+  fi
+  for d in \
+    "${HOME}/src/karan.hiremath/agentic/hermes/profiles" \
+    "${HOME}/src/hermes/profiles" \
+    "$SCRIPT_DIR/profiles"
+  do
+    cand="$d/$name.yaml"
+    [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+apply_declared_profile_model() {
+  local profile_path result line key value
+  COSW_PROFILE_MODEL_SOURCE="none"
+  COSW_PROFILE_MODEL_REASON="profile-not-found"
+  COSW_PROFILE_MODEL_RUNG=""
+  COSW_PROFILE_MODEL_EXPLICIT=0
+  COSW_PROFILE_MODEL_PATH=""
+  if ! profile_path="$(resolve_cosw_profile_path "$COSW_PROFILE")"; then
+    return 1
+  fi
+  COSW_PROFILE_MODEL_PATH="$profile_path"
+  set +e
+  result="$(COSW_PROFILE_PATH="$profile_path" COSW_REQUEST_SEAT="${COSW_SEAT:-}" \
+      COSW_REQUEST_PROVIDER="${COSW_PROVIDER:-}" COSW_REQUEST_MODEL="${COSW_MODEL:-}" \
+      COSW_REQUEST_CODEX_MODEL="${COSW_CODEX_MODEL:-}" COSW_REQUEST_XAI_PROVIDER="${COSW_XAI_PROVIDER:-xai}" \
+      python3 - <<'PY'
+import os
+import sys
+
+try:
+    import yaml
+except ImportError as exc:
+    sys.stderr.write("cosw: PyYAML is required to read profile model routes: %s\n" % exc)
+    sys.exit(2)
+
+path = os.environ["COSW_PROFILE_PATH"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+except Exception as exc:
+    sys.stderr.write("cosw: cannot read profile %s: %s\n" % (path, exc))
+    sys.exit(2)
+if not isinstance(doc, dict):
+    sys.exit(1)
+
+routes = []
+source = "none"
+tiers = doc.get("tiers")
+if isinstance(tiers, list):
+    for idx, entry in enumerate(tiers):
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if not provider or not model:
+            continue
+        rung = str(entry.get("rung") or ("primary" if idx == 0 else "candidate")).strip()
+        effort = entry.get("effort")
+        routes.append({"provider": provider, "model": model, "rung": rung, "effort": "" if effort is None else str(effort)})
+    if routes:
+        source = "tiers"
+if not routes:
+    llm = doc.get("llm")
+    if isinstance(llm, dict):
+        provider = str(llm.get("provider") or "").strip()
+        model = str(llm.get("model") or "").strip()
+        if provider and model:
+            effort = llm.get("thinking", llm.get("reasoning_effort", ""))
+            routes.append({"provider": provider, "model": model, "rung": "primary", "effort": "" if effort is None else str(effort)})
+            fallback = doc.get("fallback_model")
+            entries = fallback if isinstance(fallback, list) else ([] if fallback is None else [fallback])
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                f_provider = str(entry.get("provider") or "").strip()
+                f_model = str(entry.get("model") or "").strip()
+                if f_provider and f_model:
+                    routes.append({"provider": f_provider, "model": f_model, "rung": "fallback", "effort": ""})
+            source = "llm+fallback_model" if len(routes) > 1 else "llm"
+if not routes:
+    sys.exit(1)
+
+seat = os.environ.get("COSW_REQUEST_SEAT") or ""
+req_provider = os.environ.get("COSW_REQUEST_PROVIDER") or ""
+req_model = os.environ.get("COSW_REQUEST_MODEL") or ""
+explicit = bool(seat or req_provider or req_model)
+if seat == "codex":
+    req_provider = "openai-codex"
+    req_model = os.environ.get("COSW_REQUEST_CODEX_MODEL") or ""
+elif seat == "together-glm":
+    req_provider = "together"
+    req_model = ""
+elif seat == "cursor-grok":
+    req_provider = "cursor"
+    req_model = ""
+elif seat == "xai-grok":
+    req_provider = os.environ.get("COSW_REQUEST_XAI_PROVIDER") or "xai"
+    req_model = ""
+elif seat == "custom":
+    pass
+elif seat:
+    sys.stderr.write("cosw: unknown requested seat %s\n" % seat)
+    sys.exit(2)
+
+selected = None
+if explicit:
+    matches = []
+    for route in routes:
+        if req_provider and route["provider"] != req_provider:
+            continue
+        if req_model and route["model"] != req_model:
+            continue
+        matches.append(route)
+    if len(matches) == 1:
+        selected = matches[0]
+    elif len(matches) > 1:
+        selected = matches[0]
+    else:
+        request = "/".join(x for x in (req_provider, req_model) if x) or seat or "custom"
+        sys.stderr.write("cosw: requested model rung not declared by profile %s: %s\n" % (path, request))
+        sys.exit(3)
+else:
+    selected = next((route for route in routes if route["rung"] == "primary"), routes[0])
+
+def emit(k, v):
+    sys.stdout.write("%s=%s\n" % (k, str(v).replace("\n", " ")))
+
+emit("source", source)
+emit("provider", selected["provider"])
+emit("model", selected["model"])
+emit("rung", selected["rung"])
+emit("effort", selected.get("effort") or "")
+emit("explicit", "1" if explicit else "0")
+emit("reason", "profile-declared-model")
+PY
+  )"
+  local rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    return "$rc"
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      source) COSW_PROFILE_MODEL_SOURCE="$value" ;;
+      provider) COSW_PROVIDER="$value" ;;
+      model) COSW_MODEL="$value" ;;
+      rung) COSW_PROFILE_MODEL_RUNG="$value" ;;
+      effort) COSW_PROFILE_MODEL_EFFORT="$value" ;;
+      explicit) COSW_PROFILE_MODEL_EXPLICIT="$value" ;;
+      reason) COSW_PROFILE_MODEL_REASON="$value" ;;
+    esac
+  done <<< "$result"
+  [ "$COSW_PROFILE_MODEL_SOURCE" != "none" ] || return 1
+  if [ -z "${COSW_THINKING_FLAG:-}" ] && [ -n "${COSW_PROFILE_MODEL_EFFORT:-}" ]; then
+    COSW_THINKING="$COSW_PROFILE_MODEL_EFFORT"
+  fi
+  COSW_CURSOR_SDK=0
+  [ "${COSW_PROVIDER:-}" = "cursor" ] && COSW_CURSOR_SDK=1
+  case "$COSW_PROFILE_MODEL_SOURCE" in
+    tiers) COSW_SEAT_OVERRIDE=1 ;;
+    *) [ "${COSW_PROFILE_MODEL_EXPLICIT:-0}" = "1" ] && COSW_SEAT_OVERRIDE=1 ;;
+  esac
+  return 0
+}
+
 timeout_free_worktree() {
   local candidate file
   # Discovery order: explicit override, undated checkout, newest dated
@@ -363,6 +547,20 @@ apply_cosw_seat() {
   fi
   COSW_SEAT_OVERRIDE=0
   COSW_CURSOR_SDK=0
+  COSW_PROFILE_MODEL_SOURCE="none"
+  COSW_PROFILE_MODEL_REASON=""
+  COSW_PROFILE_MODEL_RUNG=""
+  COSW_PROFILE_MODEL_EFFORT=""
+  COSW_PROFILE_MODEL_PATH=""
+  local profile_model_rc=0
+  if apply_declared_profile_model; then
+    return 0
+  else
+    profile_model_rc=$?
+    if [ "$profile_model_rc" -gt 1 ]; then
+      exit "$profile_model_rc"
+    fi
+  fi
   case "${COSW_SEAT:-}" in
     "")
       # Default seat: openai-codex/gpt-6.1-sol (optimal for now, 2026-09-30
@@ -470,7 +668,7 @@ emit_catalog_plan_fields() {
 }
 
 print_cosw_plan() {
-  local sandbox=0 pythonpath="" timeout_free=0 xai_auth=0 persona
+  local sandbox=0 pythonpath="" timeout_free=0 xai_auth=0 persona catalog_plan
   if [ "$COSW_FORCE_SANDBOX" = "1" ]; then
     sandbox=1
   fi
@@ -487,13 +685,56 @@ print_cosw_plan() {
   else
     persona="$SCRIPT_DIR/bootstrap/cosw-host-dispatch.md"
   fi
+  catalog_plan="$(emit_catalog_plan_fields "$sandbox")"
+  if [ "${COSW_PRINT_PLAN_JSON:-0}" = "1" ]; then
+    COSW_PLAN_BACKEND="$([ "$sandbox" = "1" ] && printf docker || printf local)" \
+    COSW_PLAN_SANDBOX="$sandbox" COSW_PLAN_SEAT="${COSW_SEAT:-${COSW_PROFILE_MODEL_RUNG:-codex}}" \
+    COSW_PLAN_PROVIDER="$COSW_PROVIDER" COSW_PLAN_MODEL="$COSW_MODEL" COSW_PLAN_THINKING="$COSW_THINKING" \
+    COSW_PLAN_CURSOR_SDK="$COSW_CURSOR_SDK" COSW_PLAN_TIMEOUT_FREE="$timeout_free" \
+    COSW_PLAN_PYTHONPATH="$pythonpath" COSW_PLAN_XAI_AUTH="$xai_auth" COSW_PLAN_PERSONA="$persona" \
+    COSW_PLAN_PROFILE="$COSW_PROFILE" COSW_PLAN_PROFILE_PATH="${COSW_PROFILE_MODEL_PATH:-}" \
+    COSW_PLAN_MODEL_SOURCE="${COSW_PROFILE_MODEL_SOURCE:-none}" COSW_PLAN_RUNG="${COSW_PROFILE_MODEL_RUNG:-}" \
+    COSW_PLAN_CATALOG="$catalog_plan" python3 - <<'PY'
+import json
+import os
+
+payload = {
+    "schema": "cosw-plan.v1",
+    "backend": os.environ["COSW_PLAN_BACKEND"],
+    "sandbox": os.environ["COSW_PLAN_SANDBOX"] == "1",
+    "seat": os.environ["COSW_PLAN_SEAT"],
+    "provider": os.environ["COSW_PLAN_PROVIDER"],
+    "model": os.environ["COSW_PLAN_MODEL"],
+    "thinking": os.environ["COSW_PLAN_THINKING"],
+    "cursor_sdk": os.environ["COSW_PLAN_CURSOR_SDK"] == "1",
+    "timeout_free": os.environ["COSW_PLAN_TIMEOUT_FREE"] == "1",
+    "pythonpath": os.environ["COSW_PLAN_PYTHONPATH"],
+    "xai_auth": os.environ["COSW_PLAN_XAI_AUTH"] == "1",
+    "persona": os.environ["COSW_PLAN_PERSONA"],
+    "profile": os.environ["COSW_PLAN_PROFILE"],
+    "profile_path": os.environ["COSW_PLAN_PROFILE_PATH"],
+    "model_source": os.environ["COSW_PLAN_MODEL_SOURCE"],
+    "rung": os.environ["COSW_PLAN_RUNG"],
+}
+for line in os.environ.get("COSW_PLAN_CATALOG", "").splitlines():
+    if "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key in {"compose", "persist", "hostctl"}:
+        payload[key] = value == "1"
+    else:
+        payload[key] = value
+print(json.dumps(payload, separators=(",", ":")))
+PY
+    return
+  fi
   if [ "$sandbox" = "1" ]; then
     printf 'backend=docker\n'
   else
     printf 'backend=local\n'
   fi
   printf 'sandbox=%s\n' "$sandbox"
-  printf 'seat=%s\n' "${COSW_SEAT:-codex}"
+  printf 'seat=%s\n' "${COSW_SEAT:-${COSW_PROFILE_MODEL_RUNG:-codex}}"
   printf 'provider=%s\n' "$COSW_PROVIDER"
   printf 'model=%s\n' "$COSW_MODEL"
   printf 'thinking=%s\n' "$COSW_THINKING"
@@ -502,7 +743,11 @@ print_cosw_plan() {
   printf 'pythonpath=%s\n' "$pythonpath"
   printf 'xai_auth=%s\n' "$xai_auth"
   printf 'persona=%s\n' "$persona"
-  emit_catalog_plan_fields "$sandbox"
+  printf 'profile=%s\n' "$COSW_PROFILE"
+  printf 'profile_path=%s\n' "${COSW_PROFILE_MODEL_PATH:-}"
+  printf 'model_source=%s\n' "${COSW_PROFILE_MODEL_SOURCE:-none}"
+  printf 'rung=%s\n' "${COSW_PROFILE_MODEL_RUNG:-}"
+  printf '%s\n' "$catalog_plan"
 }
 
 json_array() {
