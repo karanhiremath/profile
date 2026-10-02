@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# harness-instantiate — plane-routed harness instantiation gate (generic).
+#
+# Directive (operator, 2026-10-02): ALL harness launchers (cos, cos-voice, pm,
+# pl, cosw, dreamw, ...) route instantiation through the owning plane:
+#   - WORK profile   -> cai-aos plane (karan.hiremath/scripts/cdev/cai-aos)
+#   - PERSONAL prof. -> AOS plane (profile bin/aos dispatcher)
+# Classification is by resolved profile source dir (SOP source-of-truth table):
+#   work     = */src/karan.hiremath/**/hermes/profiles/<name>.yaml
+#   personal = */src/hermes/profiles/<name>.yaml
+#   tooling  = profile bin/hermes/profiles (TEMPLATE) -> treated as personal
+#
+# Dual mode:
+#   harness-instantiate classify <profile>            -> JSON line on stdout
+#   harness-instantiate prep     <profile> [args...]  -> plane pre-flight; never spawns
+#
+# The plane verb (cai-aos instantiate / aos instantiate) is the extension
+# point: when absent, prep degrades to a structured fallback event and the
+# caller proceeds with its existing inline instantiation. NEVER guess.
+# stdout = one JSON line; diagnostics = stderr. No credential material.
+set -euo pipefail
+
+emit() { # emit <plane> <entrypoint> <action> <profile> <reason>
+  printf '{"schema":"harness-instantiate.v1","plane":"%s","entrypoint":"%s","action":"%s","profile":"%s","reason":"%s"}\n' \
+    "$1" "$2" "$3" "$4" "$5"
+}
+
+resolve_profile() { # -> absolute yaml path or empty
+  local name="$1" cand
+  if [ -n "${HERMES_AGENT_PROFILE_PATH:-}" ]; then
+    local IFS=':'
+    for d in ${HERMES_AGENT_PROFILE_PATH}; do
+      cand="$d/$name.yaml"
+      [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+    done
+  fi
+  for d in \
+    "${HOME}/src/karan.hiremath/agentic/hermes/profiles" \
+    "${HOME}/src/hermes/profiles" \
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/profiles"
+  do
+    cand="$d/$name.yaml"
+    [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+classify_plane() { # classify_plane <resolved-path> -> work|personal
+  case "$1" in
+    */src/karan.hiremath/*) printf 'work' ;;
+    *) printf 'personal' ;;
+  esac
+}
+
+plane_prep() { # plane_prep <plane> <profile-name> <resolved-path>; rc 0 = handled
+  local plane="$1" name="$2" path="$3"
+  case "$plane" in
+    work)
+      if command -v cai-aos >/dev/null 2>&1; then
+        if cai-aos instantiate --profile "$name" --profile-path "$path" >/dev/null 2>&1; then
+          emit work cai-aos handled "$name" ""; return 0
+        fi
+        emit work cai-aos fallback "$name" "cai-aos-instantiate-failed"
+        return 1
+      fi
+      emit work none fallback "$name" "cai-aos-not-installed"
+      return 1
+      ;;
+    personal)
+      if command -v aos >/dev/null 2>&1; then
+        if aos instantiate --profile "$name" --profile-path "$path" >/dev/null 2>&1; then
+          emit personal aos handled "$name" ""; return 0
+        fi
+        emit personal aos fallback "$name" "aos-instantiate-failed"
+        return 1
+      fi
+      emit personal none fallback "$name" "aos-not-installed"
+      return 1
+      ;;
+  esac
+  return 1
+}
+
+cmd="${1:-}"; [ -n "$cmd" ] || { printf 'usage: harness-instantiate classify|prep <profile>\n' >&2; exit 2; }
+shift || true
+case "$cmd" in
+  classify)
+    [ "$#" -ge 1 ] || { printf 'classify needs a profile name\n' >&2; exit 2; }
+    if path="$(resolve_profile "$1")"; then
+      emit "$(classify_plane "$path")" none classified "$1" "$path"
+    else
+      emit unknown none unclassified "$1" "profile-not-found"
+      exit 1
+    fi
+    ;;
+  prep)
+    [ "$#" -ge 1 ] || { printf 'prep needs a profile name\n' >&2; exit 2; }
+    name="$1"
+    if ! path="$(resolve_profile "$name")"; then
+      emit unknown none fallback "$name" "profile-not-found"
+      exit 1
+    fi
+    plane_prep "$(classify_plane "$path")" "$name" "$path" || exit 1
+    ;;
+  *) printf 'unknown command: %s\n' "$cmd" >&2; exit 2 ;;
+esac

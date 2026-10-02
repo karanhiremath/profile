@@ -107,8 +107,38 @@ cmd_install() {
 	have aos && echo "aos on PATH: ok" || echo "aos on PATH: $bin_dir not on PATH" >&2
 }
 
+# instantiate — personal-plane harness pre-flight (called by harness-instantiate).
+# As-needed and idempotent: verifies the profile exists and the plane's
+# skill/toolset wiring is present for the default herm home; never spawns a
+# harness (spawn stays with the caller), never mutates beyond link repair.
+# stdout: one JSON line (harness-instantiate.v1 sibling). No credential material.
+cmd_instantiate() {
+	local profile="" profile_path=""
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--profile) profile="${2:?}"; shift 2 ;;
+			--profile-path) profile_path="${2:?}"; shift 2 ;;
+			*) echo "aos instantiate: unknown arg $1" >&2; return 2 ;;
+		esac
+	done
+	[ -n "$profile" ] || { echo "aos instantiate: --profile required" >&2; return 2; }
+	if [ -z "$profile_path" ]; then
+		for d in "$HOME/src/hermes/profiles" "$HOME/src/karan.hiremath/agentic/hermes/profiles" "$PROFILE_DIR/bin/hermes/profiles"; do
+			[ -f "$d/$profile.yaml" ] && { profile_path="$d/$profile.yaml"; break; }
+		done
+	fi
+	[ -n "$profile_path" ] || { echo "aos instantiate: profile not found: $profile" >&2; return 1; }
+	local skills_root="$HOME/.hermes/skills"
+	local wiring="absent"
+	[ -d "$skills_root" ] && wiring="present"
+	printf '{"schema":"harness-instantiate.v1","plane":"personal","entrypoint":"aos","action":"prep","profile":"%s","reason":"skills-root-%s"}\n' \
+		"$profile" "$wiring"
+	return 0
+}
+
 case "${1:-help}" in
 	status) shift; cmd_status "$@" ;;
+	instantiate) shift; cmd_instantiate "$@" ;;
 	sync)   shift; exec "$PROFILE_DIR/bin/atop/harness-sync" apply "$@" ;;
 	pull)   shift; exec "$PROFILE_DIR/bin/atop/harness-sync" pull "$@" ;;
 	doctor) shift; cmd_doctor "$@" ;;

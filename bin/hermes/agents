@@ -185,6 +185,10 @@ case "$cmd" in
   up)
     [ "$#" -ge 1 ] || die "up needs a profile name"
     profile="$1"; shift
+    # Plane-routed instantiation gate: work -> cai-aos, personal -> aos.
+    # Non-fatal by design (missing plane verb = fallback event, proceed).
+    [ -x "$SCRIPT_DIR/harness-instantiate" ] && \
+      "$SCRIPT_DIR/harness-instantiate" prep "$profile" >&2 || true
     surface=""; platform=""; do_check=0; model=""; provider=""; thinking=""; sandbox=""; here=0; force_tui=0; passthrough=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
