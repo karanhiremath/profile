@@ -1097,27 +1097,18 @@ else
   fi
 fi
 
-if [ "${COSW_PROVIDER:-}" = "openai-codex" ] && [ "${HERMES_CODEX_GRANT_ISOLATE:-0}" != "1" ]; then
-  if command -v cauth >/dev/null 2>&1; then
-    # cauth grant steward: aligned → nothing to do; else adopt newest healthy
-    # source into canonical and materialize client stores (idempotent).
-    if ! cauth grant status --fail-unaligned >/dev/null 2>&1; then
-      adopted=0
-      for _src in codex-cli pi hermes; do
-        if cauth grant adopt --source "$_src" --apply >/dev/null 2>&1; then
-          adopted=1
-          break
-        fi
-      done
-      if [ "$adopted" = "1" ]; then
-        cauth grant materialize --targets pi,hermes,codex-cli --apply >/dev/null 2>&1 \
-          || log "cauth grant materialize failed; continuing with existing stores"
-      else
-        log "cauth grant adopt failed from all sources; run 'cauth grant status' (legacy hooks may still heal)"
-      fi
-    fi
-  elif [ -f "$SCRIPT_DIR/codex_grant_sync.py" ]; then
-    python3 "$SCRIPT_DIR/codex_grant_sync.py" adopt >/dev/null || log "codex grant adopt skipped"
+# Generic credential plane: one entrypoint for every seat/provider. Provider
+# routing lives inside credential-sync (cauth grant when available, legacy
+# dispatch otherwise); launchers carry no provider-specific credential logic.
+if [ "${HERMES_CODEX_GRANT_ISOLATE:-0}" != "1" ]; then
+  _cred_sync="$(command -v credential-sync || true)"
+  [ -n "$_cred_sync" ] || _cred_sync="$SCRIPT_DIR/../credential-sync"
+  if [ -x "$_cred_sync" ]; then
+    "$_cred_sync" --provider "${COSW_PROVIDER:-}" --seat "${COSW_SEAT:-}" >/dev/null 2>&1 \
+      || log "credential-sync failed; continuing with existing stores"
+  else
+    log "credential-sync not found; continuing with existing stores"
   fi
+  unset _cred_sync
 fi
 exec "$SCRIPT_DIR/agents" up "$COSW_PROFILE" "${COSW_ARGS[@]}"

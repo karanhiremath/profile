@@ -73,7 +73,8 @@ class CoswLaunchPlanTest(unittest.TestCase):
         plan = run_plan("--codex")
         self.assertEqual(plan["backend"], "local")
         self.assertEqual(plan["provider"], "openai-codex")
-        self.assertEqual(plan["model"], "gpt-5.5")
+        # Default flipped to gpt-6.1-sol in 2567d8c; --gpt-5.5 remains legacy.
+        self.assertEqual(plan["model"], "gpt-6.1-sol")
         self.assertEqual(plan["cursor_sdk"], "0")
         self.assertEqual(plan["timeout_free"], "0")
         self.assertEqual(plan["pythonpath"], "")
