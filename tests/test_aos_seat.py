@@ -13,6 +13,9 @@ Contract under test:
 
 from __future__ import annotations
 
+import ast
+import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -50,12 +53,12 @@ surfaces: [tui]
 hosts: [home]
 """
 
-BOUNDED_TERMINAL = r"""terminal:
+BOUNDED_TERMINAL = """terminal:
   mode: allowlist
   allowlist:
-    - '\Aaos help\Z'
-    - '\Aaos seat check --help\Z'
-    - '\Aaos seat check -\Z'
+    - aos help
+    - aos seat check --help
+    - aos seat check -
 """
 VALID_MANIFEST += BOUNDED_TERMINAL
 
@@ -103,6 +106,24 @@ def write_manifest(text):
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     return Path(path)
+
+
+def terminal_catalog():
+    schema = json.loads(SCHEMA.read_text())
+    terminal_rule = schema["allOf"][0]["then"]["allOf"][0]["then"]
+    policy = terminal_rule["properties"]["terminal"]
+    return tuple(policy["properties"]["allowlist"]["items"]["enum"])
+
+
+def mutation_variants(command):
+    return (
+        command + "\nwhoami", command + "; touch x", command + " | sh",
+        command + " > x", command + " >> x", "env X=1 " + command,
+        command + " $(touch x)", command + " `touch x`",
+        command + " && aos sync", command + " || touch x",
+        command + " & touch x", command + "\r\ntouch x",
+        command + " < input", "sh -c '" + command + "'",
+    )
 
 
 class SeatCheckCliTest(unittest.TestCase):
@@ -239,7 +260,8 @@ class SeatCheckCliTest(unittest.TestCase):
         # into a supported name. Includes composites of otherwise safe tools.
         for toolset in ("all", "*", "terminal,file", "file_read+file",
                         "hermes-cli", "hermes-full", "custom-writer",
-                        "file_read+web", "File_Read", " file_read"):
+                        "file_read+web", "File_Read", " file_read",
+                        "skills", "clarify", "tts"):
             with self.subTest(toolset=toolset):
                 self.assert_invalid(
                     "name: s\nbehavior: [orchestrate]\ntoolsets: "
@@ -265,23 +287,24 @@ class SeatCheckCliTest(unittest.TestCase):
     def test_orchestrate_terminal_policy_invalid_shapes(self):
         prefix = "name: s\nbehavior: [orchestrate]\ntoolsets: [terminal]\n"
         cases = [None, False, "allowlist", [], {},
-                 {"mode": "allowlist"}, {"allowlist": [r"\Aaos help\Z"]},
-                 {"mode": "off", "allowlist": [r"\Aaos help\Z"]},
-                 {"mode": False, "allowlist": [r"\Aaos help\Z"]},
+                 {"mode": "allowlist"}, {"allowlist": ["aos help"]},
+                 {"mode": "off", "allowlist": ["aos help"]},
+                 {"mode": False, "allowlist": ["aos help"]},
                  {"mode": "allowlist", "allowlist": []},
-                 {"mode": "allowlist", "allowlist": r"\Aaos help\Z"},
+                 {"mode": "allowlist", "allowlist": "aos help"},
                  {"mode": "allowlist", "allowlist": [1]},
-                 {"mode": "allowlist", "allowlist": [r"\Aaos help\Z"] * 2},
-                 {"mode": "allowlist", "allowlist": [r"\Aaos help\Z"], "enabled": False}]
+                 {"mode": "allowlist", "allowlist": ["aos help"] * 2},
+                 {"mode": "allowlist", "allowlist": ["aos help"], "enabled": False}]
         for policy in cases:
             with self.subTest(policy=policy):
                 self.assert_invalid(prefix + "terminal: " + json.dumps(policy) + "\n", "terminal")
 
     def test_orchestrate_unbounded_or_mutating_patterns_rejected(self):
-        for pattern in (".*", "^aos", "^aos.*$", "aos help", "^aos help$",
+        for pattern in (".*", "^aos", "^aos.*$", "aos *", "^aos help$",
                         r"\Abash .*\Z", r"\Apython3 .*\Z",
                         r"\Aaos sync\Z", r"\Aaos seat check .*\Z",
-                        r"\Aaos help\Z|.*", "["):
+                        r"\Aaos help\Z|.*", r"\Aaos help\Z",
+                        "literal:aos help", r"re:\Aaos help\Z", "["):
             with self.subTest(pattern=pattern):
                 self.assert_invalid(
                     "name: s\nbehavior: [orchestrate]\ntoolsets: [terminal]\nterminal: "
@@ -290,7 +313,7 @@ class SeatCheckCliTest(unittest.TestCase):
                 )
 
     def test_each_bounded_terminal_command_accepted(self):
-        for pattern in (r"\Aaos help\Z", r"\Aaos seat check --help\Z", r"\Aaos seat check -\Z"):
+        for pattern in ("aos help", "aos seat check --help", "aos seat check -"):
             with self.subTest(pattern=pattern):
                 proc = run_seat(["check", "-"], stdin=(
                     "name: s\nbehavior: [orchestrate]\ntoolsets: [terminal]\nterminal: "
@@ -299,18 +322,48 @@ class SeatCheckCliTest(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertTrue(self.parse_stdout(proc)["ok"])
 
+    def test_typed_terminal_transport_fields_accepted(self):
+        for backend in ("local", "ssh", "docker", "modal", "daytona", "singularity"):
+            for persist in (True, False):
+                with self.subTest(backend=backend, persist=persist):
+                    policy = {
+                        "mode": "allowlist", "allowlist": list(terminal_catalog()),
+                        "backend": backend, "cwd": "/workspace",
+                        "docker_image": "example/agent:stable",
+                        "docker_persist_across_processes": persist,
+                    }
+                    proc = run_seat(["check", "-"], stdin=(
+                        "name: s\nbehavior: [orchestrate]\ntoolsets: [terminal]\nterminal: "
+                        + json.dumps(policy) + "\n"
+                    ))
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertTrue(self.parse_stdout(proc)["ok"])
+
+    def test_malformed_terminal_transport_fields_rejected(self):
+        cases = (
+            ("backend", False), ("backend", []), ("backend", "unknown"),
+            ("cwd", None), ("cwd", []), ("cwd", ""),
+            ("docker_image", 1), ("docker_image", ""),
+            ("docker_persist_across_processes", "true"),
+            ("docker_persist_across_processes", 1),
+            ("docker", {"mode": "off"}), ("command", "sh"),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                policy = {"mode": "allowlist", "allowlist": ["aos help"], field: value}
+                self.assert_invalid(
+                    "name: s\nbehavior: [orchestrate]\ntoolsets: [terminal]\nterminal: "
+                    + json.dumps(policy) + "\n", "terminal",
+                )
+
     def test_bounded_patterns_do_not_match_shell_suffixes(self):
-        schema = json.loads(SCHEMA.read_text())
-        terminal_rule = schema["allOf"][0]["then"]["allOf"][0]["then"]
-        policy = terminal_rule["properties"]["terminal"]
-        patterns = policy["properties"]["allowlist"]["items"]["enum"]
+        patterns = terminal_catalog()
+        self.assertEqual(set(patterns), {"aos help", "aos seat check --help", "aos seat check -"})
         for command in ("aos help", "aos seat check --help", "aos seat check -"):
-            self.assertTrue(any(re.search(p, command) for p in patterns))
-            for altered in (command + "\nwhoami", command + "\n", command + "; touch x",
-                            command + " | sh", command + " > x", "env X=1 " + command,
-                            command + " $(touch x)", command + " && aos sync"):
+            self.assertTrue(any(fnmatch.fnmatchcase(command, p) for p in patterns))
+            for altered in mutation_variants(command):
                 with self.subTest(command=altered):
-                    self.assertFalse(any(re.search(p, altered) for p in patterns))
+                    self.assertFalse(any(fnmatch.fnmatchcase(altered.strip(), p) for p in patterns))
 
     def test_orchestrate_among_other_behaviors_still_restricted(self):
         self.assert_invalid(
@@ -595,10 +648,74 @@ class SchemaCrossCheckTest(unittest.TestCase):
         for policy in (None, [], {}, {"mode": "off", "allowlist": [".*"]},
                        {"mode": "allowlist", "allowlist": []},
                        {"mode": "allowlist", "allowlist": ["^aos.*$"]},
-                       {"mode": "allowlist", "allowlist": [r"\Aaos help\Z"], "mode_override": "off"}):
+                       {"mode": "allowlist", "allowlist": ["aos help"], "mode_override": "off"}):
             with self.subTest(policy=policy):
                 self._agrees(prefix + "terminal: " + json.dumps(policy) + "\n", False)
         self._agrees(prefix + BOUNDED_TERMINAL, True)
+
+    def test_agreement_on_terminal_transport_fields(self):
+        prefix = "name: s\nbehavior: [orchestrate]\ntoolsets: [terminal]\nterminal: "
+        policy = {
+            "mode": "allowlist", "allowlist": list(terminal_catalog()),
+            "backend": "docker", "cwd": "/workspace",
+            "docker_image": "example/agent:stable", "docker_persist_across_processes": True,
+        }
+        self._agrees(prefix + json.dumps(policy), True)
+        for field, value in (("backend", False), ("cwd", []),
+                             ("docker_image", 0), ("docker_persist_across_processes", "true")):
+            with self.subTest(field=field):
+                self._agrees(prefix + json.dumps(dict(policy, **{field: value})), False)
+
+
+@unittest.skipUnless(os.environ.get("AOS_W1_APPROVAL_SOURCE"), "W1 matcher source not supplied")
+class W1MatcherCompatibilityTest(unittest.TestCase):
+    """Read-only integration against a separately owned W1 approval source.
+
+    Supply AOS_W1_APPROVAL_SOURCE to verify the finite command catalog against
+    the actual matcher. Extract only the pure matcher/helper and its regex
+    constant; importing the whole approval module would load live config.
+    No terminal commands or approval/config side effects are executed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        path = Path(os.environ["AOS_W1_APPROVAL_SOURCE"])
+        source = path.read_bytes()
+        tree = ast.parse(source, filename=str(path))
+        functions = {"_command_matches_terminal_allowlist", "_has_allowlist_shell_operator"}
+        constant = "_ALLOWLIST_SHELL_OPERATOR_RE"
+        nodes = [node for node in tree.body if (
+            isinstance(node, ast.FunctionDef) and node.name in functions
+        ) or (
+            isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == constant for target in node.targets
+            )
+        )]
+        namespace = {"fnmatch": fnmatch, "re": re}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)
+        if not functions.issubset(namespace) or constant not in namespace:
+            raise AssertionError("W1 matcher dependencies changed; review integration extraction")
+        cls.match = staticmethod(namespace["_command_matches_terminal_allowlist"])
+        cls.patterns = terminal_catalog()
+        sys.stderr.write("W1 matcher source sha256=%s\n" % hashlib.sha256(source).hexdigest())
+
+    def test_actual_w1_accepts_each_characterized_command(self):
+        for command in ("aos help", "aos seat check --help", "aos seat check -"):
+            with self.subTest(command=command):
+                self.assertTrue(self.match(command, self.patterns))
+                self.assertTrue(self.match(" " + command + "\n", self.patterns))
+
+    def test_actual_w1_rejects_mutations_and_bare_regex_catalog(self):
+        for command in ("aos help", "aos seat check --help", "aos seat check -"):
+            with self.subTest(command=command):
+                # Demonstrate the previous regex catalog's incompatibility.
+                self.assertFalse(self.match(command, (r"\A" + command + r"\Z",)))
+            for altered in mutation_variants(command):
+                with self.subTest(command=altered):
+                    self.assertFalse(self.match(altered, self.patterns))
+        for command in ("aos sync", "touch x", "sh", "python3 -c 'pass'", "aos help extra"):
+            with self.subTest(command=command):
+                self.assertFalse(self.match(command, self.patterns))
 
 
 if __name__ == "__main__":

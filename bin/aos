@@ -154,6 +154,7 @@ cmd_instantiate() {
 # config/aos/seat.v1.schema.json plus the behavior rule: orchestrate forbids
 # code.write/infra.mutate capabilities, uncharacterized toolsets, and terminal
 # grants without a closed bounded allowlist. Runtime enforcement is harness-owned.
+# The schema catalog uses exact command text, not unprefixed regex patterns.
 # stdout: exactly one JSON line
 # {"schema":"aos-seat-check.v1","ok":...,"manifest":...,"errors":[...]};
 # exit 0 ok, 1 invalid, 2 usage. Diagnostics on stderr only.
