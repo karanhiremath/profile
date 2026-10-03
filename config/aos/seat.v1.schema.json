@@ -105,10 +105,67 @@
       "items": { "type": "string", "minLength": 1 }
     },
     "toolsets": {
-      "description": "Granted toolsets (e.g. terminal, file, file_read, web, todo, memory).",
+      "description": "Granted toolsets. Exact orchestrate behavior permits only the explicitly supported names below; wildcard, composite, and unknown aliases require separate characterization before they can be granted.",
       "type": "array",
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["behavior"],
+        "properties": {
+          "behavior": { "type": "array", "contains": { "const": "orchestrate" } }
+        }
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "items": { "not": { "enum": ["code.write", "infra.mutate"] } }
+          },
+          "toolsets": {
+            "items": { "enum": ["terminal", "file_read", "web", "todo", "memory", "delegation"] }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": ["toolsets"],
+              "properties": {
+                "toolsets": { "type": "array", "contains": { "const": "terminal" } }
+              }
+            },
+            "then": {
+              "required": ["terminal"],
+              "properties": {
+                "terminal": {
+                  "description": "Deny-by-default policy for orchestration terminal grants. Only these fully anchored read/validation commands are characterized; no arbitrary regex, shell, or command prefix is accepted. Harness approval must enforce this policy before ordinary/container approvals; seat check validates the manifest only. Extend this catalog only after independent command review.",
+                  "type": "object",
+                  "required": ["mode", "allowlist"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "mode": { "const": "allowlist" },
+                    "allowlist": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "\\Aaos help\\Z",
+                          "\\Aaos seat check --help\\Z",
+                          "\\Aaos seat check -\\Z"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
 }

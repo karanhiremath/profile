@@ -152,8 +152,9 @@ cmd_instantiate() {
 # seat — seat.v1 manifest operations.
 # `aos seat check <manifest.yaml|->` validates against
 # config/aos/seat.v1.schema.json plus the behavior rule: orchestrate forbids
-# code.write/infra.mutate capabilities and write-capable toolsets
-# (file, code_execution). stdout: exactly one JSON line
+# code.write/infra.mutate capabilities, uncharacterized toolsets, and terminal
+# grants without a closed bounded allowlist. Runtime enforcement is harness-owned.
+# stdout: exactly one JSON line
 # {"schema":"aos-seat-check.v1","ok":...,"manifest":...,"errors":[...]};
 # exit 0 ok, 1 invalid, 2 usage. Diagnostics on stderr only.
 seat_usage() {
@@ -188,8 +189,9 @@ cmd_seat() {
 			fi
 			PROFILE_DIR="$PROFILE_DIR" SEAT_SOURCE="$src" \
 				SEAT_SCHEMA="${SEAT_SCHEMA:-$AOS_ROOT/config/aos/seat.v1.schema.json}" \
-				python3 <(cat <<'PYCHECK'
+				python3 -c "$(cat <<'PYCHECK'
 import json
+import math
 import os
 import re
 import sys
@@ -205,9 +207,6 @@ SCHEMA_PATH = os.environ.get("SEAT_SCHEMA") or os.path.join(
     os.environ.get("PROFILE_DIR") or os.path.expanduser("~/src/profile"),
     "config", "aos", "seat.v1.schema.json",
 )
-
-FORBIDDEN_ORCH_CAPS = ("code.write", "infra.mutate")
-FORBIDDEN_ORCH_TOOLSETS = ("file", "code_execution")
 
 errors = []
 
@@ -227,7 +226,7 @@ _IGNORED = {
 _IMPLEMENTED = {
     "type", "enum", "const", "required", "properties", "patternProperties",
     "additionalProperties", "items", "minItems", "maxItems", "uniqueItems",
-    "minLength",
+    "minLength", "allOf", "if", "then", "contains", "not",
 }
 _TYPES = {"object": dict, "array": list, "string": str, "null": type(None)}
 
@@ -264,7 +263,63 @@ def _typename(inst):
 
 
 def _canon(item):
-    return json.dumps(item, sort_keys=True)
+    return json.dumps(item, sort_keys=True, allow_nan=False)
+
+
+def check_json_value(doc):
+    """Reject YAML-only values everywhere, including harness-owned fields.
+
+    Bound traversal and reject cyclic aliases before schema recursion or JSON
+    serialization. Shared, acyclic aliases remain valid JSON values.
+    """
+    active = set()
+    remaining = 10000
+
+    def visit(value, path, depth):
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 64:
+            fail("%s: document exceeds JSON validation limits" % path)
+            return False
+        if value is None or isinstance(value, (str, bool, int)):
+            return True
+        if isinstance(value, float):
+            if math.isfinite(value):
+                return True
+            fail("%s: non-finite number is not a JSON value" % path)
+            return False
+        if not isinstance(value, (dict, list)):
+            fail("%s: non-JSON YAML value (%s)" % (path, _typename(value)))
+            return False
+        if id(value) in active:
+            fail("%s: cyclic YAML alias is not a JSON value" % path)
+            return False
+        active.add(id(value))
+        try:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if not isinstance(key, str):
+                        fail("%s: mapping keys must be strings, got %s" % (path, _typename(key)))
+                        return False
+                    if not visit(child, "%s.%s" % (path, key), depth + 1):
+                        return False
+            else:
+                for i, child in enumerate(value):
+                    if not visit(child, "%s[%d]" % (path, i), depth + 1):
+                        return False
+            return True
+        finally:
+            active.remove(id(value))
+
+    return visit(doc, "$", 0)
+
+
+def matches(inst, schema, path):
+    start = len(errors)
+    validate(inst, schema, path)
+    result = len(errors) == start
+    del errors[start:]
+    return result
 
 
 def validate(inst, schema, path="$"):
@@ -273,6 +328,12 @@ def validate(inst, schema, path="$"):
     )
     if unknown:
         raise UnsupportedSchema("unsupported schema keywords: %s" % ", ".join(unknown))
+    for sub in schema.get("allOf", []):
+        validate(inst, sub, path)
+    if "if" in schema and matches(inst, schema["if"], path):
+        validate(inst, schema.get("then", {}), path)
+    if "not" in schema and matches(inst, schema["not"], path):
+        fail("%s: forbidden value %r" % (path, inst))
     t = schema.get("type")
     if t is not None and not _is(inst, t):
         fail("%s: expected %s, got %s" % (path, t, _typename(inst)))
@@ -321,6 +382,10 @@ def validate(inst, schema, path="$"):
                 if canon in seen:
                     fail("%s[%d]: duplicate item" % (path, i))
                 seen.add(canon)
+        if "contains" in schema and not any(
+                matches(elem, schema["contains"], "%s[%d]" % (path, i))
+                for i, elem in enumerate(inst)):
+            fail("%s: no item matches contains schema" % path)
 
 
 def main():
@@ -350,10 +415,10 @@ def main():
         try:
             doc = yaml.safe_load(raw)
             parsed = True
-        except yaml.YAMLError as exc:
+        except (yaml.YAMLError, ValueError, OverflowError, RecursionError) as exc:
             fail("$: yaml parse error: %s" % " ".join(str(exc).split()))
 
-    if parsed:
+    if parsed and check_json_value(doc):
         if doc is None and not raw.strip():
             fail("$: document is empty")
         try:
@@ -361,18 +426,6 @@ def main():
         except UnsupportedSchema as exc:
             sys.stderr.write("aos seat check: %s\n" % exc)
             return 2
-        if isinstance(doc, dict) and isinstance(doc.get("behavior"), list) \
-                and "orchestrate" in doc["behavior"]:
-            caps = doc.get("capabilities")
-            if isinstance(caps, list):
-                for cap in caps:
-                    if isinstance(cap, str) and cap in FORBIDDEN_ORCH_CAPS:
-                        fail("behavior orchestrate forbids capability '%s'" % cap)
-            toolsets = doc.get("toolsets")
-            if isinstance(toolsets, list):
-                for toolset in toolsets:
-                    if isinstance(toolset, str) and toolset in FORBIDDEN_ORCH_TOOLSETS:
-                        fail("behavior orchestrate forbids write-capable toolset '%s'" % toolset)
 
     payload = {
         "schema": "aos-seat-check.v1",
@@ -387,7 +440,7 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 PYCHECK
-)
+)"
 			;;
 		-h|--help|help)
 			seat_usage
