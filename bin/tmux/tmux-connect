@@ -26,6 +26,10 @@ EXTRA_REGISTRIES="${TMUX_CONNECT_EXTRA_REGISTRIES:-}"
 
 usage() {
     sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    printf '%s\n' \
+        'tmux-connect --new-argv <host> <session> --cwd <absolute> [--alias <name>] [--profile <name>] [--request-id <id>] [--timeout <1..60>] -- <absolute-executable> [argv...]' \
+        'tmux-connect --sandbox --new-argv <host> <sandbox> <session> --cwd <absolute> -- <absolute-executable> [argv...]' \
+        'new-argv is direct execution; it does not initialize interactive ZSH.'
 }
 
 SESSION_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/tmux-connect/sessions"
@@ -376,6 +380,235 @@ cmd_picker() {
 # shellcheck source=tmux-connect-sandbox.inc
 . "$SCRIPT_DIR/tmux-connect-sandbox.inc"
 
+# Explicit direct-argv execution, distinct from interactive shell initialization.
+# Only the short-lived control client is bounded; persistent sessions are never killed.
+launch_reject() {
+    printf '{"schema":"tmux-connect.launch.v1","creation":"not_attempted","diagnostic":"%s","native_resume_locator":null,"first_response":null}\n' "$1"
+}
+
+launch_argv_limits() {
+    # C locale makes bash string lengths bytes; keep it local to validation.
+    local LC_ALL=C bytes=0 arg
+    if [[ "$#" -gt 256 ]]; then
+        launch_reject argv_count_limit
+        return 2
+    fi
+    for arg in "$@"; do
+        bytes=$((bytes + ${#arg} + 1))
+        if [[ "$bytes" -gt 16384 ]]; then
+            launch_reject argv_bytes_limit
+            return 2
+        fi
+    done
+}
+
+launch_new_argv() {
+    case "${TMUX_CONNECT_AGENT_MODE:-0}" in
+        0|'') ;;
+        *)
+            # This base has no agent-custody adapter; never fall back to SSH.
+            launch_reject agent_custody_mode_unsupported
+            return 2
+            ;;
+    esac
+    launch_argv_limits "$@" || return "$?"
+    if ! command -v python3 >/dev/null 2>&1; then
+        printf '%s\n' '{"schema":"tmux-connect.launch.v1","creation":"not_attempted","diagnostic":"python3_unavailable","native_resume_locator":null,"first_response":null}'
+        return 127
+    fi
+    python3 - "$SCRIPT_DIR/tmux-connect" "$REGISTRY" "$EXTRA_REGISTRIES" "$@" <<'PY'
+import hashlib
+import json
+import os
+import re
+import selectors
+import shlex
+import subprocess
+import sys
+import time
+
+source, registry, extras, mode, *args = sys.argv[1:]
+receipt = {
+    "schema": "tmux-connect.launch.v1",
+    "host": None, "sandbox": None, "session": None, "pane": None,
+    "cwd": None, "executable": None, "request_id": None,
+    "declared_alias": None, "declared_profile": None, "resolved_home": None,
+    "source": {"adapter": "tmux-connect", "interface": "new-argv.v1"},
+    "execution": "tmux-direct-argv",
+    "interactive_shell_initialized": False,
+    "profile": "caller_preserved_unread",
+    "model": None, "account": "native_inherited_unverified",
+    "creation": "not_attempted", "native_resume_locator": None,
+    "first_response": None, "registration": None, "heartbeat": None,
+    "attach_argv": None, "exit_code": None, "diagnostic": None,
+}
+started = time.monotonic()
+
+
+def finish(code, diagnostic=None):
+    receipt["diagnostic"] = diagnostic
+    receipt["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+    print(json.dumps(receipt, separators=(",", ":")))
+    raise SystemExit(code)
+
+
+def ident(value):
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value))
+
+
+def absolute(value):
+    return (value.startswith("/") and
+            not any(c in value for c in "\x00\r\n*?[]") and
+            not any(p in (".", "..") for p in value.split("/")))
+
+
+def control(argv, deadline):
+    # Capture only bounded control output, never a pane transcript or an env dump.
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    selector = selectors.DefaultSelector()
+    for stream in (proc.stdout, proc.stderr):
+        selector.register(stream, selectors.EVENT_READ)
+    output = {proc.stdout: bytearray(), proc.stderr: bytearray()}
+    size = 0
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                proc.kill()
+                return None, b"", b"", "control_timeout"
+            for key, _ in selector.select(min(remaining, 0.1)):
+                chunk = os.read(key.fileobj.fileno(), 4096)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                size += len(chunk)
+                if size > 65536:
+                    proc.kill()
+                    return None, b"", b"", "control_output_limit"
+                output[key.fileobj].extend(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            proc.kill()
+            return None, b"", b"", "control_timeout"
+        try:
+            status = proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return None, b"", b"", "control_timeout"
+        return status, bytes(output[proc.stdout]), bytes(output[proc.stderr]), None
+    finally:
+        selector.close()
+        proc.stdout.close()
+        proc.stderr.close()
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+try:
+    count = 3 if mode == "sandbox" else 2
+    if len(args) < count + 4:
+        finish(2, "invalid_launch_arguments")
+    host = args.pop(0)
+    box = args.pop(0) if mode == "sandbox" else None
+    session = args.pop(0)
+    if not ident(host) or not ident(session) or (box is not None and not ident(box)):
+        finish(2, "invalid_target_identity")
+    receipt.update(host=host, sandbox=box, session=session)
+    cwd, request, timeout = None, None, 15
+    while args and args[0] != "--":
+        flag = args.pop(0)
+        if not args or flag not in ("--cwd", "--alias", "--profile", "--request-id", "--timeout"):
+            finish(2, "invalid_launch_option")
+        value = args.pop(0)
+        if flag == "--cwd":
+            if cwd is not None or not absolute(value):
+                finish(2, "invalid_cwd")
+            cwd = value
+        elif flag in ("--alias", "--profile"):
+            field = "declared_" + flag[2:]
+            if receipt[field] is not None or not ident(value):
+                finish(2, "invalid_declared_identity")
+            receipt[field] = value
+        elif flag == "--request-id":
+            if request is not None or not ident(value):
+                finish(2, "invalid_request_id")
+            request = value
+        else:
+            if not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= 60:
+                finish(2, "invalid_timeout")
+            timeout = int(value)
+    if not args or args.pop(0) != "--" or not args or cwd is None:
+        finish(2, "missing_cwd_or_executable")
+    executable = args[0]
+    if not absolute(executable):
+        finish(2, "invalid_executable")
+    receipt.update(cwd=cwd, executable=executable, request_id=request)
+    with open(source, "rb") as handle:
+        receipt["source"]["sha256"] = hashlib.sha256(handle.read()).hexdigest()
+    with open(os.path.join(os.path.dirname(source), "tmux-connect-sandbox.inc"), "rb") as handle:
+        receipt["source"]["sandbox_sha256"] = hashlib.sha256(handle.read()).hexdigest()
+    target = "local" if host in ("local", "mac") else None
+    if target is None:
+        for path in [registry] + [p for p in extras.split(":") if p]:
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    for line in handle:
+                        if not line.strip() or line.lstrip().startswith("#"):
+                            continue
+                        fields = line.rstrip("\n").split("|")
+                        if len(fields) >= 2 and fields[0] == host:
+                            target = fields[1]
+                            break
+            except FileNotFoundError:
+                continue
+            if target is not None:
+                break
+    if target is None:
+        finish(2, "unknown_registered_host")
+    local = target == "local"
+    if local and box is None:
+        if not os.path.isdir(cwd):
+            finish(2, "cwd_unavailable")
+        if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+            finish(2, "native_executable_unavailable")
+    # Multiple tmux shell-command arguments execute directly. env supplies a
+    # second argument even for a launcher with no CLI args; no shell -c is used.
+    command = ["tmux", "new-session", "-d", "-s", session, "-c", cwd,
+               "-P", "-F", "#{session_name}\t#{pane_id}",
+               "/usr/bin/env", "--"] + args
+    if box is not None:
+        command = ["podman", "exec", box] + command
+    if not local:
+        # One attempt only, including exit 255: a lost reply can follow creation.
+        selected = target.split(",")[0].strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@:-]*", selected):
+            finish(2, "invalid_registered_ssh_target")
+        command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                   "--", selected, shlex.join(command)]
+    receipt["creation"] = "unknown"
+    status, stdout, stderr, failure = control(command, time.monotonic() + timeout)
+    receipt["exit_code"] = status
+    if failure:
+        finish(1, failure)
+    if status:
+        if b"duplicate session:" in stderr.lower():
+            receipt["creation"] = "collision"
+            finish(1, "session_collision")
+        finish(1, "transport_or_control_failure" if not local else "control_failure")
+    fields = stdout.decode("utf-8", errors="replace").strip().split("\t")
+    if len(fields) != 2 or fields[0] != session or not re.fullmatch(r"%[0-9]+", fields[1]):
+        finish(1, "unverified_creation_reply")
+    receipt.update(creation="created", pane=fields[1])
+    receipt["attach_argv"] = (["tmux-connect", "--sandbox", host, box, session]
+                              if box else ["tmux-connect", host, session])
+    finish(0)
+except (OSError, ValueError, subprocess.SubprocessError):
+    finish(1, "launcher_dependency_or_control_error")
+PY
+}
+
+
 # --- Main ---
 
 case "${1:-}" in
@@ -383,6 +616,10 @@ case "${1:-}" in
     -l|--list|list)         cmd_list ;;
     --ls)                   cmd_ls "${2:-local}" ;;
     --ls-cache)             cmd_ls_cache "${2:-local}" ;;
+    --new-argv)
+        shift
+        launch_new_argv host "$@"
+        ;;
     --sandbox)
         shift
         sandbox_main "$@"
@@ -390,7 +627,9 @@ case "${1:-}" in
     -s|--status|status)     cmd_status ;;
     "")                     cmd_picker ;;
     *)
-        if [[ "${2:-}" == "--ls" ]]; then
+        if [[ "${2:-}" == "--new-argv" ]]; then
+            launch_new_argv host "$1" "${@:3}"
+        elif [[ "${2:-}" == "--ls" ]]; then
             cmd_ls "$1"
         else
             connect_host "$1" "${2:-}"

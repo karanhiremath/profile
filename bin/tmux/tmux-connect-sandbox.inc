@@ -213,6 +213,10 @@ connect_sandbox() {
 
 sandbox_main() {
     case "${1:-}" in
+        --new-argv)
+            shift
+            launch_new_argv sandbox "$@"
+            ;;
         -h|--help|help)
             usage
             ;;
@@ -230,7 +234,9 @@ sandbox_main() {
             return 2
             ;;
         *)
-            if [[ "${2:-}" == "--ls" ]]; then
+            if [[ "${3:-}" == "--new-argv" ]]; then
+                launch_new_argv sandbox "$1" "$2" "${@:4}"
+            elif [[ "${2:-}" == "--ls" ]]; then
                 cmd_sandbox_ls "$1"
             elif [[ -z "${2:-}" ]]; then
                 echo "tmux-connect: sandbox name required (try: tmux-connect --sandbox $1 --ls)" >&2

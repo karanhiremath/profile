@@ -20,12 +20,22 @@ valid_tmux_ident "home" || fail "home should be valid"
 valid_tmux_ident "bad name" && fail "spaces should be invalid"
 valid_tmux_ident 'foo;rm' && fail "metacharacters should be invalid"
 
-cmd="$(sandbox_attach_cmd "codex-sandbox" "home" "cxis-devlarge-2")"
+cmd="$(sandbox_attach_cmd "codex-sandbox" "home" "test-host")"
 printf '%s\n' "$cmd" | grep -q 'podman exec -it' || fail "attach cmd missing podman exec -it"
 printf '%s\n' "$cmd" | grep -q 'new-session -A -s' || fail "attach cmd missing new-session -A"
-printf '%s\n' "$cmd" | grep -Fq "'[#S] codex-sandbox @ cxis-devlarge-2 '" || fail "status-left missing sandbox @ host"
+printf '%s\n' "$cmd" | grep -Fq "'[#S] codex-sandbox @ test-host '" || fail "status-left missing sandbox @ host"
 
 cmd="$(sandbox_sessions_cmd "codex-sandbox-hostctl")"
 [[ "$cmd" == "podman exec codex-sandbox-hostctl tmux list-sessions" ]] || fail "sessions cmd: $cmd"
+
+# Exercise forwarding only; the launch helper is stubbed, never executed.
+launch_new_argv() {
+    [[ "$#" == 9 && "$1" == sandbox && "$2" == test-host &&
+       "$3" == test-box && "$4" == fresh && "$5" == --cwd &&
+       "$6" == /work && "$7" == -- && "$8" == /tool/claude &&
+       "$9" == "literal; argument" ]] || fail "dedicated argv forwarding"
+}
+sandbox_main --new-argv test-host test-box fresh --cwd /work -- /tool/claude "literal; argument"
+sandbox_main test-host test-box --new-argv fresh --cwd /work -- /tool/claude "literal; argument"
 
 echo "ok"
