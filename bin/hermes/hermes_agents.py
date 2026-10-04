@@ -548,20 +548,6 @@ def _stage_cursor_key_slots(key: str) -> None:
     agent_env.chmod(0o600)
 
 
-def _stage_cursor_key_slots(key: str) -> None:
-    """Write the Cursor key to the slots Hermes / cursor-agent actually read."""
-    if not key:
-        return
-    _upsert_env(MAIN_HOME / ".env", {"CURSOR_API_KEY": key})
-    agent_env = Path.home() / ".cursor" / "agent.env"
-    agent_env.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_env_file(agent_env)
-    existing["CURSOR_API_KEY"] = key
-    lines = [f"{k}={v}" for k, v in existing.items() if v]
-    agent_env.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    agent_env.chmod(0o600)
-
-
 def load_profile(name: str) -> Dict[str, Any]:
     path = find_profile(name)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -976,8 +962,16 @@ def _sync_eikon_into_homes(name: str, *homes: Path) -> None:
             continue
 
 
-def _merge_json_file(path: Path, updates: Dict[str, Any]) -> None:
-    """Merge top-level JSON preferences, preserving unrelated Herm TUI state."""
+def _force_config() -> bool:
+    return os.environ.get("HERMES_AGENT_FORCE_CONFIG", "").strip() in {"1", "true", "yes"}
+
+
+def _merge_json_file(path: Path, updates: Dict[str, Any], *, force: bool = False) -> None:
+    """Merge top-level JSON preferences, preserving unrelated Herm TUI state.
+
+    Theme pins (`nighttideDefault`) and an already-written theme survive YAML
+    rematerialize unless HERMES_AGENT_FORCE_CONFIG=1 or force=True.
+    """
     existing: Dict[str, Any] = {}
     if path.exists():
         try:
@@ -1096,28 +1090,6 @@ def _ensure_skill_links(home: Path) -> None:
         for child in sorted(shared.iterdir()):
             if child.is_dir() and (child / "SKILL.md").exists():
                 _link_skill_tree(skills / child.name, child)
-
-
-def _ensure_cartesia_plugin(home: Path) -> None:
-    plugins = home / "plugins"
-    plugins.mkdir(exist_ok=True)
-    link = plugins / "cartesia"
-    try:
-        if link.is_symlink() and link.resolve() == PLUGIN_DIR.resolve():
-            return
-    except OSError:
-        pass
-    if link.is_symlink() or link.is_file():
-        try:
-            link.unlink()
-        except FileNotFoundError:
-            pass
-    if link.exists():
-        return
-    try:
-        link.symlink_to(PLUGIN_DIR)
-    except FileExistsError:
-        return
 
 
 def _ensure_cartesia_plugin(home: Path) -> None:

@@ -111,11 +111,13 @@ class HermesAgentsLlmRenderTest(unittest.TestCase):
                 '{"together": {"type": "api_key", "key": "pi_together_test_key"}}\n'
             )
             env = {
+                "HOME": str(root),
                 "XDG_DATA_HOME": str(root / "data"),
                 "HERMES_AGENT_PROFILE_PATH": str(profiles),
                 "PI_AGENT_DIR": str(pi_agent),
             }
             with patch.dict(os.environ, env, clear=False):
+                module = load_module()  # binds MAIN_HOME/~/.cursor under fake HOME
                 os.environ.pop("TOGETHER_API_KEY", None)
                 home = module.materialize("chief-of-staff-work")
             env_file = module._read_env_file(home / ".env")
@@ -148,11 +150,13 @@ class HermesAgentsLlmRenderTest(unittest.TestCase):
                 '{"cursor": {"type": "api_key", "key": "pi_cursor_test_key"}}\n'
             )
             env = {
+                "HOME": str(root),
                 "XDG_DATA_HOME": str(root / "data"),
                 "HERMES_AGENT_PROFILE_PATH": str(profiles),
                 "PI_AGENT_DIR": str(pi_agent),
             }
             with patch.dict(os.environ, env, clear=False):
+                module = load_module()  # binds MAIN_HOME/~/.cursor under fake HOME
                 os.environ.pop("CURSOR_API_KEY", None)
                 home = module.materialize("chief-of-staff-work")
             env_file = module._read_env_file(home / ".env")
