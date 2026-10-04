@@ -751,6 +751,12 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         os.environ.get("HERMES_AGENT_LLM_THINKING", "").strip().lower()
         or str(llm.get("thinking") or llm.get("reasoning_effort") or "").strip().lower()
     )
+    plugins_enabled: List[str] = []
+    if tts_on or stt_on:
+        plugins_enabled.append("cartesia")
+    herm_prefs = (profile.get("herm") or {}).get("preferences") or {}
+    if isinstance(herm_prefs, dict) and herm_prefs and "eikon" not in plugins_enabled:
+        plugins_enabled.append("eikon")
     cfg: Dict[str, Any] = {
         "model": model_cfg,
         "toolsets": toolsets,
