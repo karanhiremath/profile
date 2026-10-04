@@ -1,0 +1,152 @@
+#!/bin/bash
+# Move Claude Code's hot-write state dirs off a shared NFS home onto host-local disk.
+#
+# On hosts where $HOME is NFS (mounted `hard`), Claude Code's single main thread
+# blocks in rpc_wait_bit_killable on transcript/file-history writes, freezing the
+# TUI for minutes. Config (settings, CLAUDE.md, skills, credentials) stays on NFS;
+# only per-session churn moves. Each host resolves the symlinks to its own local
+# disk, so session state becomes host-local (sessions/ pids already are).
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: bin/claude/state-offload [status|migrate|ensure|revert] [--dry-run]
+
+  status   (default) show each managed dir: nfs | linked | dangling
+  migrate  copy each dir to local disk, park the original under
+           <claude_dir>/.nfs-offloaded/, replace it with a symlink. Safe with
+           live sessions: Claude appends by path, and a catch-up sync runs
+           after the swap.
+  ensure   on another host sharing the same $HOME: create missing link
+           targets, seeding from .nfs-offloaded/ when present. Cheap/no-op
+           when nothing is dangling.
+  revert   copy local state back to NFS and replace links with real dirs.
+
+Env:
+  CLAUDE_CONFIG_DIR   default ~/.claude
+  CLAUDE_STATE_ROOT   default /scratch/people/$USER/state/claude
+EOF
+}
+
+CMD="status"
+DRY_RUN=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        status|migrate|ensure|revert) CMD="$1"; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+STATE_ROOT="${CLAUDE_STATE_ROOT:-/scratch/people/${USER:-$(id -un)}/state/claude}"
+ARCHIVE="${CLAUDE_DIR}/.nfs-offloaded"
+
+# Per-session churn only. Not config (settings, skills, agents, plugins, hooks),
+# not daemon/ (sockets) or jobs/ (cross-host job state).
+DIRS=(projects file-history session-env shell-snapshots sessions debug
+      paste-cache plans startup-perf cache backups)
+
+run() {
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        echo "dry-run: $*" >&2
+    else
+        "$@"
+    fi
+}
+
+fs_type() { stat -f -c %T "$1" 2>/dev/null || echo unknown; }
+
+require_local_root() {
+    local parent
+    parent="$(dirname "$STATE_ROOT")"
+    while [[ ! -d "$parent" ]]; do parent="$(dirname "$parent")"; done
+    if [[ ! -w "$parent" ]]; then
+        echo "ERROR: state root not writable: $STATE_ROOT" >&2
+        exit 1
+    fi
+    case "$(fs_type "$parent")" in
+        nfs|nfs4|cifs|smb2|fuseblk|unknown)
+            echo "ERROR: state root is not on local disk ($(fs_type "$parent")): $STATE_ROOT" >&2
+            exit 1 ;;
+    esac
+}
+
+state_of() {
+    local src="$CLAUDE_DIR/$1"
+    if [[ -L "$src" ]]; then
+        [[ -e "$src" ]] && echo linked || echo dangling
+    elif [[ -d "$src" ]]; then
+        echo nfs
+    else
+        echo absent
+    fi
+}
+
+cmd_status() {
+    printf '%-16s %-9s %s\n' DIR STATE TARGET
+    local d
+    for d in "${DIRS[@]}"; do
+        printf '%-16s %-9s %s\n' "$d" "$(state_of "$d")" \
+            "$(readlink "$CLAUDE_DIR/$d" 2>/dev/null || true)"
+    done
+}
+
+cmd_migrate() {
+    require_local_root
+    run mkdir -p "$STATE_ROOT" "$ARCHIVE"
+    local d src dst
+    for d in "${DIRS[@]}"; do
+        src="$CLAUDE_DIR/$d"
+        dst="$STATE_ROOT/$d"
+        case "$(state_of "$d")" in
+            linked|dangling) echo "skip $d: already a symlink" >&2; continue ;;
+            absent) run mkdir -p "$dst"; run ln -s "$dst" "$src"; continue ;;
+        esac
+        if [[ -e "$ARCHIVE/$d" ]]; then
+            echo "ERROR: $ARCHIVE/$d already exists; refusing to overwrite" >&2
+            exit 1
+        fi
+        echo "migrate $d -> $dst" >&2
+        run mkdir -p "$dst"
+        run rsync -a "$src/" "$dst/"
+        # Same-filesystem rename, then link: the gap is two syscalls.
+        run mv "$src" "$ARCHIVE/$d"
+        run ln -s "$dst" "$src"
+        # Catch writes that landed in the old dir between rsync and mv.
+        run rsync -a --update "$ARCHIVE/$d/" "$dst/"
+    done
+}
+
+cmd_ensure() {
+    local d src dst
+    for d in "${DIRS[@]}"; do
+        [[ "$(state_of "$d")" == dangling ]] || continue
+        require_local_root
+        src="$CLAUDE_DIR/$d"
+        dst="$(readlink "$src")"
+        echo "ensure $d -> $dst" >&2
+        run mkdir -p "$dst"
+        if [[ -d "$ARCHIVE/$d" ]]; then
+            run rsync -a "$ARCHIVE/$d/" "$dst/"
+        fi
+    done
+}
+
+cmd_revert() {
+    local d src dst
+    for d in "${DIRS[@]}"; do
+        [[ "$(state_of "$d")" == linked ]] || continue
+        src="$CLAUDE_DIR/$d"
+        dst="$(readlink "$src")"
+        echo "revert $d <- $dst" >&2
+        run mkdir -p "$src.revert-tmp"
+        run rsync -a "$dst/" "$src.revert-tmp/"
+        run rm "$src"
+        run mv "$src.revert-tmp" "$src"
+    done
+}
+
+"cmd_${CMD//-/_}"
