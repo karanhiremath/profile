@@ -18,6 +18,14 @@ Usage:
     alias_seat.py write-seat <profile> <alias>
     alias_seat.py pin-env <alias-or-profile>
     alias_seat.py homes <profile>
+    alias_seat.py next-seat <alias-or-profile>
+    alias_seat.py sessions <alias-or-profile>
+
+Spawn-always contract (enforced by agents/cosw launchers):
+launchers NEVER attach to or switch a client toward an existing TUI. A busy
+seat mints the next free sibling seat (`a1`, `a2`, ...) with its own
+HERMES_HOME and tmux session via `next-seat`. Attaching is explicit only
+(`agents attach` / `cosw attach`) and listing is `agents sessions`.
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -530,6 +539,89 @@ def attach_target(profile: str, session: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def _base_seat(key: str) -> Optional[Dict[str, Any]]:
+    seat = seat_by_alias(key) or seat_by_profile(key)
+    if seat is None:
+        parsed = parse_instance_profile(key)
+        seat = parsed[0] if parsed else None
+    return seat
+
+
+def family_sessions(key: str) -> Dict[str, Any]:
+    """List tmux sessions for a seat family (base session + <base>-* lanes)."""
+    seat = _base_seat(key)
+    if seat is None:
+        raise SystemExit(f"ERROR: unknown seat: {key}")
+    base_session = str(seat["session"])
+    rows: List[Dict[str, Any]] = []
+    proc = _tmux(
+        "list-sessions",
+        "-F",
+        "#{session_name}\t#{session_attached}\t#{session_created_string}",
+    )
+    if proc.returncode == 0:
+        for line in proc.stdout.splitlines():
+            parts = line.split("\t")
+            name = parts[0].strip()
+            if name != base_session and not name.startswith(f"{base_session}-"):
+                continue
+            instance = (
+                name[len(base_session) + 1:]
+                if name.startswith(f"{base_session}-")
+                else ""
+            )
+            profile = str(seat["profile"]) + (f"-{instance}" if instance else "")
+            rows.append({
+                "session": name,
+                "profile": profile,
+                "instance": instance,
+                "attached": len(parts) > 1 and parts[1] == "1",
+                "created": parts[2] if len(parts) > 2 else "",
+                "lock_pid": lock_pid(profile),
+            })
+    return {
+        "family": seat["family"],
+        "base_session": base_session,
+        "sessions": rows,
+    }
+
+
+def next_seat(key: str) -> Dict[str, Any]:
+    """Mint the next free sibling seat (a1, a2, ...): own home + free tmux name."""
+    seat = _base_seat(key)
+    if seat is None:
+        raise SystemExit(f"ERROR: unknown seat: {key}")
+    base_profile = str(seat["profile"])
+    base_session = str(seat["session"])
+    # Sibling-of-lane: next-seat on an instance profile nests under that lane
+    # (chief-of-staff-work-o1 -> chief-of-staff-work-o1-a1, tmux cosw-o1-a1).
+    key_stripped = key.strip()
+    parsed = parse_instance_profile(key_stripped)
+    if parsed is not None and key_stripped != base_profile:
+        base_profile = key_stripped
+        base_session = f"{base_session}-{parsed[1]}"
+    have_tmux = shutil.which("tmux") is not None
+    for i in range(1, 100):
+        instance = f"a{i}"
+        profile = validate_instance(base_profile, instance)
+        session = f"{base_session}-{instance}"
+        if lock_pid(profile) is not None:
+            continue
+        if have_tmux and _tmux("has-session", "-t", session).returncode == 0:
+            continue
+        root = isolated_root(profile)
+        return {
+            "family": seat["family"],
+            "lane": seat["lane"],
+            "instance": instance,
+            "profile": profile,
+            "session": session,
+            "root": str(root),
+            "runtime_home": str(runtime_home(profile, root)),
+        }
+    raise SystemExit("ERROR: no free sibling seat (a1..a99 exhausted)")
+
+
 def homes_conflict(profile: str) -> List[str]:
     """Detect another alias family sharing this isolated home."""
     root = isolated_root(profile)
@@ -590,6 +682,14 @@ def main(argv: List[str]) -> int:
             return 1
         print(target)
         return 0
+    if cmd == "next-seat":
+        if not rest:
+            raise SystemExit("ERROR: next-seat needs an alias or profile")
+        return emit(next_seat(rest[0]))
+    if cmd == "sessions":
+        if not rest:
+            raise SystemExit("ERROR: sessions needs an alias or profile")
+        return emit(family_sessions(rest[0]))
     if cmd == "write-seat":
         if len(rest) < 2:
             raise SystemExit("ERROR: write-seat needs <profile> <alias>")

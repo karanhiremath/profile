@@ -12,6 +12,12 @@
 #   secrets-refresh            Sync Cursor key from 1Password once into local cache
 #   up <profile> [opts] [-- ...args]
 #                              Materialize the isolated home and launch the agent
+#   sessions <alias|profile>   List running tmux sessions for a seat family
+#   attach <alias|profile> [s] Explicitly attach to a live TUI pane
+#
+# Spawn-always: `up` NEVER attaches to or switches a client toward an existing
+# TUI. A busy home (one pane per home) mints the next free sibling seat via
+# alias_seat.py next-seat (own HERMES_HOME + tmux session) and spawns there.
 #
 # Convenience wrappers:
 #   cos                        agents up chief-of-staff
@@ -30,13 +36,13 @@
 #       --host, --no-sandbox        Host-native local terminal
 #       --sandbox                   Compose sandbox (work-devboxes or personal hermes-sandboxes)
 #       --check                     Run an endpoint health check before launching
-#       --here                      Launch in this pane (never a second TUI on a live home)
-#       --force-tui                 Fail instead of attaching when a TUI already holds the home
+#       --here                      Launch the TUI in this pane
+#       --force-tui                 Never attach: a busy home mints a sibling seat
 #       -- <args>                   Pass remaining args through to hermes/herm
 #
-# TUI: many panes per HERMES_HOME. Each pane owns its gateway pipe + Hermes
-# session. Extra panes start `--fresh` (do not resume the live session).
-# Coordinate via `atop vi` buffers, not a shared rendered TUI.
+# Spawn-always: `up` spawns a NEW TUI every time and never steals the client.
+# One pane per home: a busy home mints the next free sibling seat (own
+# HERMES_HOME + tmux session) via alias_seat.py next-seat.
 #
 # Each agent runs under its own HERMES_HOME so it never touches ~/.hermes.
 set -euo pipefail
@@ -124,6 +130,47 @@ attach_live_tui() {
   exec tmux attach-session -t "$target"
 }
 
+# Spawn-always: busy seats never steal the client. Mint the next free sibling
+# seat (own HERMES_HOME + tmux session) instead. Sets MINT_PROFILE/MINT_SESSION.
+mint_sibling_seat() {
+  MINT_PROFILE=""
+  MINT_SESSION=""
+  local _next _profile _session
+  _next="$("$PY" "$SEAT_PY" next-seat "$1" 2>/dev/null)" || return 1
+  _profile="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("profile", ""))')"
+  _session="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("session", ""))')"
+  [ -n "$_profile" ] && [ -n "$_session" ] || return 1
+  MINT_PROFILE="$_profile"
+  MINT_SESSION="$_session"
+}
+
+# Derive per-seat runtime state from the current $profile. Sets: home,
+# runtime_home, runtime_profile, alias_name, seat_session (tmux session name).
+derive_runtime() {
+  home="$(materialize "$profile")"
+  # Cos YAML / older install-tui can leave a theme name the running herm fork
+  # does not ship. Re-apply host nighttide built-ins + prefs before exec.
+  if [ -x "$SCRIPT_DIR/apply-nighttide-theme" ]; then
+    "$SCRIPT_DIR/apply-nighttide-theme" --quiet || true
+  fi
+  runtime_profile="$(sed -n '1p' "$home/active_profile" 2>/dev/null || true)"
+  runtime_home="$home"
+  if [ -n "$runtime_profile" ] && [ "$runtime_profile" != "default" ] && [ -d "$home/profiles/$runtime_profile" ]; then
+    runtime_home="$home/profiles/$runtime_profile"
+  fi
+  alias_name="$(alias_for_profile "$profile")"
+  if [ -n "$alias_name" ]; then
+    "$PY" "$SEAT_PY" write-seat "$profile" "$alias_name" >/dev/null
+    export_pin "$profile"
+  fi
+  if type hermes_ensure_short_home >/dev/null 2>&1; then
+    runtime_home="$(hermes_ensure_short_home "$profile" "$runtime_home")"
+  fi
+  seat_session="$("$PY" "$SEAT_PY" resolve-profile "$profile" 2>/dev/null | sed -n 's/.*"session": *"\([^"]*\)".*/\1/p')"
+  [ -n "$seat_session" ] || seat_session="${alias_name:-$profile}"
+  echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home alias=${alias_name:-none} session=$seat_session"
+}
+
 ensure_profile_sandbox() {
   local profile="$1"
   local work="${COSW_WORK_DEVBOX:-$HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox}"
@@ -156,6 +203,18 @@ case "$cmd" in
   resolve)
     [ "$#" -ge 1 ] || die "resolve needs a profile name"
     "$PY" "$PY_BACKEND" resolve "$1"
+    ;;
+
+  sessions)
+    [ "$#" -ge 1 ] || die "usage: agents sessions <alias-or-profile>"
+    exec "$PY" "$SEAT_PY" sessions "$1"
+    ;;
+
+  attach)
+    [ "$#" -ge 1 ] || die "usage: agents attach <alias-or-profile> [session]"
+    "$PY" "$SEAT_PY" attach-target "$1" "${2:-}" >/dev/null 2>&1 \
+      || die "no live TUI pane for $1 (list: agents sessions $1)"
+    attach_live_tui "$1" "${2:-}"
     ;;
 
   new)
@@ -259,26 +318,7 @@ case "$cmd" in
     [ -n "$surface" ] || surface="$("$PY" "$PY_BACKEND" resolve "$profile" | sed -n 's/.*"surface": *"\([^"]*\)".*/\1/p')"
     [ -n "$surface" ] || surface="cli"
 
-    home="$(materialize "$profile")"
-    # Cos YAML / older install-tui can leave a theme name the running herm fork
-    # does not ship. Re-apply host nighttide built-ins + prefs before exec.
-    if [ -x "$SCRIPT_DIR/apply-nighttide-theme" ]; then
-      "$SCRIPT_DIR/apply-nighttide-theme" --quiet || true
-    fi
-    runtime_profile="$(sed -n '1p' "$home/active_profile" 2>/dev/null || true)"
-    runtime_home="$home"
-    if [ -n "$runtime_profile" ] && [ "$runtime_profile" != "default" ] && [ -d "$home/profiles/$runtime_profile" ]; then
-      runtime_home="$home/profiles/$runtime_profile"
-    fi
-    alias_name="$(alias_for_profile "$profile")"
-    if [ -n "$alias_name" ]; then
-      "$PY" "$SEAT_PY" write-seat "$profile" "$alias_name" >/dev/null
-      export_pin "$profile"
-    fi
-    if type hermes_ensure_short_home >/dev/null 2>&1; then
-      runtime_home="$(hermes_ensure_short_home "$profile" "$runtime_home")"
-    fi
-    echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home alias=${alias_name:-none}"
+    derive_runtime
 
     if [ "$do_check" -eq 1 ]; then
       HERMES_HOME="$runtime_home" "$PY" "$PLUGIN_DIR/validate.py" --tts --stt || die "endpoint health check failed; not launching"
@@ -286,22 +326,35 @@ case "$cmd" in
 
     export HERMES_HOME="$runtime_home"
     if [ "$surface" = "tui" ]; then
+      # Spawn-always: never attach to or steal the client for an existing TUI.
+      # One pane per home, so a busy seat mints the next free sibling seat
+      # (own HERMES_HOME + tmux session) and spawns a NEW TUI there.
+      _busy="$("$PY" "$SEAT_PY" lock-pid "$profile" 2>/dev/null || true)"
+      _busy_reason=""
+      [ -n "${_busy:-}" ] && _busy_reason="home-held (pid $_busy)"
+      if [ -z "$_busy_reason" ] && [ "$here" -eq 0 ] && [ -z "${TMUX:-}" ] \
+         && command -v tmux >/dev/null 2>&1 \
+         && tmux has-session -t "$seat_session" 2>/dev/null; then
+        _busy_reason="session-exists ($seat_session)"
+      fi
+      if [ -n "$_busy_reason" ]; then
+        mint_sibling_seat "$profile" \
+          || die "$profile busy ($_busy_reason) and no free sibling seat"
+        echo "spawn-always: $profile busy ($_busy_reason); minted sibling seat $MINT_PROFILE (session $MINT_SESSION)" >&2
+        profile="$MINT_PROFILE"
+        derive_runtime
+        export HERMES_HOME="$runtime_home"
+      fi
+      # Final safety: one pane per home; a racing holder is fatal, never attach.
       _held="$("$PY" "$SEAT_PY" lock-pid "$profile" 2>/dev/null || true)"
       if [ -n "${_held:-}" ]; then
-        if [ "$here" -eq 1 ] || [ "$force_tui" -eq 1 ]; then
-          die "HERMES_HOME already has a live TUI (pid $_held). One pane per home — extra panes close the gateway pipe and leave synthesizing hung."
-        fi
-        attach_live_tui "$profile" "${HERMES_ALIAS_SESSION:-}" \
-          || die "live TUI holds $runtime_home (pid $_held) but no tmux pane was found. Close that process; do not start a second pane."
+        die "HERMES_HOME already has a live TUI (pid $_held). Attach explicitly: agents attach ${alias_name:-$profile}"
       fi
       if [ "$here" -eq 0 ] && [ -n "$alias_name" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-        session="${HERMES_ALIAS_SESSION:-$alias_name}"
-        if ! tmux has-session -t "$session" 2>/dev/null; then
-          build_cmd=("$0" up "$profile" --surface tui --here)
-          [ ${#passthrough[@]} -eq 0 ] || build_cmd+=(-- "${passthrough[@]}")
-          tmux new-session -d -s "$session" -n 0 "${build_cmd[@]}"
-        fi
-        exec tmux attach-session -t "$session"
+        build_cmd=("$0" up "$profile" --surface tui --here)
+        [ ${#passthrough[@]} -eq 0 ] || build_cmd+=(-- "${passthrough[@]}")
+        tmux new-session -d -s "${HERMES_ALIAS_SESSION:-$seat_session}" -n 0 "${build_cmd[@]}"
+        exec tmux attach-session -t "${HERMES_ALIAS_SESSION:-$seat_session}"
       fi
       printf '%s\n' "$$" > "$runtime_home/.herm-tui.lock"
     fi
