@@ -1,0 +1,31 @@
+---
+- name: Install sesh when tool installs are opted in
+  ansible.builtin.command: "{{ profile_app_bin }}/sesh/install"
+  environment:
+    PROFILE_DIR: "{{ profile_repo_dir }}"
+    APP_BIN: "{{ profile_app_bin }}"
+  args:
+    chdir: "{{ profile_repo_dir }}"
+  when: profile_install_tools | bool
+  changed_when: true
+
+- name: Seed interactive SSH keys into the passwordless op-keychain store
+  ansible.builtin.command:
+    argv:
+      - "{{ profile_app_bin }}/op-keychain/op-keychain"
+      - seed-local
+      - ssh.termix.hostctl
+      - ssh.termix.iphone-hostctl
+      - ssh.termix.login
+  environment:
+    PROFILE_DIR: "{{ profile_repo_dir }}"
+  changed_when: true
+  when: profile_interactive_keychain_seed | default(true) | bool
+
+- name: Show interactive alias contract
+  ansible.builtin.debug:
+    msg:
+      - "mac = host tmux on macOS (khire-mac-mini)"
+      - "oma / oma-default = Omarchy instance tmux (session home); local when Omarchy is the host OS"
+      - "oma-s / mac-s = isolated podman sandbox tmux (distrohop family pool)"
+      - "keys = hauth unwrap-or-get ssh.termix.login when HAUTH_SVID set, else op-keychain get (never op read)"

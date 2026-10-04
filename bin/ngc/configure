@@ -1,0 +1,182 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Configure NGC CLI from the passwordless agent Keychain. Never prints the API key.
+# After `just op-keychain-seed` (or sync), this reads ngc.credential and never
+# calls `op`.
+
+usage() {
+    cat <<'EOF'
+Usage: bin/ngc/configure [--help]
+
+Read the NVIDIA NGC API key from op-keychain (or 1Password) and write ~/.ngc/config.
+
+Default secret:
+  op://Personal/home-mac-mini nvapi/credential
+
+Environment:
+  NGC_OP_REF       Override the 1Password secret reference
+  OP_ACCOUNT       1Password account (default: my.1password.com)
+  NGC_CLI_ORG      Optional org to persist (otherwise NGC default prompt)
+  NGC_CLI_TEAM     Optional team to persist
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+PATH="${HOME}/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:${PATH}"
+export PATH
+
+OP_ACCOUNT="${OP_ACCOUNT:-my.1password.com}"
+OP_REF="${NGC_OP_REF:-op://Personal/home-mac-mini nvapi/credential}"
+STATUS_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}"
+STATUS_FILE="${STATUS_DIR}/ngc-configure.status"
+LOG_FILE="${STATUS_DIR}/ngc-configure.log"
+CONFIG_FILE="${HOME}/.ngc/config"
+
+mkdir -p "${STATUS_DIR}"
+: > "${LOG_FILE}"
+chmod 600 "${LOG_FILE}"
+
+status() {
+    printf '%s\n' "$1" > "${STATUS_FILE}"
+    chmod 600 "${STATUS_FILE}"
+}
+
+log() {
+    printf '%s\n' "$*" | tee -a "${LOG_FILE}"
+}
+
+fail() {
+    log "ERROR: $*"
+    status "error: $*"
+    exit 1
+}
+
+status "running"
+
+if ! command -v ngc >/dev/null 2>&1; then
+    fail "ngc is not on PATH; run just ngc first"
+fi
+
+existing_key=""
+if [ -f "${CONFIG_FILE}" ]; then
+    existing_key="$(python3 - "${CONFIG_FILE}" <<'PY'
+import configparser, sys
+cfg = configparser.ConfigParser()
+cfg.read(sys.argv[1])
+print((cfg["CURRENT"].get("apikey") or "").strip())
+PY
+)"
+fi
+
+OP_KEYCHAIN=""
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+if [ -x "${PROFILE_DIR}/bin/op-keychain/op-keychain" ]; then
+    OP_KEYCHAIN="${PROFILE_DIR}/bin/op-keychain/op-keychain"
+fi
+HAUTH="${HAUTH:-${PROFILE_DIR}/bin/hauth/hauth}"
+
+if [ -n "${existing_key}" ]; then
+    log "Reusing API key already stored in ${CONFIG_FILE} (not printed)."
+    KEY="${existing_key}"
+elif [ -n "${OP_KEYCHAIN}" ] && "${OP_KEYCHAIN}" has -q ngc.credential; then
+    log "Reading NGC API key (hauth unwrap-or-get when available; no 1Password Allow popup)."
+    if [ -x "${HAUTH}" ]; then
+        KEY="$("${HAUTH}" unwrap-or-get ngc.credential)"
+    else
+        KEY="$("${OP_KEYCHAIN}" get ngc.credential)"
+    fi
+    KEY="${KEY//$'\r'/}"
+    KEY="${KEY//$'\n'/}"
+    if [ -z "${KEY}" ]; then
+        fail "op-keychain returned an empty ngc.credential"
+    fi
+    log "credential_len=${#KEY}"
+else
+    fail "ngc.credential is not in the agent Keychain. Run: just op-keychain-seed (no popup) or just op-keychain-sync ngc.credential"
+fi
+
+ORG="${NGC_CLI_ORG:-}"
+TEAM="${NGC_CLI_TEAM:-}"
+if [ -z "${ORG}" ]; then
+    log "Resolving NGC org from NVIDIA API (key not printed)."
+    ORG="$(
+        NGC_KEY="${KEY}" python3 - <<'PY'
+import json, os, ssl, urllib.request
+key = os.environ["NGC_KEY"]
+req = urllib.request.Request(
+    "https://api.ngc.nvidia.com/v2/orgs",
+    headers={
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+        "User-Agent": "ngc-configure/1.0",
+    },
+    method="GET",
+)
+with urllib.request.urlopen(req, context=ssl.create_default_context(), timeout=20) as resp:
+    data = json.loads(resp.read().decode())
+orgs = data.get("organizations") or []
+if not orgs:
+    raise SystemExit("NVIDIA returned no organizations for this API key")
+if len(orgs) > 1:
+    names = ", ".join(f"{o.get('displayName')} ({o.get('name')})" for o in orgs)
+    raise SystemExit(f"multiple orgs; set NGC_CLI_ORG: {names}")
+print(orgs[0]["name"])
+PY
+    )" || fail "could not resolve NGC org from NVIDIA"
+    log "Resolved org=${ORG}"
+fi
+
+mkdir -p "${HOME}/.ngc"
+chmod 700 "${HOME}/.ngc"
+
+umask 077
+{
+    printf '[CURRENT]\n'
+    printf 'apikey = %s\n' "${KEY}"
+    printf 'format_type = ascii\n'
+    printf 'org = %s\n' "${ORG}"
+    if [ -n "${TEAM}" ]; then
+        printf 'team = %s\n' "${TEAM}"
+    fi
+} > "${CONFIG_FILE}"
+chmod 600 "${CONFIG_FILE}"
+unset KEY existing_key
+log "Wrote ${CONFIG_FILE} (0600)."
+
+log "Current NGC config (CLI redacts secrets):"
+ngc config current --format_type ascii | tee -a "${LOG_FILE}"
+
+if ! ngc config current --format_type json | grep -Fq '"apikey"'; then
+    fail "ngc config current does not show an apikey after write"
+fi
+if ! ngc config current --format_type json | grep -Fq '"org"'; then
+    fail "ngc config current does not show an org after write"
+fi
+
+log "Validating NGC credentials against NVIDIA (no private values printed)."
+if ngc diag server --format_type ascii >> "${LOG_FILE}" 2>&1; then
+    log "ngc diag server: ok"
+else
+    fail "ngc diag server failed; see ${LOG_FILE}"
+fi
+
+status "ok"
+log ""
+log "NGC CLI is configured from 1Password."
+log "  Binary: $(command -v ngc)"
+log "  Config: ${CONFIG_FILE}"
+log "  Next:   ngc config current"
+log ""
+if [ -t 0 ]; then
+    printf 'Press return to close. '
+    read -r _
+fi

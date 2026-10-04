@@ -1,0 +1,15 @@
+{
+  "name": "Cartesia voice → mac",
+  "short_name": "Voice mac",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#111111",
+  "icons": [
+    {
+      "src": "/",
+      "sizes": "192x192",
+      "type": "text/html"
+    }
+  ]
+}

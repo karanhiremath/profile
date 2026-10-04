@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.13.7/.schema/devbox.schema.json",
+  "packages": [
+    "tmux@latest",
+    "git@latest",
+    "nodejs@22",
+    "pnpm@latest"
+  ],
+  "env": {
+    "HOSTCTL_BUNDLER": "vite"
+  },
+  "shell": {
+    "init_hook": [
+      "echo hostctl: node-web opt-in (pnpm + vite). Not a default family."
+    ]
+  }
+}

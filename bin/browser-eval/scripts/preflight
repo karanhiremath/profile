@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Host inventory for the browser-eval lab. Read-only besides ensure_dirs.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "${SCRIPT_DIR}/../lib/common.sh"
+ensure_dirs
+
+printf 'host=%s\n' "$(scutil --get LocalHostName 2>/dev/null || hostname)"
+printf 'utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf 'state_dir=%s\n' "$STATE_DIR"
+
+if [[ -x "$CHROME_BIN" ]]; then
+  printf 'chrome=present\n'
+else
+  printf 'chrome=absent\n'
+fi
+if [[ -d "$ARC_APP" ]]; then
+  printf 'arc=present\n'
+else
+  printf 'arc=absent\n'
+fi
+if [[ -d /Applications/Dia.app ]]; then
+  printf 'dia_applications=present\n'
+else
+  printf 'dia_applications=absent\n'
+fi
+if [[ -d "$DIA_APP" ]]; then
+  printf 'dia_eval=present\n'
+else
+  printf 'dia_eval=absent\n'
+fi
+if [[ -d /Applications/Comet.app ]]; then
+  printf 'comet_applications=present\n'
+else
+  printf 'comet_applications=absent\n'
+fi
+if [[ -d "$COMET_APP" ]]; then
+  printf 'comet_eval=present\n'
+else
+  printf 'comet_eval=absent\n'
+fi
+if [[ -f "$COMET_FIXTURE" ]]; then
+  printf 'comet_fixture=present\n'
+else
+  printf 'comet_fixture=absent\n'
+fi
+
+if command -v podman >/dev/null 2>&1; then
+  printf 'podman=present\n'
+  podman machine list --format 'podman_machine={{.Name}} running={{.Running}}' 2>/dev/null | head -5 || true
+else
+  printf 'podman=absent\n'
+fi
+
+if command -v qemu-system-x86_64 >/dev/null 2>&1; then
+  printf 'qemu_x86_64=present\n'
+else
+  printf 'qemu_x86_64=absent\n'
+fi
+if tmux has-session -t oma-qemu 2>/dev/null; then
+  printf 'omarchy_tmux=present\n'
+else
+  printf 'omarchy_tmux=absent\n'
+fi
+
+if command -v browser-use >/dev/null 2>&1; then
+  printf 'browser_use_cli=present\n'
+else
+  printf 'browser_use_cli=absent\n'
+fi
+if python3 -c 'import importlib.util,sys; sys.exit(0 if importlib.util.find_spec("browser_use") else 1)' 2>/dev/null; then
+  printf 'browser_use_py=present\n'
+else
+  printf 'browser_use_py=absent\n'
+fi
+
+settings="${HOME}/.pi/agent/settings.json"
+if [[ -f "$settings" ]] && rg -q 'pi-browser-harness' "$settings"; then
+  printf 'pi_browser_harness=settings\n'
+else
+  printf 'pi_browser_harness=absent\n'
+fi
+
+printf 'perplexity_lane=signed-in-chrome-open-only\n'
+printf 'cdp_signed_in_chrome=forbidden\n'

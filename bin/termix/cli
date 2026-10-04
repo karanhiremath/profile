@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Termix CLI wrapper: keep Tailscale Serve published and point TERMIX_URL at the tailnet.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")" && pwd)"
+TERMIX_LIB_DIR="${SCRIPT_DIR}/lib"
+# shellcheck source=lib/common.sh
+. "${TERMIX_LIB_DIR}/common.sh"
+# shellcheck source=lib/serve.sh
+. "${TERMIX_LIB_DIR}/serve.sh"
+
+usage_hint() {
+    cat <<EOF
+termix wrapper commands:
+  termix <session>          Attach host tmux (same as attach mac <session>)
+  termix attach <session>   Same, including reserved CLI names
+  termix --ls               List host tmux sessions
+  termix snippets-sync      Upsert Termix snippets for live sessions
+  termix up|start           Start compose and provision Tailscale Serve
+  termix down               Stop the compose stack
+  termix serve              Provision Serve only
+  termix status             Show local and tailnet endpoints
+  termix --                 Pass through to the official CLI
+
+Sandbox: termix-s [session]  (snippet name: phone-s)
+EOF
+}
+
+PROFILE_DIR="${PROFILE_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+ATTACH="${PROFILE_DIR}/bin/tmux/interactive"
+real_cli="$(termix_resolve_cli)"
+
+tmux_has_session() {
+    command -v tmux >/dev/null 2>&1 && tmux has-session -t "$1" 2>/dev/null
+}
+
+termix_attach() {
+    exec "$ATTACH" mac "$@"
+}
+
+termix_snippets_sync() {
+    TERMIX_OFFICIAL="$real_cli" PYTHONPATH="${TERMIX_LIB_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
+        python3 "${TERMIX_LIB_DIR}/snippet_sync.py" "$@"
+}
+
+case "${1:-}" in
+    -h|--help|help)
+        usage_hint
+        echo
+        exec "$real_cli" --help
+        ;;
+    up|start)
+        shift || true
+        exec "${SCRIPT_DIR}/start" up "$@"
+        ;;
+    down)
+        shift || true
+        exec "${SCRIPT_DIR}/start" down "$@"
+        ;;
+    serve)
+        shift || true
+        exec "${SCRIPT_DIR}/start" serve "$@"
+        ;;
+    caddy)
+        shift || true
+        exec "${SCRIPT_DIR}/start" caddy "$@"
+        ;;
+    status)
+        shift || true
+        exec "${SCRIPT_DIR}/status" "$@"
+        ;;
+    --)
+        shift
+        ;;
+esac
+
+action="$(python3 "${TERMIX_LIB_DIR}/cli_dispatch.py" "$@")"
+case "$action" in
+    snippets-sync)
+        shift || true
+        termix_snippets_sync "$@"
+        exit $?
+        ;;
+    attach)
+        if [ "${1:-}" = attach ]; then
+            shift || true
+            termix_attach "$@"
+        fi
+        if [ "${1:-}" = --ls ] || [ "${1:-}" = -l ]; then
+            tmux list-sessions -F '#{session_name}'
+            exit 0
+        fi
+        if [ -z "${1:-}" ]; then
+            termix_attach "$@"
+        fi
+        if tmux_has_session "$1"; then
+            termix_attach "$@"
+        fi
+        ;;
+esac
+
+if [ "${TERMIX_SKIP_SERVE:-0}" != "1" ] && [ -z "${TERMIX_URL:-}" ]; then
+    if curl -fsS --max-time 2 "$(termix_health_url)" >/dev/null 2>&1; then
+        if termix_serve_provision >/dev/null; then
+            export TERMIX_URL="$(termix_tailnet_url)"
+            termix_ensure_cli_url "$TERMIX_URL" >/dev/null
+        else
+            echo "termix: Tailscale Serve is not published; CLI falling back to $(termix_local_url)" >&2
+            export TERMIX_URL="$(termix_local_url)"
+        fi
+    fi
+fi
+
+if [ -z "${TERMIX_URL:-}" ] && [ -f "$(termix_config_file)" ]; then
+    :
+elif [ -n "${TERMIX_URL:-}" ]; then
+    export TERMIX_URL
+fi
+
+exec "$real_cli" "$@"

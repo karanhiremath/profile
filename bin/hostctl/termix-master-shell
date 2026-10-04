@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Restricted SSH ForceCommand for termix-master. Not a login shell.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")" && pwd)"
+HOSTCTL_BIN="${HOSTCTL_BIN:-${SCRIPT_DIR}/hostctl}"
+PARSER="${SCRIPT_DIR}/lib/termix_master_cmd.py"
+export HOME="${HOME:-/Users/karan}"
+export PATH="/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:${PATH}"
+
+log_original() {
+    local dest="${HOSTCTL_STATE_DIR:-$HOME/.local/share/hostctl}/termix-master/last-ssh-command"
+    mkdir -p "$(dirname "$dest")"
+    printf '%s\n' "$1" >"$dest"
+    chmod 600 "$dest"
+}
+
+emit_termix_exit() {
+    local rc="$1" raw="$2"
+    case "$raw" in
+        *__TERMIX_EXIT*) printf '\n__TERMIX_EXIT=%d\n' "$rc" ;;
+    esac
+}
+
+run_parsed() {
+    local raw="$1" parsed rc=0
+    log_original "$raw"
+    if ! parsed="$(python3 - "$PARSER" "$raw" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent))
+from termix_master_cmd import HELP, parse_command
+
+try:
+    result = parse_command(sys.argv[2] if len(sys.argv) > 2 else "")
+except ValueError as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(2)
+if result == "help":
+    print("HELP")
+    print(HELP, end="")
+    raise SystemExit(0)
+print("RUN " + " ".join(result))
+PY
+)"; then
+        emit_termix_exit 2 "$raw"
+        return 2
+    fi
+    case "$parsed" in
+        HELP*)
+            printf '%s\n' "${parsed#HELP}"
+            rc=0
+            ;;
+        RUN\ *)
+            # shellcheck disable=SC2086
+            "${HOSTCTL_BIN}" ${parsed#RUN }
+            rc=$?
+            ;;
+        *) rc=0 ;;
+    esac
+    emit_termix_exit "$rc" "$raw"
+    return "$rc"
+}
+
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+    run_parsed "${SSH_ORIGINAL_COMMAND}"
+    exit $?
+fi
+
+printf '%s' "$(python3 -c 'from pathlib import Path; import sys; sys.path.insert(0, sys.argv[1]); from termix_master_cmd import HELP; print(HELP, end="")' "${SCRIPT_DIR}/lib")"
+if [ -t 0 ]; then
+    while IFS= read -r -p 'hostctl> ' line; do
+        [ -n "$line" ] || continue
+        case "$line" in
+            exit|quit) exit 0 ;;
+        esac
+        run_parsed "$line" || true
+    done
+fi

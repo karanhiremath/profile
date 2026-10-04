@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#111111" />
+  <title>Cartesia voice → mac</title>
+  <link rel="manifest" href="/manifest.json" />
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui; background: #111; color: #eee; }
+    main { min-height: 100dvh; display: flex; flex-direction: column; gap: 1rem; padding: 1.25rem; }
+    button { font-size: 1.25rem; padding: 1.5rem; border: 0; border-radius: 1rem; background: #2a6; color: #111; }
+    button[data-on="1"] { background: #c44; color: #fff; }
+    pre { white-space: pre-wrap; background: #1a1a1a; padding: 1rem; border-radius: 0.75rem; min-height: 6rem; }
+    p { color: #aaa; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Cartesia Ink → tmux mac</h1>
+    <p>Hold to talk. Transcript lands in the live pi pane. Mic needs this HTTPS origin.</p>
+    <button id="talk" type="button">Hold to talk</button>
+    <pre id="out">idle</pre>
+  </main>
+  <script>
+    const out = document.getElementById("out");
+    const btn = document.getElementById("talk");
+    let rec = null;
+    let chunks = [];
+
+    function log(msg) { out.textContent = msg; }
+
+    async function start() {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      chunks = [];
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : (MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "");
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      rec.start();
+      btn.dataset.on = "1";
+      btn.textContent = "Release to send";
+      log("recording…");
+    }
+
+    async function stop() {
+      if (!rec) return;
+      const recorder = rec;
+      rec = null;
+      const blob = await new Promise((resolve) => {
+        recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+        recorder.stop();
+        recorder.stream.getTracks().forEach((t) => t.stop());
+      });
+      btn.dataset.on = "0";
+      btn.textContent = "Hold to talk";
+      log("transcribing…");
+      const stt = await fetch("/stt", { method: "POST", headers: { "Content-Type": blob.type || "audio/webm" }, body: blob });
+      const sttJson = await stt.json();
+      if (!sttJson.ok) { log("STT error: " + sttJson.error); return; }
+      const text = (sttJson.transcript || "").trim();
+      if (!text) { log("empty transcript"); return; }
+      log("injecting: " + text);
+      const inj = await fetch("/inject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const injJson = await inj.json();
+      log(injJson.ok ? ("sent → " + injJson.target + "\n" + text) : ("inject error: " + injJson.error));
+    }
+
+    btn.addEventListener("pointerdown", (e) => { e.preventDefault(); start().catch((err) => log(String(err))); });
+    btn.addEventListener("pointerup", (e) => { e.preventDefault(); stop().catch((err) => log(String(err))); });
+    btn.addEventListener("pointercancel", () => { stop().catch(() => {}); });
+  </script>
+</body>
+</html>

@@ -1,0 +1,146 @@
+# Distrohop catalog for attach -s sandboxes.
+# First family: Nix flakes + Devbox, wrapped by the Podman machine SELinux
+# policy. Later families reuse the same language contract via Devbox and mise.
+# Ubuntu is never implicit. Node is opt-in only (pnpm + Vite).
+
+defaults:
+  personal_family: nixos
+  work_family: project-selected
+  provisioner: flake
+  distrohop_provisioner: mise
+  languages:
+    - rust
+    - elixir
+    - mojo
+    - go
+    - python
+  node:
+    when: interactive web or mobile-web/native shell
+    package_manager: pnpm
+    bundler: vite
+
+families:
+  nixos:
+    status: default-personal
+    kind: oci-dev
+    variant: nixos
+    tag: localhost/hostctl/nixos:dev
+    source: docker.io/nixos/nix
+    pkg: nix
+    provisioner: flake
+    selinux: machine
+    workspace: sandboxes/nixos
+    notes: Personal default. Flakes + Devbox. SELinux is the AppleHV/FCOS machine policy around the container.
+
+  rust:
+    status: language
+    kind: oci-dev
+    variant: rust
+    tag: localhost/hostctl/nixos:dev
+    source: docker.io/nixos/nix
+    pkg: nix
+    provisioner: flake
+    workspace: sandboxes/nixos
+    notes: Rust overlay on the NixOS flake/Devbox family.
+
+  elixir:
+    status: language
+    kind: oci-dev
+    variant: elixir
+    tag: localhost/hostctl/nixos:dev
+    source: docker.io/nixos/nix
+    pkg: nix
+    provisioner: flake
+    workspace: sandboxes/nixos
+    notes: Elixir/OTP overlay on the NixOS flake/Devbox family.
+
+  mojo:
+    status: language
+    kind: oci-dev
+    variant: mojo
+    tag: localhost/hostctl/nixos:dev
+    source: docker.io/nixos/nix
+    pkg: nix
+    provisioner: flake
+    workspace: sandboxes/nixos
+    notes: Mojo overlay. Install via Devbox/mise when the package exists; not in nixpkgs by default.
+
+  go:
+    status: language
+    kind: oci-dev
+    variant: go
+    tag: localhost/hostctl/nixos:dev
+    source: docker.io/nixos/nix
+    pkg: nix
+    provisioner: flake
+    workspace: sandboxes/nixos
+    notes: Go overlay on the NixOS flake/Devbox family.
+
+  python:
+    status: language
+    kind: oci-dev
+    variant: python
+    tag: localhost/hostctl/nixos:dev
+    source: docker.io/nixos/nix
+    pkg: nix
+    provisioner: flake
+    workspace: sandboxes/nixos
+    notes: Python overlay on the NixOS flake/Devbox family.
+
+  node-web:
+    status: opt-in
+    kind: oci-dev
+    variant: node-web
+    tag: localhost/hostctl/nixos:dev
+    source: docker.io/nixos/nix
+    pkg: nix
+    provisioner: flake
+    workspace: sandboxes/nixos
+    notes: Opt-in only. pnpm + Vite for interactive web/mobile-web. Never default.
+
+  arch-toolkit:
+    status: legacy
+    kind: oci-dev
+    variant: arch-toolkit
+    tag: localhost/hermes-agent/arch-toolkit:dev
+    source: docker.io/library/archlinux:base-devel
+    pkg: pacman
+    notes: Legacy Hermes personal OCI. Prefer nixos.
+
+  python-node-fedora:
+    status: legacy
+    kind: oci-dev
+    variant: python-node-fedora
+    tag: localhost/hermes-agent/python-node:dev
+    source: docker.io/library/fedora:40
+    pkg: dnf
+    notes: Legacy Node-centric family. Do not pick by default.
+
+  python-node-devbox:
+    status: legacy
+    kind: oci-dev
+    variant: python-node-devbox
+    tag: localhost/hermes-agent/python-node-devbox:dev
+    source: docker.io/library/archlinux:base-devel
+    pkg: pacman
+    notes: Legacy. Prefer nixos + language overlay.
+
+  python-node-nix:
+    status: alias
+    kind: oci-dev
+    variant: nixos
+    tag: localhost/hostctl/nixos:dev
+    source: docker.io/nixos/nix
+    pkg: nix
+    notes: Alias of nixos. Kept so old prompts still resolve.
+
+  omarchy-desktop:
+    status: deferred
+    kind: desktop-ui
+    source: https://github.com/omacom/omarchy
+    notes: Arch desktop (Hyprland). Physical target is home-mbp-13. Lab guest is QEMU+ISO, not Try Omarchy.app. Not an OCI sandbox.
+
+  project-selected:
+    status: work-required
+    kind: policy
+    notes: Work sandboxes pick the image from the project. Do not build work images on personal hosts.

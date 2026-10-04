@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Start the local Termix container and provision Tailscale Serve for the tailnet.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")" && pwd)"
+TERMIX_LIB_DIR="${SCRIPT_DIR}/lib"
+# shellcheck source=lib/common.sh
+. "${TERMIX_LIB_DIR}/common.sh"
+# shellcheck source=lib/serve.sh
+. "${TERMIX_LIB_DIR}/serve.sh"
+# shellcheck source=lib/caddy.sh
+. "${TERMIX_LIB_DIR}/caddy.sh"
+
+usage() {
+    cat <<EOF
+Usage: termix-up [up|down|serve|caddy|status]
+
+Start the Termix compose stack on loopback and publish it on the tailnet
+with Tailscale Serve. Termix keeps its own login. Public Google OIDC is a
+separate edge (krop-infra/infra/edge/apps). Funnel stays off.
+
+Commands:
+  up       Start compose, wait for health, provision Serve (default)
+  down     Stop the compose stack; leave Serve in place
+  serve    Provision Serve only, assuming Termix is already healthy
+  caddy    Start the tailnet-only pretty-name proxy (termix.krop.ai:8444)
+  status   Show local and tailnet endpoints
+EOF
+}
+
+termix_compose() {
+    local dir
+    dir="$(termix_default_compose_dir)"
+    if [ ! -f "${dir}/compose.yaml" ]; then
+        echo "termix: compose file not found at ${dir}/compose.yaml" >&2
+        echo "termix: set TERMIX_COMPOSE_DIR to the directory that has compose.yaml" >&2
+        return 1
+    fi
+    if command -v docker >/dev/null 2>&1; then
+        (cd "$dir" && docker compose "$@")
+    elif command -v podman >/dev/null 2>&1; then
+        (cd "$dir" && podman compose "$@")
+    else
+        echo "termix: docker or podman is required" >&2
+        return 1
+    fi
+}
+
+termix_print_endpoints() {
+    local local_url tailnet_url
+    local_url="$(termix_local_url)"
+    if tailscale status >/dev/null 2>&1; then
+        tailnet_url="$(termix_tailnet_url)"
+    else
+        tailnet_url="unknown (Tailscale offline)"
+    fi
+    cat <<EOF
+Termix endpoints
+  local:   ${local_url}
+  tailnet: ${tailnet_url}
+  public:  none (Termix stays on the tailnet; apps.krop.ai is a separate SSO edge)
+  pretty:  https://termix.krop.ai:8444  (internal Caddy; not the iPhone SSH host)
+EOF
+}
+
+cmd="${1:-up}"
+case "$cmd" in
+    -h|--help|help)
+        usage
+        exit 0
+        ;;
+    up)
+        termix_compose up -d
+        termix_wait_healthy
+        termix_serve_provision
+        termix_ensure_cli_url "$(termix_tailnet_url)" >/dev/null
+        termix_print_endpoints
+        ;;
+    down)
+        termix_compose down
+        ;;
+    serve)
+        termix_wait_healthy
+        termix_serve_provision
+        termix_ensure_cli_url "$(termix_tailnet_url)" >/dev/null
+        termix_print_endpoints
+        ;;
+    status)
+        "${SCRIPT_DIR}/status"
+        ;;
+    caddy)
+        termix_wait_healthy
+        termix_caddy_up
+        termix_print_endpoints
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

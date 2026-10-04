@@ -1,0 +1,32 @@
+#!/bin/bash
+# Link personal hostctl onto PATH.
+set -euo pipefail
+shopt -s failglob
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="hostctl"
+INSTALL_DIR="${HOSTCTL_INSTALL_DIR:-$HOME/.local/bin}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+install_messages "start" "$app_name"
+
+mkdir -p "$INSTALL_DIR"
+chmod +x "${SCRIPT_DIR}/hostctl" "${SCRIPT_DIR}/termix-master-shell" "${SCRIPT_DIR}/sandbox"
+chmod +x "${APP_BIN}/omarchy/start" "${APP_BIN}/omarchy/install"
+chmod +x "${APP_BIN}/tmux/interactive"
+ln -sfn "${SCRIPT_DIR}/hostctl" "${INSTALL_DIR}/hostctl"
+ln -sfn "${APP_BIN}/omarchy/start" "${INSTALL_DIR}/omarchy"
+echo "✓ linked ${INSTALL_DIR}/hostctl -> ${SCRIPT_DIR}/hostctl"
+echo "✓ linked ${INSTALL_DIR}/omarchy -> ${APP_BIN}/omarchy/start"
+
+install_messages "end" "$app_name"

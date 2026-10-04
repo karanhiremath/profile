@@ -1,0 +1,635 @@
+#!/usr/bin/env bash
+# Personal host control plane for repeatable Podman stacks on this Mac mini.
+# Not cosw-hostctl (that is the work sandbox host bridge).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+APP_BIN="${APP_BIN:-${PROFILE_DIR}/bin}"
+STACKS_FILE="${HOSTCTL_STACKS:-${SCRIPT_DIR}/stacks.yaml}"
+
+usage() {
+    cat <<EOF
+Usage: hostctl [status|up|down|termix|omarchy|attach|sandbox|machine|hosts|role|master] [args]
+
+This host is termix-master: one Termix pod on the tailnet, plus hostctl
+for stacks on khire-mac-mini. Isolated hosts stay out of the master key.
+
+Commands:
+  status              Podman machine + every declared stack
+  up                  Start enabled compose stacks (today: termix + Serve)
+  down                Stop enabled compose stacks; leave the machine running
+  hosts               Tailnet inventory (master / limited / isolated)
+  role                Print this host's Termix role
+  master provision|status|push|phone|login|keychain-seed
+  termix up|down|status|serve|snippets
+  omarchy up|down|status|probe|ports|install|iso|console|setup-ssh|bind|ssh|keys|destroy
+  attach <kind>[-<instance>][-s] [session]
+  sandbox up|attach|ls|family --kind K --instance I --session S
+  machine mounts     Live-mount virtiofs if the hypervisor attached the tags
+EOF
+}
+
+log() { printf 'hostctl: %s\n' "$*" >&2; }
+
+die() {
+    log "ERROR: $*"
+    exit 1
+}
+
+stack_field() {
+    local name="$1" field="$2"
+    python3 - "$STACKS_FILE" "$name" "$field" <<'PY'
+import sys
+from pathlib import Path
+
+path, name, field = sys.argv[1], sys.argv[2], sys.argv[3]
+text = Path(path).read_text()
+in_stack = False
+indent = None
+for raw in text.splitlines():
+    if raw.startswith("  ") and not raw.startswith("    ") and raw.strip().endswith(":"):
+        in_stack = raw.strip()[:-1] == name
+        continue
+    if in_stack and raw.startswith("    ") and ":" in raw:
+        key, value = raw.split(":", 1)
+        if key.strip() == field:
+            print(value.strip())
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+podman_bin() {
+    if command -v podman >/dev/null 2>&1; then
+        command -v podman
+        return
+    fi
+    die "podman is not on PATH"
+}
+
+engine_status() {
+    local bin
+    bin="$(podman_bin)"
+    echo "Host stacks"
+    echo "  host:    $(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text().split("host:",1)[-1].splitlines()[0].strip())' "$STACKS_FILE" 2>/dev/null || hostname -s 2>/dev/null || echo unknown)"
+    echo "  engine:  podman ($bin)"
+    if "$bin" machine list >/dev/null 2>&1; then
+        "$bin" machine list
+    else
+        echo "  machine: unavailable"
+    fi
+}
+
+ensure_machine() {
+    local bin state
+    bin="$(podman_bin)"
+    if ! "$bin" machine list >/dev/null 2>&1; then
+        die "podman machine list failed"
+    fi
+    state="$("$bin" machine list --format '{{.LastUp}}' 2>/dev/null | head -1 || true)"
+    if echo "$state" | grep -qi 'currently running'; then
+        return 0
+    fi
+    # Format can be empty on some versions; fall back to list text.
+    if "$bin" machine list 2>/dev/null | grep -qi 'Currently running'; then
+        return 0
+    fi
+    log "starting podman machine"
+    "$bin" machine start
+}
+
+termix_cmd() {
+    local cmd="${1:-status}"
+    shift || true
+    [ -x "${APP_BIN}/termix/start" ] || die "missing ${APP_BIN}/termix/start"
+    case "$cmd" in
+        up|down|serve|status) "${APP_BIN}/termix/start" "$cmd" "$@" ;;
+        snippets|snippets-sync)
+            "${APP_BIN}/termix/cli" snippets-sync "$@"
+            ;;
+        *) die "termix commands: up|down|serve|status|snippets" ;;
+    esac
+}
+
+omarchy_cmd() {
+    local cmd="${1:-status}"
+    shift || true
+    [ -x "${APP_BIN}/omarchy/start" ] || die "missing ${APP_BIN}/omarchy/start"
+    case "$cmd" in
+        up|down|status|probe|ports|install|setup-ssh|ssh-setup|keys|ssh|inject-ssh|console|destroy|purge)
+            "${APP_BIN}/omarchy/start" "$cmd" "$@"
+            ;;
+        iso)
+            "${APP_BIN}/omarchy/start" iso "$@"
+            ;;
+        bind|post-reset)
+            "${APP_BIN}/omarchy/start" bind "$@"
+            omarchy_termix_push
+            ;;
+        *) die "omarchy commands: up|down|status|probe|ports|install|iso|console|setup-ssh|bind|ssh|keys|destroy" ;;
+    esac
+}
+
+HOSTS_FILE="${HOSTCTL_HOSTS:-${SCRIPT_DIR}/hosts.yaml}"
+MASTER_STATE="${HOSTCTL_STATE_DIR:-$HOME/.local/share/hostctl}/termix-master"
+MASTER_KEY="${MASTER_STATE}/id_ed25519"
+MASTER_PUB="${MASTER_KEY}.pub"
+IPHONE_KEY="${MASTER_STATE}/iphone-17-pro"
+IPHONE_PUB="${IPHONE_KEY}.pub"
+LOGIN_KEY="${MASTER_STATE}/termix-login"
+LOGIN_PUB="${LOGIN_KEY}.pub"
+LOGIN_MARKER_BEGIN="# BEGIN termix-login"
+LOGIN_MARKER_END="# END termix-login"
+OP_KEYCHAIN="${OP_KEYCHAIN:-${PROFILE_DIR}/bin/op-keychain/op-keychain}"
+HAUTH="${HAUTH:-${PROFILE_DIR}/bin/hauth/hauth}"
+MASTER_SHELL="${SCRIPT_DIR}/termix-master-shell"
+AUTHORIZED_KEYS="${HOME}/.ssh/authorized_keys"
+MASTER_MARKER_BEGIN="# BEGIN hostctl-termix-master"
+MASTER_MARKER_END="# END hostctl-termix-master"
+IPHONE_MARKER_BEGIN="# BEGIN hostctl-termix-master-iphone"
+IPHONE_MARKER_END="# END hostctl-termix-master-iphone"
+OP_MASTER_TITLE="termix-master hostctl"
+OP_IPHONE_TITLE="termix-master iPhone 17 Pro"
+
+print_role() {
+    cat <<EOF
+role:     termix-master
+host:     khire-mac-mini
+termix:   https://karans-mac-mini.tail1e8436.ts.net
+hostctl:  restricted SSH key (not a login shell)
+isolated: inventory + Tailscale ACL; not this key
+funnel:   off
+EOF
+}
+
+print_hosts() {
+    python3 - "$HOSTS_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+print(path.read_text(), end="")
+PY
+}
+
+master_status() {
+    local key=missing auth=missing
+    [ -f "$MASTER_KEY" ] && key=present
+    if [ -f "$AUTHORIZED_KEYS" ] && grep -q "termix-master@khire-mac-mini" "$AUTHORIZED_KEYS"; then
+        auth=installed
+    fi
+    print_role
+    echo "key:      ${key} (${MASTER_KEY})"
+    echo "auth:     ${auth}"
+    echo "shell:    ${MASTER_SHELL}"
+}
+
+upsert_authorized_block() {
+    local begin="$1" end="$2" line="$3"
+    local block
+    block="${begin}
+${line}
+${end}"
+    python3 - "$AUTHORIZED_KEYS" "$block" "$begin" "$end" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+block, begin, end = sys.argv[2], sys.argv[3], sys.argv[4]
+text = path.read_text() if path.exists() else ""
+if begin in text and end in text:
+    pre, rest = text.split(begin, 1)
+    _, post = rest.split(end, 1)
+    text = pre.rstrip("\n") + "\n" + block + post
+    if not text.endswith("\n"):
+        text += "\n"
+else:
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += block + "\n"
+path.write_text(text)
+os.chmod(path, 0o600)
+PY
+}
+
+login_auth_line() {
+    awk '{print $1" "$2" "$3}' "$1"
+}
+
+op_keychain_write() {
+    local alias="$1" dest="$2"
+    umask 077
+    if [ -x "$HAUTH" ]; then
+        "$HAUTH" unwrap-or-get "$alias" >"$dest"
+    elif [ -x "$OP_KEYCHAIN" ]; then
+        "$OP_KEYCHAIN" get "$alias" >"$dest"
+    else
+        die "op-keychain missing; run just op-keychain"
+    fi
+    chmod 600 "$dest"
+}
+
+master_keychain_seed() {
+    [ -x "$OP_KEYCHAIN" ] || die "op-keychain missing; run just op-keychain"
+    "$OP_KEYCHAIN" seed-local \
+        ssh.termix.hostctl ssh.termix.iphone-hostctl ssh.termix.login \
+        cursor.pi-coding-agent ngc.credential
+    "$OP_KEYCHAIN" status
+}
+
+master_ensure_login_key() {
+    mkdir -p "$MASTER_STATE" "${HOME}/.ssh"
+    chmod 700 "$MASTER_STATE" "${HOME}/.ssh"
+    if [ ! -f "$LOGIN_KEY" ]; then
+        ssh-keygen -t ed25519 -N "" -f "$LOGIN_KEY" -C "termix-login@khire-mac-mini" >/dev/null
+        chmod 600 "$LOGIN_KEY"
+        chmod 644 "$LOGIN_PUB"
+        log "created ${LOGIN_KEY}"
+    fi
+    upsert_authorized_block "$LOGIN_MARKER_BEGIN" "$LOGIN_MARKER_END" \
+        "$(login_auth_line "$LOGIN_PUB")"
+    master_keychain_seed >/dev/null || true
+}
+
+master_login_push() {
+    local key cred_id host_id tmp
+    master_ensure_login_key
+    tmp="$(mktemp "${TMPDIR:-/tmp}/termix-login.XXXXXX")"
+    trap 'rm -f "$tmp"' RETURN
+    if ! op_keychain_write ssh.termix.login "$tmp"; then
+        cp "$LOGIN_KEY" "$tmp"
+        chmod 600 "$tmp"
+        log "op-keychain miss; using on-disk login key"
+    fi
+    key="$tmp"
+    termix_cli whoami >/dev/null || die "termix CLI is not logged in; seed termix.admin.* into op-keychain then run termix login"
+    local ssh_user
+    ssh_user="$(id -un)"
+    cred_id="$(termix_cli credentials list | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+rows=data if isinstance(data,list) else data.get("credentials") or data.get("items") or []
+for row in rows:
+    if row.get("name")=="khire-mac-mini-login":
+        print(row.get("id") or "")
+        break
+')"
+    if [ -z "$cred_id" ]; then
+        cred_id="$(termix_cli credentials create \
+            --name khire-mac-mini-login \
+            --description "Interactive login shell on khire-mac-mini. Key from op-keychain ssh.termix.login." \
+            --auth-type key \
+            --username "${ssh_user}" \
+            --key-file "$key" \
+            --tags termix-master,interactive,login | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id") or "")')"
+        log "created Termix credential ${cred_id}"
+    else
+        termix_cli credentials update \
+            --auth-type key \
+            --username "${ssh_user}" \
+            --key-file "$key" \
+            "$cred_id" >/dev/null
+        log "updated Termix credential ${cred_id}"
+    fi
+    host_id="$(termix_cli hosts list | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+rows=data.get("hosts") or []
+for row in rows:
+    if row.get("name")=="khire-mac-mini":
+        print(row.get("id") or "")
+        break
+')"
+    if [ -z "$host_id" ]; then
+        host_id="$(termix_cli hosts create \
+            --name khire-mac-mini \
+            --ip host.containers.internal \
+            --port 22 \
+            --username "${ssh_user}" \
+            --auth-type key \
+            --key-file "$key" \
+            --tags termix-master,interactive,login \
+            --enable-terminal | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id") or "")')"
+        log "created Termix host ${host_id}"
+    else
+        termix_cli hosts update \
+            --ip host.containers.internal \
+            --port 22 \
+            --username "${ssh_user}" \
+            --auth-type key \
+            --key-file "$key" \
+            --tags termix-master,interactive,login \
+            --enable-terminal \
+            "$host_id" >/dev/null
+        log "updated Termix host ${host_id}"
+    fi
+    echo "termix host khire-mac-mini id=${host_id} credential=${cred_id} keychain=ssh.termix.login"
+    if "${APP_BIN}/termix/cli" snippets-sync; then
+        :
+    else
+        log "snippet sync skipped or failed; run hostctl termix snippets"
+    fi
+}
+
+restricted_auth_line() {
+    local pub comment
+    pub="$(awk '{print $1" "$2}' "$1")"
+    comment="$2"
+    # ForceCommand only. Do not set `restrict` — that disables PTYs and Termix
+    # hangs after SSH with "Unable to request a pseudo-terminal".
+    printf 'command="%s",no-agent-forwarding,no-port-forwarding,no-X11-forwarding %s %s\n' \
+        "$MASTER_SHELL" "$pub" "$comment"
+}
+
+op_ssh_item_upsert() {
+    local title="$1" key="$2" notes="$3" item_id
+    command -v op >/dev/null 2>&1 || die "1Password CLI (op) is not on PATH"
+    item_id="$(op item list --vault Personal --format json | python3 -c '
+import json,sys
+title=sys.argv[1]
+for row in json.load(sys.stdin):
+    if row.get("title")==title:
+        print(row.get("id") or "")
+        break
+' "$title")"
+    if [ -n "$item_id" ]; then
+        log "1Password item already exists: ${title}"
+        printf '%s\n' "$item_id"
+        return
+    fi
+    # JSON create/edit cannot import an existing key as a real SSHKEY field.
+    # iOS then shows a file attachment with nothing to copy. Generate in-app
+    # (--ssh-generate-key) or Import in 1Password.app.
+    die "1Password item missing: ${title}. CLI cannot import ${key} as an SSH Key. Create it with: op item create --category ssh --title '${title}' --vault Personal --ssh-generate-key ed25519"
+}
+
+master_provision() {
+    mkdir -p "$MASTER_STATE" "${HOME}/.ssh"
+    chmod 700 "$MASTER_STATE" "${HOME}/.ssh"
+    if [ ! -f "$MASTER_KEY" ]; then
+        ssh-keygen -t ed25519 -N "" -f "$MASTER_KEY" -C "termix-master@khire-mac-mini" >/dev/null
+        chmod 600 "$MASTER_KEY"
+        chmod 644 "$MASTER_PUB"
+        log "created ${MASTER_KEY}"
+    fi
+    [ -x "$MASTER_SHELL" ] || chmod +x "$MASTER_SHELL"
+    upsert_authorized_block "$MASTER_MARKER_BEGIN" "$MASTER_MARKER_END" \
+        "$(restricted_auth_line "$MASTER_PUB" "termix-master@khire-mac-mini")"
+    log "installed restricted authorized_keys entry"
+    master_status
+    echo
+    echo "Next: hostctl master push   # CLI-pushes the key into this Termix pod"
+}
+
+master_phone() {
+    local notes master_id iphone_id
+    master_provision >/dev/null
+    mkdir -p "$MASTER_STATE"
+    chmod 700 "$MASTER_STATE"
+    if [ ! -f "$IPHONE_KEY" ]; then
+        ssh-keygen -t ed25519 -N "" -f "$IPHONE_KEY" -C "termix-master-iphone-17-pro@khire-mac-mini" >/dev/null
+        chmod 600 "$IPHONE_KEY"
+        chmod 644 "$IPHONE_PUB"
+        log "created ${IPHONE_KEY}"
+    fi
+    upsert_authorized_block "$IPHONE_MARKER_BEGIN" "$IPHONE_MARKER_END" \
+        "$(restricted_auth_line "$IPHONE_PUB" "termix-master-iphone-17-pro@khire-mac-mini")"
+    notes="Restricted hostctl on khire-mac-mini. Not a login shell.
+ssh -i <this-key> karan@karans-mac-mini.tail1e8436.ts.net
+Then: status | hosts | role | termix … | omarchy …"
+    master_id="$(op_ssh_item_upsert "$OP_MASTER_TITLE" "$MASTER_KEY" "$notes")"
+    iphone_id="$(op_ssh_item_upsert "$OP_IPHONE_TITLE" "$IPHONE_KEY" "$notes"$'\n'"Dedicated iPhone 17 Pro key.")"
+    echo "1Password Personal"
+    echo "  ${OP_MASTER_TITLE}     ${master_id}"
+    echo "  ${OP_IPHONE_TITLE}  ${iphone_id}"
+    echo "Termix iPhone app server URL (not an SSH host):"
+    echo "  https://karans-mac-mini.tail1e8436.ts.net"
+    echo "Pretty name once the internal Caddy edge is up:"
+    echo "  https://termix.krop.ai:8444"
+    echo "Do not type host.containers.internal in the app. That name only exists"
+    echo "inside the Termix pod as the SSH target for this Mac."
+    echo "On the iPhone: 1Password → ${OP_IPHONE_TITLE} is the hostctl key, not the app URL."
+}
+
+termix_cli() {
+    local bin
+    if [ -x /opt/homebrew/bin/termix ]; then
+        bin=/opt/homebrew/bin/termix
+    elif [ -x /usr/local/bin/termix ]; then
+        bin=/usr/local/bin/termix
+    else
+        die "official termix CLI not found"
+    fi
+    "$bin" --url "https://karans-mac-mini.tail1e8436.ts.net" "$@"
+}
+
+omarchy_termix_push() {
+    local key cred_id host_id tmp ssh_user
+    master_ensure_login_key
+    tmp="$(mktemp "${TMPDIR:-/tmp}/termix-omarchy.XXXXXX")"
+    if ! op_keychain_write ssh.termix.login "$tmp"; then
+        cp "$LOGIN_KEY" "$tmp"
+        chmod 600 "$tmp"
+        log "op-keychain miss; using on-disk login key for try-omarchy"
+    fi
+    key="$tmp"
+    ssh_user="$(id -un)"
+    if ! termix_cli whoami >/dev/null 2>&1; then
+        log "termix CLI not logged in; skip try-omarchy Termix host (seed termix.admin.* then termix login)"
+        rm -f "$tmp"
+        return 0
+    fi
+    cred_id="$(termix_cli credentials list | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+rows=data if isinstance(data,list) else data.get("credentials") or data.get("items") or []
+for row in rows:
+    if row.get("name")=="try-omarchy-login":
+        print(row.get("id") or "")
+        break
+')"
+    if [ -z "$cred_id" ]; then
+        cred_id="$(termix_cli credentials create \
+            --name try-omarchy-login \
+            --description "Interactive login on try-omarchy via Mac HVF :2222. Key from op-keychain ssh.termix.login." \
+            --auth-type key \
+            --username "${ssh_user}" \
+            --key-file "$key" \
+            --tags interactive,omarchy,login | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id") or "")')"
+        log "created Termix credential ${cred_id}"
+    else
+        termix_cli credentials update \
+            --auth-type key \
+            --username "${ssh_user}" \
+            --key-file "$key" \
+            "$cred_id" >/dev/null
+        log "updated Termix credential ${cred_id}"
+    fi
+    host_id="$(termix_cli hosts list | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+rows=data.get("hosts") or []
+for row in rows:
+    if row.get("name")=="try-omarchy":
+        print(row.get("id") or "")
+        break
+')"
+    if [ -z "$host_id" ]; then
+        host_id="$(termix_cli hosts create \
+            --name try-omarchy \
+            --ip host.containers.internal \
+            --port 2222 \
+            --username "${ssh_user}" \
+            --auth-type key \
+            --key-file "$key" \
+            --tags interactive,omarchy \
+            --enable-terminal | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id") or "")')"
+        log "created Termix host ${host_id}"
+    else
+        termix_cli hosts update \
+            --ip host.containers.internal \
+            --port 2222 \
+            --username "${ssh_user}" \
+            --auth-type key \
+            --key-file "$key" \
+            --tags interactive,omarchy \
+            --enable-terminal \
+            "$host_id" >/dev/null
+        log "updated Termix host ${host_id}"
+    fi
+    echo "termix host try-omarchy id=${host_id} credential=${cred_id} keychain=ssh.termix.login target=host.containers.internal:2222"
+    rm -f "$tmp"
+}
+
+master_push() {
+    local key="$MASTER_KEY" cred_id host_id
+    [ -f "$key" ] || die "missing ${key}; run hostctl master provision"
+    termix_cli whoami >/dev/null || die "termix CLI is not logged in; run termix login"
+    local ssh_user
+    ssh_user="$(id -un)"
+    cred_id="$(termix_cli credentials list | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+rows=data if isinstance(data,list) else data.get("credentials") or data.get("items") or []
+for row in rows:
+    if row.get("name")=="termix-master-hostctl":
+        print(row.get("id") or "")
+        break
+')"
+    if [ -z "$cred_id" ]; then
+        cred_id="$(termix_cli credentials create \
+            --name termix-master-hostctl \
+            --description "Restricted hostctl on khire-mac-mini. Not a login shell." \
+            --auth-type key \
+            --username "${ssh_user}" \
+            --key-file "$key" \
+            --tags termix-master,hostctl | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id") or "")')"
+        log "created Termix credential ${cred_id}"
+    else
+        termix_cli credentials update \
+            --auth-type key \
+            --username "${ssh_user}" \
+            --key-file "$key" \
+            "$cred_id" >/dev/null
+        log "updated Termix credential ${cred_id}"
+    fi
+    host_id="$(termix_cli hosts list | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+rows=data.get("hosts") or []
+for row in rows:
+    if row.get("name")=="khire-mac-mini-hostctl":
+        print(row.get("id") or "")
+        break
+')"
+    if [ -z "$host_id" ]; then
+        host_id="$(termix_cli hosts create \
+            --name khire-mac-mini-hostctl \
+            --ip host.containers.internal \
+            --port 22 \
+            --username "${ssh_user}" \
+            --auth-type key \
+            --key-file "$key" \
+            --tags termix-master,hostctl \
+            --enable-terminal | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id") or "")')"
+        log "created Termix host ${host_id}"
+    else
+        termix_cli hosts update \
+            --ip host.containers.internal \
+            --port 22 \
+            --username "${ssh_user}" \
+            --auth-type key \
+            --key-file "$key" \
+            --tags termix-master,hostctl \
+            --enable-terminal \
+            "$host_id" >/dev/null
+        log "updated Termix host ${host_id}"
+    fi
+    echo "termix host khire-mac-mini-hostctl id=${host_id} credential=${cred_id}"
+    termix_cli exec "$host_id" role
+}
+
+cmd="${1:-status}"
+shift || true
+case "$cmd" in
+    -h|--help|help)
+        usage
+        ;;
+    status)
+        engine_status
+        echo
+        termix_cmd status
+        echo
+        omarchy_cmd status
+        ;;
+    up)
+        ensure_machine
+        termix_cmd up
+        ;;
+    down)
+        termix_cmd down
+        ;;
+    termix)
+        termix_cmd "${1:-status}" "${@:2}"
+        ;;
+    omarchy)
+        omarchy_cmd "${1:-status}" "${@:2}"
+        ;;
+    attach|ix)
+        exec "${APP_BIN}/tmux/interactive" "$@"
+        ;;
+    sandbox)
+        exec "${SCRIPT_DIR}/sandbox" "${1:-attach}" "${@:2}"
+        ;;
+    machine)
+        case "${1:-}" in
+            mounts)
+                python3 "${SCRIPT_DIR}/lib/podman_mounts.py" --apply
+                ;;
+            *) die "machine commands: mounts" ;;
+        esac
+        ;;
+    hosts)
+        print_hosts
+        ;;
+    role)
+        print_role
+        ;;
+    master)
+        case "${1:-status}" in
+            status) master_status ;;
+            provision) master_provision ;;
+            push) master_push ;;
+            phone) master_phone ;;
+            login) master_login_push ;;
+            keychain-seed) master_keychain_seed ;;
+            *) die "master commands: provision|status|push|phone|login|keychain-seed" ;;
+        esac
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

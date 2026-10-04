@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# No-secret smoke inside the browser-eval container.
+# Usage: smoke [--image NAME] [--runtime podman|docker]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "${SCRIPT_DIR}/../lib/common.sh"
+ensure_dirs
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --image) IMAGE="${2:?missing image}"; shift 2 ;;
+    --runtime) RUNTIME="${2:?missing runtime}"; shift 2 ;;
+    -h|--help|help) sed -n '2,4p' "$0" | sed 's/^# //'; exit 0 ;;
+    *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="${ARTIFACTS_DIR}/smoke-${STAMP}.md"
+JSON="${ARTIFACTS_DIR}/smoke-${STAMP}.jsonl"
+
+cat > "$OUT" <<EOF
+# browser-eval smoke
+
+- timestamp: ${STAMP}
+- image: ${IMAGE}
+- runtime: ${RUNTIME}
+
+EOF
+
+run_check() {
+  local name="$1"
+  shift
+  {
+    echo "## ${name}"
+    echo
+    echo '```text'
+  } >> "$OUT"
+  set +e
+  "${SCRIPT_DIR}/run" --image "$IMAGE" --runtime "$RUNTIME" --no-mount -- "$@" \
+    >"${ARTIFACTS_DIR}/${name}-${STAMP}.out" \
+    2>"${ARTIFACTS_DIR}/${name}-${STAMP}.err"
+  local status=$?
+  set -e
+  cat "${ARTIFACTS_DIR}/${name}-${STAMP}.out" >> "$OUT" || true
+  if [ -s "${ARTIFACTS_DIR}/${name}-${STAMP}.err" ]; then
+    echo "--- stderr ---" >> "$OUT"
+    cat "${ARTIFACTS_DIR}/${name}-${STAMP}.err" >> "$OUT" || true
+  fi
+  echo '```' >> "$OUT"
+  echo >> "$OUT"
+  python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"status":int(sys.argv[2])}))' \
+    "$name" "$status" >> "$JSON"
+}
+
+run_check chromium-version chromium --version
+run_check firefox-version firefox-esr --version
+run_check python-version python3 --version
+run_check browser-use-import python3 -c 'import browser_use,sys; print(getattr(browser_use,"__version__","ok"))'
+
+echo "$OUT"

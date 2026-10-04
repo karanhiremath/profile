@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# Control the tmux QEMU Omarchy guest on this Mac.
+# Separate from Termix. Never compose, Serve, or Funnel.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+. "${SCRIPT_DIR}/lib/common.sh"
+# shellcheck source=lib/qemu.sh
+. "${SCRIPT_DIR}/lib/qemu.sh"
+# shellcheck source=lib/ssh.sh
+. "${SCRIPT_DIR}/lib/ssh.sh"
+
+usage() {
+    cat <<EOF
+Usage: omarchy [up|down|status|probe|ports|install|iso|console|setup-ssh|bind|ssh|keys|destroy]
+
+Omarchy via qemu-system-x86_64 in tmux (session ${OMARCHY_TMUX_SESSION}).
+Default install target is ${OMARCHY_TARGET_HOST} (khire-mbp-13).
+This is not a Podman container and is never part of the Termix stack.
+
+Commands:
+  up         Fetch ISO if needed, then start QEMU in tmux
+  down       Power down the QEMU guest
+  status     ISO, disk, qemu, tmux
+  probe      Host fit plus install state
+  ports      SSH / mosh forward recipe
+  install    brew qemu + official bootstrap ISO
+  iso        fetch|build|status
+  console    tmux attach -t ${OMARCHY_TMUX_SESSION}
+  setup-ssh  Publish op-keychain public keys + ssh config Host try-omarchy
+  bind       Host-owned post-reset bind (keys, QMP)
+  ssh        ssh -p ${OMARCHY_SSH_PORT} ${OMARCHY_SSH_USER}@${OMARCHY_SSH_HOST}
+  keys       Print op-keychain / on-disk public keys
+  destroy    Stop QEMU and remove leftover Try Omarchy.app data
+EOF
+}
+
+omarchy_print_status() {
+    local qemu=no tmux=no iso disk
+    omarchy_qemu_running && qemu=yes
+    tmux has-session -t "$OMARCHY_TMUX_SESSION" 2>/dev/null && tmux=yes
+    if [ -e "$OMARCHY_CURRENT_ISO" ]; then
+        iso="$(omarchy_iso_kind) ($(readlink "$OMARCHY_CURRENT_ISO" 2>/dev/null || echo "$OMARCHY_CURRENT_ISO"))"
+    else
+        iso=missing
+    fi
+    if [ -f "$OMARCHY_DISK" ]; then
+        disk="present (${OMARCHY_DISK})"
+    else
+        disk=missing
+    fi
+    cat <<EOF
+Omarchy QEMU
+  target:   ${OMARCHY_TARGET_HOST} (khire-mbp-13)
+  qemu:     $(omarchy_qemu_bin || echo missing)
+  running:  ${qemu}
+  tmux:     ${tmux} (${OMARCHY_TMUX_SESSION})
+  iso:      ${iso}
+  bootstrap:${OMARCHY_ISO_VERSION}
+  disk:     ${disk}
+  cidata:   $([ -f "$OMARCHY_CIDATA_ISO" ] && echo present || echo missing)
+  stack:    separate from Termix (never the same compose)
+  serve:    none (local QEMU user-net only)
+  leftover: $([ -d "$OMARCHY_APP" ] && echo "Try Omarchy.app still installed" || echo "Try Omarchy.app removed")
+EOF
+}
+
+omarchy_probe() {
+    local arch os_ver free_gib
+    arch="$(uname -m)"
+    os_ver="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+    free_gib="$(omarchy_free_gib)"
+    omarchy_print_status
+    echo
+    echo "Probe"
+    echo "  chip:    $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
+    echo "  arch:    ${arch}"
+    echo "  macos:   ${os_ver}"
+    echo "  free:    ${free_gib} GiB (bootstrap ISO is ~5.8 GiB)"
+    echo "  ram:     guest default ${OMARCHY_MEM_MIB} MiB TCG x86_64; leave Podman/Termix as-is"
+    echo "  path:    official ISO bootstrap + custom remaster for ${OMARCHY_TARGET_HOST}"
+    echo "  not:     Try Omarchy.app / sandbox-ctl --family omarchy-desktop"
+    echo "  not:     Termix compose / Tailscale Serve / Funnel"
+    if [ -z "$(omarchy_qemu_bin)" ]; then
+        omarchy_die "qemu-system-x86_64 missing; brew install qemu"
+    fi
+}
+
+omarchy_up() {
+    if [ -z "$(omarchy_qemu_bin)" ]; then
+        "${SCRIPT_DIR}/install"
+    fi
+    if [ ! -e "$OMARCHY_CURRENT_ISO" ]; then
+        "${SCRIPT_DIR}/iso/fetch"
+    fi
+    if [ ! -f "$OMARCHY_CIDATA_ISO" ]; then
+        "${SCRIPT_DIR}/iso/build" || true
+    fi
+    omarchy_qemu_up
+    omarchy_print_status
+    echo
+    echo "Console: hostctl omarchy console   # tmux attach -t ${OMARCHY_TMUX_SESSION}"
+    echo "SSH:     hostctl omarchy bind && ssh try-omarchy"
+}
+
+omarchy_ports() {
+    cat <<'EOF'
+QEMU user-net forwards (set in qemu-run, not the old Try Omarchy UI)
+
+Required
+  TCP  2222 -> 22     hostfwd on 127.0.0.1
+
+Optional mosh (Mac Terminal only; pin the port)
+  Add hostfwd if you need it. Default guest has no UDP map.
+
+Do not forward
+  8080  Termix is on the Mac, not in the guest
+  443   Tailscale Serve stays on Termix
+
+Reachability
+  Omarchy -> Termix   http://10.0.2.2:8080
+                      or https://karans-mac-mini.tail1e8436.ts.net
+                      if Tailscale is installed in the guest
+  Mac -> Omarchy SSH  ssh try-omarchy
+                      ssh -p 2222 karan@127.0.0.1
+  First login keys    hostctl omarchy bind   # host-owned; no guest terminal
+  Console             hostctl omarchy console
+
+Termix note
+  From this Termix pod, Omarchy SSH is host.containers.internal:2222
+  (Podman host gateway reaches the Mac loopback forward).
+
+Later (home-mbp-13 / khire-mbp-13 / SD card)
+  Same ISO. Same services (sshd, optional mosh) on the tailnet. No QEMU forwards.
+EOF
+}
+
+omarchy_iso_cmd() {
+    local cmd="${1:-status}"
+    shift || true
+    case "$cmd" in
+        fetch) "${SCRIPT_DIR}/iso/fetch" ;;
+        build) "${SCRIPT_DIR}/iso/build" ;;
+        status|*) omarchy_print_status ;;
+    esac
+}
+
+omarchy_destroy() {
+    omarchy_qemu_down || true
+    if [ -d "$OMARCHY_APP" ] || [ -d "$OMARCHY_APP_SUPPORT" ] || [ -f "$OMARCHY_APP_PREFS" ]; then
+        omarchy_log "removing leftover Try Omarchy.app data"
+        rm -rf "$OMARCHY_APP" "$OMARCHY_APP_SUPPORT"
+        rm -f "$OMARCHY_APP_PREFS"
+    fi
+    omarchy_log "QEMU disk/ISO kept. Remove ${OMARCHY_STATE_DIR} if you want a clean guest disk."
+    omarchy_print_status
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+    -h|--help|help) usage ;;
+    status) omarchy_print_status ;;
+    probe) omarchy_probe ;;
+    ports) omarchy_ports ;;
+    install) "${SCRIPT_DIR}/install" ;;
+    up) omarchy_up ;;
+    down) omarchy_qemu_down ;;
+    console) omarchy_qemu_console ;;
+    iso)
+        shift || true
+        omarchy_iso_cmd "${1:-status}" "${@:2}"
+        ;;
+    setup-ssh|ssh-setup) omarchy_setup_ssh ;;
+    bind|post-reset) omarchy_bind ;;
+    inject-ssh) omarchy_inject_ssh_disk ;;
+    keys) omarchy_print_keys ;;
+    destroy|purge) omarchy_destroy ;;
+    ssh)
+        shift || true
+        omarchy_ssh "$@"
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

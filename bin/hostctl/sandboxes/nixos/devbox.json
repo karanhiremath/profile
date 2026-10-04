@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.13.7/.schema/devbox.schema.json",
+  "packages": [
+    "tmux@latest",
+    "git@latest",
+    "mise@latest",
+    "python@3.13",
+    "rustc@latest",
+    "cargo@latest",
+    "go@latest",
+    "elixir@latest"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo hostctl: nixos/devbox sandbox (rust elixir go python; node is opt-in)"
+    ]
+  }
+}

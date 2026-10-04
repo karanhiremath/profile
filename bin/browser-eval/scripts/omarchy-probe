@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Probe the Omarchy QEMU guest for OSS browser eval. Does not install Dia/Comet.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "${SCRIPT_DIR}/../lib/common.sh"
+ensure_dirs
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="${ARTIFACTS_DIR}/omarchy-probe-${STAMP}.md"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "${LAB_DIR}/../.." && pwd)}"
+OMARCHY="${PROFILE_DIR}/bin/omarchy/start"
+
+{
+  echo "# browser-eval omarchy probe"
+  echo
+  echo "- timestamp: ${STAMP}"
+  echo "- note: Dia/Comet/Arc are unavailable on Linux. Guest lane is Chromium/Firefox only."
+  echo
+  echo '```text'
+} > "$OUT"
+
+if [[ ! -x "$OMARCHY" ]]; then
+  echo "omarchy helper missing: $OMARCHY" >> "$OUT"
+  echo '```' >> "$OUT"
+  echo "$OUT"
+  exit 1
+fi
+
+set +e
+"$OMARCHY" status >> "$OUT" 2>&1
+status_rc=$?
+echo >> "$OUT"
+"$OMARCHY" probe >> "$OUT" 2>&1
+probe_rc=$?
+set -e
+
+echo '```' >> "$OUT"
+echo >> "$OUT"
+echo "- omarchy status rc: ${status_rc}" >> "$OUT"
+echo "- omarchy probe rc: ${probe_rc}" >> "$OUT"
+echo "- installable: chromium, firefox" >> "$OUT"
+echo "- unavailable: dia, comet, arc" >> "$OUT"
+echo "$OUT"
+if [[ "$status_rc" -ne 0 || "$probe_rc" -ne 0 ]]; then
+  exit 1
+fi

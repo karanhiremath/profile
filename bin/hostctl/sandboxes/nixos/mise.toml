@@ -1,0 +1,10 @@
+# Distrohop path: same language contract on non-Nix families.
+# Personal default still uses the flake + Devbox. Node is not listed.
+[tools]
+python = "3.13"
+rust = "latest"
+go = "latest"
+elixir = "latest"
+
+[settings]
+idiomatic_version_file_enable_tools = []

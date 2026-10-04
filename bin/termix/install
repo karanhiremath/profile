@@ -1,0 +1,48 @@
+#!/bin/bash
+# Install the official Termix CLI and link profile wrappers onto PATH.
+set -euo pipefail
+shopt -s failglob
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="termix"
+INSTALL_DIR="${TERMIX_INSTALL_DIR:-$HOME/.local/bin}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+install_messages "start" "$app_name"
+
+mkdir -p "$INSTALL_DIR"
+
+if ! command -v termix >/dev/null 2>&1 || [ "$(command -v termix)" = "${INSTALL_DIR}/termix" ]; then
+    if command -v npm >/dev/null 2>&1; then
+        if [ ! -e /opt/homebrew/bin/termix ] && [ ! -e /usr/local/bin/termix ]; then
+            npm install -g @termix-cli/cli
+        fi
+    else
+        echo "termix: npm is required to install @termix-cli/cli" >&2
+        exit 1
+    fi
+fi
+
+ln -sfn "${SCRIPT_DIR}/cli" "${INSTALL_DIR}/termix"
+ln -sfn "${SCRIPT_DIR}/start" "${INSTALL_DIR}/termix-up"
+ln -sfn "${SCRIPT_DIR}/status" "${INSTALL_DIR}/termix-status"
+ln -sfn "${SCRIPT_DIR}/termix-s" "${INSTALL_DIR}/termix-s"
+
+chmod +x "${SCRIPT_DIR}/cli" "${SCRIPT_DIR}/start" "${SCRIPT_DIR}/status" "${SCRIPT_DIR}/termix-s"
+
+echo "✓ linked ${INSTALL_DIR}/termix -> ${SCRIPT_DIR}/cli"
+echo "✓ linked ${INSTALL_DIR}/termix-up -> ${SCRIPT_DIR}/start"
+echo "✓ linked ${INSTALL_DIR}/termix-status -> ${SCRIPT_DIR}/status"
+echo "✓ linked ${INSTALL_DIR}/termix-s -> ${SCRIPT_DIR}/termix-s"
+
+install_messages "end" "$app_name"

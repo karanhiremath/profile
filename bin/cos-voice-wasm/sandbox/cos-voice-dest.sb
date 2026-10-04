@@ -1,0 +1,22 @@
+;; Cos-voice dest apply host — personal-lane deny wrap.
+;; Render the __HOME__ token to an absolute home path before sandbox-exec.
+;; Allow default so cargo/tmux/host tools keep working; deny credentials and work CoS.
+;; This is not a :8787 wrap and does not authorize Cos/Atop send-keys.
+(version 1)
+(allow default)
+(deny file-read* file-write*
+  (subpath "__HOME__/.ssh")
+  (subpath "__HOME__/.aws")
+  (subpath "__HOME__/.kube")
+  (subpath "__HOME__/.gnupg")
+  (subpath "__HOME__/.hermes/.env")
+  (subpath "__HOME__/.codex/auth.json")
+  (subpath "__HOME__/.local/share/hermes-agents/chief-of-staff-work")
+  (subpath "__HOME__/.local/share/hermes-agents/work-notes-steward")
+)
+(deny file-write*
+  (regex #"__HOME__/\.pi/agent/agents(/|$)")
+)
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*"))
+(allow network-inbound (local ip "localhost:*"))

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Install qemu and the official Omarchy bootstrap ISO (not Try Omarchy.app).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+. "${SCRIPT_DIR}/lib/common.sh"
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+# shellcheck source=../sh/shell_fns
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="omarchy"
+install_messages "start" "$app_name"
+
+if [ "$(uname -s)" != "Darwin" ]; then
+    omarchy_die "hostctl omarchy install is for the Mac that runs QEMU"
+fi
+
+if [ -z "$(omarchy_qemu_bin)" ]; then
+    omarchy_log "installing qemu via Homebrew"
+    brew install qemu
+fi
+[ -n "$(omarchy_qemu_bin)" ] || omarchy_die "qemu-system-x86_64 still missing after brew install qemu"
+[ -f "$OMARCHY_OVMF_CODE" ] || omarchy_die "missing OVMF ${OMARCHY_OVMF_CODE}"
+
+"${SCRIPT_DIR}/iso/fetch"
+
+echo "✓ qemu $(qemu-system-x86_64 --version | head -1)"
+echo "✓ bootstrap ISO ${OMARCHY_ISO_VERSION} at ${OMARCHY_BOOTSTRAP_ISO}"
+install_messages "end" "$app_name"

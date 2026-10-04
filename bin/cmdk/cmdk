@@ -1,0 +1,162 @@
+#!/usr/bin/env zsh
+# cmdk — Ghostty → tmux → zsh → harness / otel action bar
+set -euo pipefail
+
+PROFILE_DIR="${PROFILE_DIR:-$HOME/src/profile}"
+LIB="${PROFILE_DIR}/bin/cmdk/lib.py"
+PYTHON="${CMDK_PYTHON:-python3}"
+
+cmdk_lib() {
+  "$PYTHON" "$LIB" "$@"
+}
+
+cmdk_status_tmux() {
+  local sess="" win="" cmd="" layer="zsh"
+  if [[ -n "${TMUX:-}" ]]; then
+    sess=$(command tmux display-message -p '#S' 2>/dev/null || true)
+    win=$(command tmux display-message -p '#W' 2>/dev/null || true)
+    cmd=$(command tmux display-message -p '#{pane_current_command}' 2>/dev/null || true)
+    case "${cmd:t}" in
+      nvim|vim|vi) layer=nvim ;;
+      pi|claude|codex|cursor-agent|agent|hermes|herm-tui|omni|omnigent) layer=harness ;;
+      btop|k9s|htop) layer=otel ;;
+      *)
+        if [[ "${sess}" == otel* || "${win}" == *otel* || "${win}" == *metrics* ]]; then
+          layer=otel
+        elif [[ -n "${sess}" ]]; then
+          layer=tmux
+        fi
+        ;;
+    esac
+    print -n -- "${sess}:${win} ${layer}"
+  else
+    print -n -- "local ${layer}"
+  fi
+}
+
+cmdk_status_prompt() {
+  print -n -- "$(cmdk_status_tmux)"
+}
+
+cmdk_status_json() {
+  cmdk_lib detect
+}
+
+cmdk_pick() {
+  local fzf_bin row action_id payload exec_json
+  fzf_bin="${commands[fzf]:-}"
+  [[ -n "$fzf_bin" ]] || { print -u2 "cmdk: fzf is required (just zsh-stack)"; return 127; }
+
+  row=$(cmdk_lib list --tsv | "$fzf_bin" \
+    --prompt='cmdk> ' \
+    --header='Ghostty → tmux → zsh → harness prompt / otel' \
+    --with-nth=2,3,4 \
+    --delimiter=$'\t' \
+    --height=80% \
+    --reverse) || return 130
+
+  action_id=${row%%$'\t'*}
+  [[ -n "$action_id" ]] || return 1
+
+  payload=$(cmdk_lib run "$action_id") || {
+    print -u2 -- "$payload"
+    return 1
+  }
+  print -r -- "$payload"
+
+  local follow
+  follow=$(print -r -- "$payload" | "$PYTHON" -c '
+import json, shlex, sys
+data = json.load(sys.stdin)
+if "export" in data:
+    for key, value in data["export"].items():
+        print(f"export {shlex.quote(key)}={shlex.quote(value)}")
+elif "exec" in data:
+    print(" ".join(shlex.quote(part) for part in data["exec"]))
+') || true
+  if [[ -n "$follow" ]]; then
+    eval "$follow"
+  fi
+}
+
+cmdk_popup() {
+  local client=""
+  if ! command -v tmux >/dev/null 2>&1; then
+    cmdk_pick
+    return
+  fi
+  if [[ -n "${1:-}" ]]; then
+    client="$1"
+  else
+    client=$(command tmux list-clients -F '#{client_activity} #{client_tty}' 2>/dev/null \
+      | sort -nr | awk 'NR==1 { print $2 }')
+  fi
+  if [[ -n "$client" ]]; then
+    command tmux display-popup -c "$client" -E -w 86% -h 72% -T cmdk -- "$PROFILE_DIR/bin/cmdk/cmdk" pick
+  else
+    command tmux display-popup -E -w 86% -h 72% -T cmdk -- "$PROFILE_DIR/bin/cmdk/cmdk" pick
+  fi
+}
+
+cmdk_from_ghostty() {
+  # New Ghostty tab hands off to the existing tmux client's popup, then exits.
+  if command tmux list-clients >/dev/null 2>&1; then
+    cmdk_popup
+    return
+  fi
+  cmdk_pick
+}
+
+usage() {
+  cat <<'EOF'
+cmdk — layered action bar (Ghostty → tmux → zsh → harness / otel)
+
+  cmdk                fzf picker
+  cmdk pick
+  cmdk popup [client] tmux display-popup
+  cmdk status [--tmux|--prompt|--json]
+  cmdk layer          detect current pane layer
+  cmdk list           catalog + live rows (tsv)
+  cmdk run <id>
+  cmdk inject [--target T] [text...]
+  cmdk otel
+  cmdk classes
+  cmdk --from ghostty Ghostty Cmd-K entry
+EOF
+}
+
+main() {
+  local verb="${1:-pick}"
+  case "$verb" in
+    -h|--help|help) usage ;;
+    pick|"") cmdk_pick ;;
+    popup) shift; cmdk_popup "${1:-}" ;;
+    --from)
+      shift
+      [[ "${1:-}" == ghostty ]] || { print -u2 "cmdk: unknown --from ${1:-}"; return 2; }
+      cmdk_from_ghostty
+      ;;
+    status)
+      case "${2:-json}" in
+        --tmux|tmux) cmdk_status_tmux; print ;;
+        --prompt|prompt) cmdk_status_prompt; print ;;
+        --json|json|"") cmdk_status_json ;;
+        *) print -u2 "cmdk status: use --tmux | --prompt | --json"; return 2 ;;
+      esac
+      ;;
+    layer) cmdk_lib detect ;;
+    list) shift; cmdk_lib list "${@:-"--tsv"}" ;;
+    run) shift; cmdk_lib run "$@" ;;
+    inject) shift; cmdk_lib inject "$@" ;;
+    otel) cmdk_lib otel ;;
+    classes) cmdk_lib classes ;;
+    focus) shift; cmdk_lib focus "$@" ;;
+    *)
+      print -u2 "cmdk: unknown verb $verb"
+      usage >&2
+      return 2
+      ;;
+  esac
+}
+
+main "$@"

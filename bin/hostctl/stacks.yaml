@@ -1,0 +1,19 @@
+# Personal host stacks for this Mac mini. Not the CoS-W hostctl bridge.
+host: khire-mac-mini
+engine: podman
+
+stacks:
+  termix:
+    enabled: true
+    kind: compose
+    role: termix-master
+    start: bin/termix/start
+    notes: Single tailnet Termix pod. Restricted hostctl key. Own login. Not behind Caddy.
+
+  omarchy:
+    enabled: true
+    kind: qemu-iso
+    source: https://iso.omarchy.org/omarchy-4.0.3.iso
+    version: "4.0.3"
+    status: qemu-tmux
+    notes: Official ISO is bootstrap. Custom remaster is the default install for home-mbp-13 (khire-mbp-13). qemu-system-x86_64 in tmux session oma-qemu. Separate from Termix. Never compose/Serve/Funnel. Not Try Omarchy.app.

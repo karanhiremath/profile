@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Start the Cos-voice BEAM supervisor on this host. Same mix app later on mac-s.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export COS_VOICE_APPLY="${COS_VOICE_APPLY:-$ROOT/target/debug/cos-voice-apply}"
+cd "$ROOT/elixir"
+exec mix run --no-halt

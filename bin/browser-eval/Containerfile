@@ -1,0 +1,40 @@
+# OSS browser-eval image. No host Chrome/Arc/Dia/Comet profiles.
+# Build with: bin/browser-eval/scripts/build
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      chromium \
+      curl \
+      firefox-esr \
+      fonts-liberation \
+      libnss3 \
+      python3 \
+      python3-pip \
+      python3-venv \
+      tini \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/eval-venv \
+ && /opt/eval-venv/bin/pip install --no-cache-dir 'browser-use>=0.1.0' playwright \
+ && /opt/eval-venv/bin/playwright install --with-deps chromium \
+ && ln -s /opt/eval-venv/bin/python /usr/local/bin/eval-python \
+ && echo 'export PATH="/opt/eval-venv/bin:$PATH"' >/etc/profile.d/eval-venv.sh
+
+RUN useradd --create-home --shell /bin/bash agent
+WORKDIR /workspace
+USER agent
+ENV PATH="/opt/eval-venv/bin:${PATH}"
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash"]

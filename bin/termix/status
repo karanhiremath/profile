@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Show Termix local and tailnet Serve status.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")" && pwd)"
+TERMIX_LIB_DIR="${SCRIPT_DIR}/lib"
+# shellcheck source=lib/common.sh
+. "${TERMIX_LIB_DIR}/common.sh"
+# shellcheck source=lib/serve.sh
+. "${TERMIX_LIB_DIR}/serve.sh"
+
+local_url="$(termix_local_url)"
+compose_dir="$(termix_default_compose_dir)"
+
+if curl -fsS --max-time 2 "$(termix_health_url)" >/dev/null 2>&1; then
+    local_health="ok"
+else
+    local_health="down"
+fi
+
+if tailscale status >/dev/null 2>&1; then
+    tailnet_url="$(termix_tailnet_url)"
+    serve_json="$(termix_serve_summarize)"
+else
+    tailnet_url="unknown"
+    serve_json='{"empty": true, "matches": false, "funnel": [], "proxies": []}'
+fi
+
+cat <<EOF
+Termix status
+  compose: ${compose_dir}
+  local:   ${local_url} (${local_health})
+  tailnet: ${tailnet_url}
+  public:  none (Termix auth is enough on the tailnet)
+  pretty:  https://termix.krop.ai:8444 (internal Caddy; not host.containers.internal)
+  apps:    https://apps.krop.ai  (separate Google OIDC edge; no backends yet)
+  serve:   ${serve_json}
+EOF

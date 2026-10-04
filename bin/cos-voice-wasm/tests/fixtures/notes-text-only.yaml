@@ -1,0 +1,15 @@
+name: personal-notes-steward
+description: "Fixture only. Text-only."
+
+endpoint:
+  base_url: https://api.cartesia.ai
+
+tts:
+  enabled: false
+  model: sonic-3.5
+  voice: ""
+
+stt:
+  enabled: false
+  model: ink-2
+  language: en

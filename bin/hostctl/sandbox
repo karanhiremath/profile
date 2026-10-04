@@ -1,0 +1,324 @@
+#!/usr/bin/env bash
+# Provision and attach isolated podman tmux sandboxes for attach -s aliases.
+# Family comes from the distrohop catalog. Never hardcode ubuntu.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+FAMILIES="${HOSTCTL_FAMILIES:-${SCRIPT_DIR}/families.yaml}"
+STATE_DIR="${HOSTCTL_STATE_DIR:-$HOME/.local/share/hostctl}"
+FAMILY_STORE="${STATE_DIR}/attach-families.json"
+SANDBOX_ROOT="${HOSTCTL_SANDBOX_ROOT:-${SCRIPT_DIR}/sandboxes}"
+
+usage() {
+    cat <<'EOF'
+Usage: hostctl sandbox <up|attach|ls|family> --kind K --instance I --session S [--family F]
+
+Creates or attaches a named podman sandbox and opens tmux inside it.
+Personal default is Nix flakes + Devbox, wrapped by the machine SELinux policy.
+Distrohop families reuse the same language contract via Devbox and mise.
+EOF
+}
+
+log() { printf 'sandbox: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+KIND="" INSTANCE="" SESSION="" FAMILY=""
+CMD="${1:-}"
+shift || true
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --kind) KIND="${2:?}"; shift 2 ;;
+        --instance) INSTANCE="${2:?}"; shift 2 ;;
+        --session) SESSION="${2:?}"; shift 2 ;;
+        --family) FAMILY="${2:?}"; shift 2 ;;
+        -h|--help|help) usage; exit 0 ;;
+        *) die "unknown argument: $1" ;;
+    esac
+done
+
+[ -n "$CMD" ] || { usage >&2; exit 2; }
+[ -n "$KIND" ] || die "--kind required"
+[ -n "$INSTANCE" ] || die "--instance required"
+[ -n "$SESSION" ] || die "--session required"
+
+container_name() {
+    printf 'attach-%s-%s-%s' "$KIND" "$INSTANCE" "$SESSION" | tr -c 'a-zA-Z0-9._-' '-'
+}
+
+podman_bin() {
+    local p
+    p="${HOSTCTL_PODMAN:-$(command -v podman 2>/dev/null || true)}"
+    [ -n "$p" ] || die "podman not found"
+    printf '%s\n' "$p"
+}
+
+ensure_podman() {
+    local bin="$1"
+    if "$bin" info >/dev/null 2>&1; then
+        return 0
+    fi
+    "$bin" machine start >/dev/null 2>&1 || true
+    "$bin" info >/dev/null 2>&1 || die "podman is installed but not reachable"
+}
+
+family_field() {
+    python3 - "$FAMILIES" "$FAMILY" "$1" <<'PY'
+import sys
+from pathlib import Path
+try:
+    import yaml
+except ImportError:
+    # Fallback tags/sources when PyYAML is missing.
+    family, field = sys.argv[2], sys.argv[3]
+    known = {
+        "nixos": {"tag": "localhost/hostctl/nixos:dev", "source": "docker.io/nixos/nix", "pkg": "nix", "provisioner": "flake", "workspace": "sandboxes/nixos"},
+        "rust": {"tag": "localhost/hostctl/nixos:dev", "source": "docker.io/nixos/nix", "pkg": "nix", "provisioner": "flake", "workspace": "sandboxes/nixos"},
+        "elixir": {"tag": "localhost/hostctl/nixos:dev", "source": "docker.io/nixos/nix", "pkg": "nix", "provisioner": "flake", "workspace": "sandboxes/nixos"},
+        "mojo": {"tag": "localhost/hostctl/nixos:dev", "source": "docker.io/nixos/nix", "pkg": "nix", "provisioner": "flake", "workspace": "sandboxes/nixos"},
+        "go": {"tag": "localhost/hostctl/nixos:dev", "source": "docker.io/nixos/nix", "pkg": "nix", "provisioner": "flake", "workspace": "sandboxes/nixos"},
+        "python": {"tag": "localhost/hostctl/nixos:dev", "source": "docker.io/nixos/nix", "pkg": "nix", "provisioner": "flake", "workspace": "sandboxes/nixos"},
+        "node-web": {"tag": "localhost/hostctl/nixos:dev", "source": "docker.io/nixos/nix", "pkg": "nix", "provisioner": "flake", "workspace": "sandboxes/nixos"},
+        "python-node-nix": {"tag": "localhost/hostctl/nixos:dev", "source": "docker.io/nixos/nix", "pkg": "nix", "provisioner": "flake", "workspace": "sandboxes/nixos"},
+    }
+    print((known.get(family) or {}).get(field) or "")
+    raise SystemExit(0)
+data = yaml.safe_load(Path(sys.argv[1]).read_text()) if Path(sys.argv[1]).exists() else {}
+fam = (data.get("families") or {}).get(sys.argv[2]) or {}
+print(fam.get(sys.argv[3]) or "")
+PY
+}
+
+persist_family() {
+    python3 - "$FAMILY_STORE" "$KIND" "$INSTANCE" "$SESSION" "$FAMILY" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+path.parent.mkdir(parents=True, exist_ok=True)
+data = json.loads(path.read_text()) if path.exists() else {}
+key = f"{sys.argv[2]}/{sys.argv[3]}/{sys.argv[4]}"
+data[key] = sys.argv[5]
+path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+}
+
+persisted_family() {
+    python3 - "$FAMILY_STORE" "$KIND" "$INSTANCE" "$SESSION" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if not path.exists():
+    raise SystemExit(0)
+data = json.loads(path.read_text())
+print(data.get(f"{sys.argv[2]}/{sys.argv[3]}/{sys.argv[4]}") or "")
+PY
+}
+
+resolve_family() {
+    if [ -z "$FAMILY" ]; then
+        FAMILY="$(persisted_family || true)"
+    fi
+    if [ -z "$FAMILY" ]; then
+        FAMILY="$(
+            PYTHONPATH="${SCRIPT_DIR}/lib" python3 -c \
+                'from pathlib import Path; from attach_spec import load_inventory, pick_family; p=Path("'"${SCRIPT_DIR}"'/interactive.yaml"); inv=load_inventory(p) if p.exists() else {}; print(pick_family("'"$SESSION"'", inventory=inv))'
+        )"
+    fi
+    persist_family
+}
+
+image_for_family() {
+    local tag source
+    tag="$(family_field tag)"
+    source="$(family_field source)"
+    if [ -n "$tag" ]; then
+        printf '%s\n' "$tag"
+        return 0
+    fi
+    if [ -n "$source" ]; then
+        printf '%s\n' "$source"
+        return 0
+    fi
+    die "family ${FAMILY} has no tag or source in ${FAMILIES}"
+}
+
+ensure_image() {
+    local bin="$1" image="$2" source
+    if "$bin" image inspect "$image" >/dev/null 2>&1; then
+        printf '%s\n' "$image"
+        return 0
+    fi
+    source="$(family_field source)"
+    if [ -n "$source" ] && "$bin" image inspect "$source" >/dev/null 2>&1; then
+        printf '%s\n' "$source"
+        return 0
+    fi
+    if [ -n "$source" ]; then
+        log "pulling family source ${source}"
+        if "$bin" pull "$source" >/dev/null; then
+            printf '%s\n' "$source"
+            return 0
+        fi
+    fi
+    die "no local image for family ${FAMILY} (looked for ${image}). Build the distrohop family or pull its source."
+}
+
+ensure_tmux() {
+    local bin="$1" cid="$2" pkg
+    if "$bin" exec "$cid" sh -lc 'command -v tmux >/dev/null'; then
+        return 0
+    fi
+    pkg="$(family_field pkg)"
+    case "$pkg" in
+        nix) "$bin" exec "$cid" sh -lc 'nix-env -iA nixpkgs.tmux' ;;
+        pacman) "$bin" exec "$cid" sh -lc 'pacman -Sy --noconfirm tmux' ;;
+        dnf) "$bin" exec "$cid" sh -lc 'dnf install -y tmux' ;;
+        apk) "$bin" exec "$cid" sh -lc 'apk add --no-cache tmux' ;;
+        *) die "tmux missing in sandbox ${cid} and no package manager mapping for family ${FAMILY}" ;;
+    esac
+}
+
+workspace_dir() {
+    local rel
+    rel="$(family_field workspace)"
+    if [ -z "$rel" ]; then
+        rel="sandboxes/nixos"
+    fi
+    case "$rel" in
+        /*) printf '%s\n' "$rel" ;;
+        *) printf '%s\n' "${SCRIPT_DIR}/${rel}" ;;
+    esac
+}
+
+copy_workspace() {
+    local bin="$1" cid="$2" src
+    src="$(workspace_dir)"
+    [ -d "$src" ] || return 0
+    "$bin" exec "$cid" sh -lc 'mkdir -p /workspace'
+    "$bin" cp "${src}/." "${cid}:/workspace"
+    if [ "$FAMILY" = "node-web" ] && [ -f "${src}/node-web.devbox.json" ]; then
+        "$bin" exec "$cid" sh -lc 'cp /workspace/node-web.devbox.json /workspace/devbox.json'
+    fi
+}
+
+provision_flake_devbox() {
+    local bin="$1" cid="$2"
+    copy_workspace "$bin" "$cid"
+    "$bin" exec "$cid" sh -lc '
+set -e
+export NIX_CONFIG="experimental-features = nix-command flakes
+sandbox = false"
+        if ! command -v tmux >/dev/null 2>&1; then
+    if command -v nix >/dev/null 2>&1; then
+        nix profile install nixpkgs#tmux || nix-env -iA nixpkgs.tmux
+    fi
+fi
+if command -v nix >/dev/null 2>&1 && ! command -v devbox >/dev/null 2>&1; then
+    nix profile install nixpkgs#devbox || true
+fi
+if command -v nix >/dev/null 2>&1 && ! command -v mise >/dev/null 2>&1; then
+    nix profile install nixpkgs#mise || true
+fi
+if command -v devbox >/dev/null 2>&1 && [ -f /workspace/devbox.json ]; then
+    (cd /workspace && devbox install) || true
+fi
+command -v tmux >/dev/null
+'
+}
+
+provision_mise() {
+    local bin="$1" cid="$2"
+    copy_workspace "$bin" "$cid"
+    "$bin" exec "$cid" sh -lc '
+set -e
+if command -v mise >/dev/null 2>&1 && [ -f /workspace/mise.toml ]; then
+    (cd /workspace && mise install) || true
+fi
+'
+}
+
+provision_sandbox() {
+    local bin="$1" cid="$2" how
+    how="$(family_field provisioner)"
+    [ -n "$how" ] || how="flake"
+    case "$how" in
+        flake) provision_flake_devbox "$bin" "$cid" ;;
+        mise) provision_mise "$bin" "$cid"; ensure_tmux "$bin" "$cid" ;;
+        *) ensure_tmux "$bin" "$cid" ;;
+    esac
+}
+
+cmd_up() {
+    local bin image cid name tag
+    resolve_family
+    bin="$(podman_bin)"
+    ensure_podman "$bin"
+    name="$(container_name)"
+    cid="$("$bin" ps -aq --filter "name=^${name}$" | head -n 1 || true)"
+    if [ -n "$cid" ]; then
+        "$bin" start "$cid" >/dev/null
+        printf '%s\n' "$cid"
+        return 0
+    fi
+    image="$(image_for_family)"
+    image="$(ensure_image "$bin" "$image")"
+    tag="$(family_field tag)"
+    if [ -n "$tag" ] && [ "$image" != "$tag" ]; then
+        "$bin" tag "$image" "$tag" >/dev/null 2>&1 || true
+        image="$tag"
+    fi
+    common=(
+        run -d --init --name "$name"
+        --security-opt label=type:container_t
+        --label attach.kind="$KIND"
+        --label attach.instance="$INSTANCE"
+        --label attach.session="$SESSION"
+        --label attach.family="$FAMILY"
+        --label attach.sandbox=1
+        --label attach.provisioner="$(family_field provisioner)"
+    )
+    if ! cid="$("$bin" "${common[@]}" -v "$HOME/src:/src:ro" "$image" sleep infinity 2>/dev/null)"; then
+        log "host src mount unavailable; starting ${name} without /src"
+        if ! cid="$("$bin" "${common[@]}" "$image" sleep infinity 2>/dev/null)"; then
+            log "SELinux label rejected; retrying with machine default label"
+            cid="$("$bin" run -d --init --name "$name" \
+                --label attach.kind="$KIND" \
+                --label attach.instance="$INSTANCE" \
+                --label attach.session="$SESSION" \
+                --label attach.family="$FAMILY" \
+                --label attach.sandbox=1 \
+                "$image" sleep infinity)"
+        fi
+    fi
+    provision_sandbox "$bin" "$cid"
+    log "started ${name} family=${FAMILY} provisioner=$(family_field provisioner)"
+    printf '%s\n' "$cid"
+}
+
+cmd_attach() {
+    local bin cid
+    bin="$(podman_bin)"
+    cid="$(cmd_up)"
+    exec "$bin" exec -it "$cid" sh -lc "tmux new-session -A -s $(printf '%q' "$SESSION")"
+}
+
+cmd_ls() {
+    local bin
+    bin="$(podman_bin)"
+    "$bin" ps -a --filter label=attach.sandbox=1 \
+        --filter "label=attach.kind=${KIND}" \
+        --format '{{.Names}} {{.Status}} {{.Labels}}'
+}
+
+cmd_family() {
+    resolve_family
+    printf '%s\n' "$FAMILY"
+}
+
+case "$CMD" in
+    up) cmd_up >/dev/null ;;
+    attach) cmd_attach ;;
+    ls) cmd_ls ;;
+    family) cmd_family ;;
+    *) usage >&2; exit 2 ;;
+esac

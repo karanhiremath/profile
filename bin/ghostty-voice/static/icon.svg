@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Cos-voice">
+  <rect width="512" height="512" rx="96" fill="#2e3d4e"/>
+  <circle cx="256" cy="256" r="54" fill="#5eae63"/>
+  <circle cx="256" cy="256" r="22" fill="#e5c843"/>
+  <path d="M318 186a118 118 0 0 1 0 140" fill="none" stroke="#64ba9a" stroke-width="28" stroke-linecap="round"/>
+  <path d="M362 148a186 186 0 0 1 0 216" fill="none" stroke="#64ba9a" stroke-width="24" stroke-linecap="round"/>
+  <path d="M402 112a250 250 0 0 1 0 288" fill="none" stroke="#64ba9a" stroke-width="20" stroke-linecap="round"/>
+</svg>

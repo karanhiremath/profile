@@ -1,0 +1,282 @@
+#!/bin/bash
+
+set -euo pipefail
+
+shopt -s failglob
+
+usage() {
+    cat <<'EOF'
+Usage: bin/ngc/install [--help]
+
+Install NVIDIA NGC CLI from NVIDIA's official HTTPS catalog API.
+
+macOS: downloads the signed/notarized .pkg for this CPU, verifies the
+NVIDIA-published SHA256, Apple Developer ID, and Gatekeeper notarization,
+then extracts the payload into ~/.local/ngc-cli (no sudo).
+
+Linux: downloads the official zip for this CPU, verifies the NVIDIA-published
+SHA256, then installs into ~/.local/ngc-cli.
+
+Installed command:
+  ngc    ~/.local/bin/ngc -> ~/.local/ngc-cli/ngc
+
+Environment:
+  NGC_FORCE=1   Reinstall even if the pinned version is already present
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="ngc"
+
+MACHINE="$(uname -s)"
+ARCH="$(uname -m)"
+
+# Pinned to NVIDIA NGC CLI 4.34.10 (latest signed release on catalog.ngc.nvidia.com).
+# SHA256 values are from NVIDIA's official setup page for this version:
+# https://catalog.ngc.nvidia.com/orgs/nvidia/ngc-apps/resources/ngc_cli/-/setup
+NGC_VERSION="4.34.10"
+NGC_API_BASE="https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/${NGC_VERSION}/files"
+NGC_INSTALL_DIR="${HOME}/.local/ngc-cli"
+NGC_BIN_DIR="${HOME}/.local/bin"
+NGC_BIN="${NGC_BIN_DIR}/ngc"
+NGC_EXPECTED_SIGNER="Developer ID Installer: NVIDIA Corporation (6KR3T733EC)"
+
+ngc_asset_for_host() {
+    case "${MACHINE}" in
+        Darwin)
+            case "${ARCH}" in
+                arm64|aarch64)
+                    NGC_ASSET="ngccli_mac_arm.pkg"
+                    NGC_SHA256="3ee5283c8c301144a722b8304e511ddaf7edb520b3e932ae5a393aa3c9433502"
+                    NGC_KIND="pkg"
+                    ;;
+                x86_64)
+                    NGC_ASSET="ngccli_mac_intel.pkg"
+                    NGC_SHA256="661d384684ec511e89eae52fac03d9847454fafa2fb7ef313a554bf03858d8e1"
+                    NGC_KIND="pkg"
+                    ;;
+                *)
+                    echo "ERROR: unsupported macOS architecture: ${ARCH}"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        Linux)
+            case "${ARCH}" in
+                x86_64|amd64)
+                    NGC_ASSET="ngccli_linux.zip"
+                    NGC_SHA256="58bc4d7b6901551a095ce5a43a0065b1c22d5eaf1a164d40029ee3fda11ccd47"
+                    NGC_KIND="zip"
+                    ;;
+                aarch64|arm64)
+                    NGC_ASSET="ngccli_arm64.zip"
+                    NGC_SHA256="5c18c5d14ad9e4b8c8ac0b5c596cd4ed33c1e4a3f2bd93f851eb974a6f3f6847"
+                    NGC_KIND="zip"
+                    ;;
+                *)
+                    echo "ERROR: unsupported Linux architecture: ${ARCH}"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        *)
+            echo "ERROR: unsupported platform: ${MACHINE}"
+            exit 1
+            ;;
+    esac
+}
+
+file_sha256() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        echo "ERROR: need shasum or sha256sum to verify the NVIDIA download."
+        exit 1
+    fi
+}
+
+already_pinned() {
+    local candidate=""
+    if [ -x "${NGC_INSTALL_DIR}/ngc" ]; then
+        candidate="${NGC_INSTALL_DIR}/ngc"
+    elif command -v ngc >/dev/null 2>&1; then
+        candidate="$(command -v ngc)"
+    else
+        return 1
+    fi
+    "${candidate}" --version 2>/dev/null | grep -Fq "${NGC_VERSION}"
+}
+
+verify_pkg_signature() {
+    local pkg="$1"
+    local sig
+    sig="$(pkgutil --check-signature "${pkg}")"
+
+    echo "${sig}"
+
+    if ! grep -Fq "${NGC_EXPECTED_SIGNER}" <<<"${sig}"; then
+        echo "ERROR: package is not signed by ${NGC_EXPECTED_SIGNER}"
+        exit 1
+    fi
+    if ! grep -Fq "trusted by the Apple notary service" <<<"${sig}"; then
+        echo "ERROR: package is not Apple-notarized."
+        exit 1
+    fi
+
+    echo "Verifying Gatekeeper assessment..."
+    spctl --assess --verbose=4 --type install "${pkg}"
+}
+
+download_and_verify() {
+    local dest="$1"
+    local url="${NGC_API_BASE}/${NGC_ASSET}"
+    echo "Downloading ${NGC_ASSET} from NVIDIA..."
+    echo "  ${url}"
+    curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
+        --output "${dest}" "${url}"
+
+    local actual
+    actual="$(file_sha256 "${dest}")"
+    echo "SHA256 ${actual}"
+    if [ "${actual}" != "${NGC_SHA256}" ]; then
+        echo "ERROR: SHA256 mismatch for ${NGC_ASSET}"
+        echo "  expected: ${NGC_SHA256}"
+        echo "  actual:   ${actual}"
+        exit 1
+    fi
+    echo "✓ SHA256 matches NVIDIA-published digest for ${NGC_VERSION}"
+}
+
+install_from_pkg() {
+    local pkg="$1"
+    local work="$2"
+
+    echo "Verifying NVIDIA Developer ID + Apple notarization..."
+    verify_pkg_signature "${pkg}"
+
+    local expanded="${work}/expanded"
+    rm -rf "${expanded}"
+    pkgutil --expand-full "${pkg}" "${expanded}"
+
+    local src
+    src="$(find "${expanded}" -type d -name ngc-cli -path '*/Payload/ngc-cli' | head -n 1)"
+    if [ -z "${src}" ] || [ ! -x "${src}/ngc" ]; then
+        echo "ERROR: NGC CLI payload not found in the NVIDIA package."
+        exit 1
+    fi
+
+    stage_and_link "${src}"
+}
+
+install_from_zip() {
+    local zipfile="$1"
+    local work="$2"
+
+    echo "Extracting official NVIDIA zip..."
+    unzip -q "${zipfile}" -d "${work}"
+
+    if [ -f "${work}/ngc-cli.md5" ]; then
+        echo "Verifying NVIDIA payload md5 manifest..."
+        (
+            cd "${work}"
+            find ngc-cli/ -type f -exec md5sum {} + | LC_ALL=C sort | md5sum -c ngc-cli.md5
+        )
+    fi
+
+    if [ ! -x "${work}/ngc-cli/ngc" ]; then
+        echo "ERROR: ngc binary missing from NVIDIA zip payload."
+        exit 1
+    fi
+
+    stage_and_link "${work}/ngc-cli"
+}
+
+stage_and_link() {
+    local src="$1"
+    local staging="${NGC_INSTALL_DIR}.new"
+
+    rm -rf "${staging}"
+    mkdir -p "$(dirname "${NGC_INSTALL_DIR}")"
+    cp -R "${src}" "${staging}"
+    chmod u+x "${staging}/ngc"
+
+    rm -rf "${NGC_INSTALL_DIR}"
+    mv "${staging}" "${NGC_INSTALL_DIR}"
+
+    mkdir -p "${NGC_BIN_DIR}"
+    ln -sfn "${NGC_INSTALL_DIR}/ngc" "${NGC_BIN}"
+
+    if [ ! -x "${NGC_BIN}" ]; then
+        echo "ERROR: ${NGC_BIN} was not installed."
+        exit 1
+    fi
+}
+
+validate_ngc() {
+    if ! "${NGC_BIN}" --help >/dev/null 2>&1; then
+        echo "ERROR: ngc installed but failed smoke validation."
+        exit 1
+    fi
+}
+
+install_messages "start" "$app_name"
+ngc_asset_for_host
+
+if [ "${NGC_FORCE:-0}" != "1" ] && already_pinned; then
+    echo "NGC CLI ${NGC_VERSION} already installed at ${NGC_INSTALL_DIR}."
+else
+    WORK="$(mktemp -d "${TMPDIR:-/tmp}/ngc-cli.XXXXXX")"
+    trap 'rm -rf "${WORK}"' EXIT
+
+    ARCHIVE="${WORK}/${NGC_ASSET}"
+    download_and_verify "${ARCHIVE}"
+
+    case "${NGC_KIND}" in
+        pkg) install_from_pkg "${ARCHIVE}" "${WORK}" ;;
+        zip) install_from_zip "${ARCHIVE}" "${WORK}" ;;
+    esac
+
+    validate_ngc
+fi
+
+# Keep ~/.local/bin on PATH even in this non-login shell.
+case ":${PATH}:" in
+    *":${NGC_BIN_DIR}:"*) ;;
+    *) PATH="${NGC_BIN_DIR}:${PATH}" ;;
+esac
+case ":${PATH}:" in
+    *":${NGC_INSTALL_DIR}:"*) ;;
+    *) PATH="${NGC_INSTALL_DIR}:${PATH}" ;;
+esac
+export PATH
+
+install_messages "end" "$app_name"
+
+echo ""
+echo "NGC CLI installed from NVIDIA."
+echo "  Version pin: ${NGC_VERSION}"
+echo "  Bundle:      ${NGC_INSTALL_DIR}"
+echo "  Binary:      ${NGC_BIN}"
+echo "  Resolved:    $(command -v ngc)"
+echo "  Version:     $(ngc --version 2>/dev/null || echo 'version command unavailable')"
+echo ""
+echo "Configure with: ngc config set"
+echo "API key: https://org.ngc.nvidia.com/setup/api-key"
+echo ""

@@ -1,0 +1,25 @@
+#!/bin/bash
+# Link cmdk onto PATH. Plugins/fzf come from just zsh-stack.
+set -euo pipefail
+shopt -s failglob
+
+if [ -z "${PROFILE_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export PROFILE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+if [ -z "${APP_BIN:-}" ]; then
+    export APP_BIN="${PROFILE_DIR}/bin"
+fi
+
+. "${APP_BIN}/sh/shell_fns" --source-only
+
+app_name="cmdk"
+install_messages "start" "$app_name"
+
+chmod +x "${PROFILE_DIR}/bin/cmdk/cmdk" "${PROFILE_DIR}/bin/cmdk/cmdk-ghostty" "${PROFILE_DIR}/bin/cmdk/lib.py"
+mkdir -p "${HOME}/.local/bin"
+ln -sfn "${PROFILE_DIR}/bin/cmdk/cmdk" "${HOME}/.local/bin/cmdk"
+ln -sfn "${PROFILE_DIR}/bin/cmdk/cmdk-ghostty" "${HOME}/.local/bin/cmdk-ghostty"
+
+install_messages "end" "$app_name"
+echo "cmdk → ${HOME}/.local/bin/cmdk"

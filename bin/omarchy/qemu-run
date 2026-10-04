@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Launch the Omarchy QEMU guest in the foreground (tmux owns the tty).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+. "${SCRIPT_DIR}/lib/common.sh"
+
+iso="${OMARCHY_CURRENT_ISO}"
+[ -e "$iso" ] || omarchy_die "missing ${iso}; run hostctl omarchy iso fetch"
+[ -f "$OMARCHY_DISK" ] || omarchy_die "missing disk ${OMARCHY_DISK}"
+[ -f "$OMARCHY_OVMF_CODE" ] || omarchy_die "missing OVMF ${OMARCHY_OVMF_CODE}; brew install qemu"
+[ -f "$OMARCHY_OVMF_VARS" ] || omarchy_die "missing OVMF vars ${OMARCHY_OVMF_VARS}"
+
+bin="$(omarchy_qemu_bin)"
+[ -n "$bin" ] || omarchy_die "qemu-system-x86_64 is not on PATH"
+
+args=(
+    -name "$OMARCHY_TARGET_HOST"
+    -machine q35,accel=tcg
+    -cpu qemu64
+    -smp "$OMARCHY_SMP"
+    -m "$OMARCHY_MEM_MIB"
+    -pidfile "$OMARCHY_PIDFILE"
+    -qmp "unix:${OMARCHY_QMP},server,nowait"
+    -drive "if=pflash,format=raw,readonly=on,file=${OMARCHY_OVMF_CODE}"
+    -drive "if=pflash,format=raw,file=${OMARCHY_OVMF_VARS}"
+    -drive "if=virtio,file=${OMARCHY_DISK},format=qcow2"
+    -drive "if=ide,media=cdrom,readonly=on,file=${iso}"
+    -netdev "user,id=net0,hostfwd=tcp:${OMARCHY_SSH_HOST}:${OMARCHY_SSH_PORT}-:22"
+    -device virtio-net-pci,netdev=net0
+    -display curses
+    -boot order=dc
+)
+
+if [ -f "$OMARCHY_CIDATA_ISO" ]; then
+    args+=(-drive "if=ide,media=cdrom,readonly=on,file=${OMARCHY_CIDATA_ISO}")
+fi
+
+mkdir -p "$(dirname "$OMARCHY_PIDFILE")" "$(dirname "$OMARCHY_QMP")"
+rm -f "$OMARCHY_QMP" "$OMARCHY_PIDFILE"
+
+exec "$bin" "${args[@]}"

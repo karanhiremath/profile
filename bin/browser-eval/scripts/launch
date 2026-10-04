@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Launch an eval-scoped browser, or open signed-in Chrome for Perplexity.
+# Usage: launch <perplexity|chrome-compat|dia|comet> [url]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "${SCRIPT_DIR}/../lib/common.sh"
+ensure_dirs
+
+target="${1:-}"
+url="${2:-about:blank}"
+
+launch_isolated() {
+  local bin="$1" profile="$2" port="$3"
+  [[ -x "$bin" || -d "$bin" ]] || die "missing app: $bin"
+  local data="${PROFILES_DIR}/${profile}"
+  mkdir -p "$data"
+  log "isolated profile=${data} cdp=127.0.0.1:${port}"
+  if [[ -x "$bin" ]]; then
+    exec "$bin" \
+      --user-data-dir="$data" \
+      --remote-debugging-address=127.0.0.1 \
+      --remote-debugging-port="$port" \
+      --no-first-run \
+      --no-default-browser-check \
+      "$url"
+  fi
+  open -a "$bin" --args \
+    --user-data-dir="$data" \
+    --remote-debugging-address=127.0.0.1 \
+    --remote-debugging-port="$port" \
+    --no-first-run \
+    --no-default-browser-check \
+    "$url"
+}
+
+case "$target" in
+  perplexity)
+    url="${2:-https://www.perplexity.ai/library}"
+    [[ -x "$CHROME_BIN" ]] || die "Google Chrome is not installed"
+    log "opening signed-in Chrome Default for Perplexity (no CDP, no new profile)"
+    open -a "Google Chrome" "$url"
+    ;;
+  chrome-compat)
+    launch_isolated "$CHROME_BIN" chrome-compat 9222
+    ;;
+  dia)
+    launch_isolated "$DIA_APP" dia 9223
+    ;;
+  comet)
+    launch_isolated "$COMET_APP" comet 9224
+    ;;
+  arc)
+    die "Arc is the daily browser. No CDP launch from this lab."
+    ;;
+  -h|--help|help|"")
+    sed -n '2,3p' "$0" | sed 's/^# //'
+    exit 0
+    ;;
+  *)
+    die "unknown target: ${target}"
+    ;;
+esac

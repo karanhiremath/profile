@@ -1,0 +1,106 @@
+{
+  "schema": "profile.cmdk.v1",
+  "layers": ["ghostty", "tmux", "zsh", "nvim", "harness", "otel"],
+  "actions": [
+    {
+      "id": "attach-mac",
+      "title": "Attach mac",
+      "layer": "tmux",
+      "tags": ["attach", "mac"],
+      "run": ["attach", "mac"]
+    },
+    {
+      "id": "attach-oma",
+      "title": "Attach oma-default",
+      "layer": "tmux",
+      "tags": ["attach", "oma"],
+      "run": ["attach", "oma-default"]
+    },
+    {
+      "id": "attach-mac-s",
+      "title": "Attach mac sandbox",
+      "layer": "tmux",
+      "tags": ["attach", "sandbox"],
+      "run": ["attach", "mac-s"]
+    },
+    {
+      "id": "pc-pick",
+      "title": "pc — project workspace (nvim/pi/zsh)",
+      "layer": "zsh",
+      "tags": ["pc", "nvim", "pi"],
+      "run": ["pc"]
+    },
+    {
+      "id": "tc-pick",
+      "title": "tc — host / session connect",
+      "layer": "tmux",
+      "tags": ["tc", "tmux"],
+      "run": ["tc"]
+    },
+    {
+      "id": "fleet-ls",
+      "title": "fleet ls",
+      "layer": "zsh",
+      "tags": ["fleet"],
+      "run": ["fleet", "ls"]
+    },
+    {
+      "id": "fleet-up",
+      "title": "fleet up",
+      "layer": "zsh",
+      "tags": ["fleet"],
+      "run": ["fleet", "up"]
+    },
+    {
+      "id": "inject-prompt",
+      "title": "Inject into harness prompt buffer",
+      "layer": "harness",
+      "mode": "prompt-buffer",
+      "tags": ["inject", "pi", "claude"],
+      "run": ["cmdk", "inject"]
+    },
+    {
+      "id": "otel-view",
+      "title": "OTEL / metrics lane",
+      "layer": "otel",
+      "mode": "otel",
+      "tags": ["otel", "metrics", "dd"],
+      "run": ["cmdk", "otel"]
+    },
+    {
+      "id": "focus-nvim",
+      "title": "Focus nvim pane (pc layout)",
+      "layer": "nvim",
+      "tags": ["nvim", "pc"],
+      "run": ["cmdk", "focus", "nvim"]
+    },
+    {
+      "id": "focus-pi",
+      "title": "Focus pi pane (pc layout)",
+      "layer": "harness",
+      "tags": ["pi", "pc"],
+      "run": ["cmdk", "focus", "pi"]
+    },
+    {
+      "id": "focus-zsh",
+      "title": "Focus zsh pane (pc layout)",
+      "layer": "zsh",
+      "tags": ["zsh", "pc"],
+      "run": ["cmdk", "focus", "zsh"]
+    },
+    {
+      "id": "pi-p-lookup",
+      "title": "pi-p lookup",
+      "layer": "zsh",
+      "tags": ["perplexity", "pi-p"],
+      "run": ["pi-p", "lookup"]
+    },
+    {
+      "id": "reload-zsh",
+      "title": "Reload zsh profile",
+      "layer": "zsh",
+      "tags": ["zsh"],
+      "run": ["reload"]
+    }
+  ]
+}

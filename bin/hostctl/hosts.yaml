@@ -1,0 +1,36 @@
+# Tailnet hosts visible to termix-master on khire-mac-mini.
+# Isolation is inventory + Tailscale ACL. This file is not an ACL.
+master:
+  role: termix-master
+  host: khire-mac-mini
+  termix: https://karans-mac-mini.tail1e8436.ts.net
+  hostctl_ssh: host.containers.internal:22
+  notes: host.containers.internal is the in-pod SSH target only. iPhone Termix app URL is the tailnet Serve name or termix.krop.ai:8444. Funnel off.
+
+targets:
+  khire-mac-mini:
+    access: master
+    class: interactive
+    ssh: karans-mac-mini.tail1e8436.ts.net:22
+    via: [termix-master]
+    notes: Host tmux alias is mac. Termix login key is op-keychain ssh.termix.login. Restricted hostctl key is separate.
+
+  try-omarchy:
+    access: master
+    class: interactive
+    ssh: try-omarchy.tail1e8436.ts.net:22
+    ssh_fallback: host.containers.internal:2222
+    via: [termix-master]
+    notes: Attach aliases are oma / oma-default (session home) and oma-s. After a factory reset run hostctl omarchy bind on the host. Prefer MagicDNS. QEMU fallback is 127.0.0.1:2222.
+
+  karans-macbook-pro:
+    access: limited
+    ssh: 100.87.167.11:22
+    via: [termix-master]
+    notes: Existing tailnet MacBook. Add in Termix only when SSH is intended.
+
+  khire-mbp-13:
+    access: isolated
+    ssh: null
+    via: []
+    notes: Also called home-mbp-13. Default Omarchy ISO install / SD target. Keep off master until it has tailnet SSH and an ACL.

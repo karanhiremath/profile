@@ -1,0 +1,76 @@
+schema: browser-eval-matrix/v1
+targets:
+  perplexity:
+    class: chromium-engine
+    role: signed-in-session
+    os: [macos]
+    host_app: Google Chrome.app
+    profile: chrome-default
+    cdp_port: null
+    daily_use: false
+    notes: Open-only against Chrome Default for Perplexity. No new sign-in. No CDP.
+  chrome-compat:
+    class: chromium-engine
+    role: chrome-compat-eval
+    os: [macos, linux]
+    host_app: Google Chrome.app
+    profile: chrome-compat
+    cdp_port: 9222
+    daily_use: false
+    notes: Isolated user-data-dir only. Not used for Perplexity until a new session is acceptable.
+  arc:
+    class: chromium-engine
+    role: human-daily
+    os: [macos]
+    host_app: Arc.app
+    cdp_port: null
+    daily_use: true
+    notes: Catalog only. No CDP launch from this lab.
+  dia:
+    class: agentic-first
+    role: eval
+    os: [macos-apple-silicon]
+    linux: unavailable
+    profile: dia
+    cdp_port: 9223
+    source: https://releases.diabrowser.com/release/Dia-latest.dmg
+    notes: Skills are Dia-side shortcuts. They do not grant pi tools.
+  comet:
+    class: agentic-first
+    role: eval
+    os: [macos]
+    linux: unavailable
+    profile: comet
+    cdp_port: 9224
+    source: https://www.perplexity.ai/rest/browser/download?channel=stable&platform=mac_arm64
+    notes: May reuse a local official DMG fixture.
+  chromium:
+    class: oss
+    role: sandbox-eval
+    os: [linux]
+    cdp_port: 9225
+  firefox-esr:
+    class: oss
+    role: sandbox-eval
+    os: [linux]
+    cdp_port: null
+    notes: Marionette/Playwright, not Chrome CDP.
+  playwright-chromium:
+    class: oss-driver
+    role: sandbox-eval
+    os: [linux]
+  browser-use:
+    class: oss-driver
+    role: backup
+    os: [linux, macos]
+    notes: Backup CDP driver. Eval venv or lab image only.
+  pi-browser-harness:
+    class: pi-package
+    role: preferred-host-driver
+    os: [macos]
+    notes: Native pi TUI /browser-setup. Eval-scoped windows only.
+omarchy:
+  guest: qemu-system-x86_64
+  session: oma-qemu
+  installable: [chromium, firefox]
+  unavailable: [dia, comet, arc]

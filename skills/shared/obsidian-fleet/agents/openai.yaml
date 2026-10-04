@@ -1,0 +1,8 @@
+interface:
+  display_name: "Obsidian Fleet"
+  short_description: "Review and steer agents through your notes"
+  default_prompt: "Use $obsidian-fleet to review the last hour, capture what matters, and suggest the next steering action."
+
+policy:
+  allow_implicit_invocation: true
+

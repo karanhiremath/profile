@@ -1,0 +1,53 @@
+schema: browser-eval/v1
+lab:
+  name: browser-eval
+  purpose: security validation for agentic browsers and CDP drivers
+policy:
+  daily_browser: arc
+  chrome_compat: isolated-chromium-profile
+  perplexity_session: signed-in-chrome-default-open-only
+  default_network: disabled-unless-run-allows-it
+  default_secrets: none
+  cdp_bind: 127.0.0.1
+  install_roots_forbidden:
+    - /Applications
+    - /System
+  forbidden_mounts:
+    - ~/.ssh
+    - ~/.aws
+    - ~/.config/gcloud
+    - ~/.kube
+    - ~/.docker
+    - ~/.1password
+    - ~/Library/Application Support/Google/Chrome
+    - ~/Library/Application Support/Arc
+    - ~/Library/Application Support/Dia
+    - ~/Library/Application Support/Comet
+    - ~/Library/Application Support/ai.perplexity.comet
+  forbidden_behaviors:
+    - cdp-attach-signed-in-chrome
+    - attach-arc-daily-profile
+    - install-to-applications
+    - dump-env
+    - print-secrets
+    - kill-unrelated-processes
+    - start-herdr-server-from-pane
+runtimes:
+  - host-macos-eval
+  - podman-rootless
+  - omarchy-qemu
+tools:
+  host:
+    - codesign
+    - spctl
+    - lsof
+  sandbox:
+    - chromium
+    - firefox-esr
+    - playwright
+    - browser-use
+smoke:
+  - preflight
+  - validate
+  - sandbox-chromium-about-blank
+  - omarchy-probe

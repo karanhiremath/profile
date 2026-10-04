@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Dispatch browser-eval commands.
+# Usage: dispatch <preflight|install-host-apps|validate|build|smoke|omarchy-probe|launch|run> [...]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  preflight|install-host-apps|validate|validate-manifest|build|smoke|omarchy-probe|launch|run)
+    exec "${SCRIPT_DIR}/${cmd}" "$@"
+    ;;
+  -h|--help|help|"")
+    sed -n '2,3p' "$0" | sed 's/^# //'
+    exit 0
+    ;;
+  *)
+    echo "ERROR: unknown command: ${cmd}" >&2
+    exit 2
+    ;;
+esac

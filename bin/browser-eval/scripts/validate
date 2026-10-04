@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Write a host validation artifact. Does not CDP-attach signed-in Chrome.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "${SCRIPT_DIR}/../lib/common.sh"
+ensure_dirs
+
+"${SCRIPT_DIR}/validate-manifest" "${LAB_DIR}/manifests/policy.yaml"
+if ! grep -Eq '^schema:' "${LAB_DIR}/manifests/matrix.yaml"; then
+  die "matrix missing schema"
+fi
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="${ARTIFACTS_DIR}/validate-${STAMP}.md"
+fail=0
+
+{
+  echo "# browser-eval validate"
+  echo
+  echo "- timestamp: ${STAMP}"
+  echo "- state_dir: ${STATE_DIR}"
+  echo
+} > "$OUT"
+
+check() {
+  local name="$1" status="$2" note="$3"
+  if [[ "$status" == "pass" ]]; then
+    echo "- PASS ${name}: ${note}" >> "$OUT"
+  else
+    echo "- FAIL ${name}: ${note}" >> "$OUT"
+    fail=1
+  fi
+}
+
+if [[ -x "$CHROME_BIN" ]]; then
+  check chrome-present pass "$CHROME_BIN"
+else
+  check chrome-present fail "Google Chrome missing"
+fi
+if [[ -d "$ARC_APP" ]]; then
+  check arc-catalog pass "Arc present, no CDP"
+else
+  check arc-catalog fail "Arc.app missing"
+fi
+if [[ -d "$DIA_APP" ]]; then
+  check dia-eval pass "$DIA_APP"
+else
+  check dia-eval fail "Dia.app not in eval apps dir"
+fi
+if [[ -d "$COMET_APP" ]]; then
+  check comet-eval pass "$COMET_APP"
+else
+  check comet-eval fail "Comet.app not in eval apps dir"
+fi
+if [[ -d /Applications/Dia.app ]]; then
+  check dia-not-in-applications fail "Dia.app leaked into /Applications"
+else
+  check dia-not-in-applications pass "Dia not in /Applications"
+fi
+if [[ -d /Applications/Comet.app ]]; then
+  check comet-not-in-applications fail "Comet.app leaked into /Applications"
+else
+  check comet-not-in-applications pass "Comet not in /Applications"
+fi
+if command -v podman >/dev/null 2>&1; then
+  check podman pass "$(command -v podman)"
+else
+  check podman fail "podman missing"
+fi
+
+echo >> "$OUT"
+echo "Perplexity exception: signed-in Chrome Default may be opened only. CDP against that profile is forbidden." >> "$OUT"
+echo "$OUT"
+if [[ "$fail" -ne 0 ]]; then
+  log "validate recorded failures (install/build lanes still pending)"
+  exit 1
+fi

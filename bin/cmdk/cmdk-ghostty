@@ -1,0 +1,3 @@
+#!/usr/bin/env zsh
+# Ghostty Cmd-K entry: no args (Ghostty new_tab:command does not parse flags well).
+exec "${PROFILE_DIR:-$HOME/src/profile}/bin/cmdk/cmdk" --from ghostty

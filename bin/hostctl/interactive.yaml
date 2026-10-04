@@ -1,0 +1,138 @@
+# Interactive-class host management (Termix + sesh + tmux).
+# Isolation stays in Tailscale ACLs. This file is inventory, not policy.
+# Secrets live in op-keychain, never here.
+
+class: interactive
+termix_app:
+  serve: https://karans-mac-mini.tail1e8436.ts.net
+  pretty: https://termix.krop.ai:8444
+  # Podman-only SSH target. Never the iPhone app URL.
+  in_pod_gateway: host.containers.internal
+  snippets:
+    # Unfiled: iOS keyboard dock ignores folder strings with no folder record.
+    folder: ""
+    command: attach
+    sandbox_snippet: phone-s
+
+# Host/sandbox-agnostic attach grammar. Agents and shells share this SOP.
+#   <kind>[-<instance>][-s] [--instance NAME] [--session NAME] [--family NAME] [session]
+# Trailing -s is the sandbox marker. Do not use a guest terminal to bind.
+attach:
+  defaults:
+    instance: default
+    personal_family: nixos
+    session_by_kind:
+      mac: mac
+      oma: home
+  kinds:
+    mac:
+      role: host
+      os_class: macos
+    oma:
+      role: peer
+      os_class: omarchy
+  instances:
+    default:
+      title: default
+      oma:
+        targets:
+          - try-omarchy.tail1e8436.ts.net
+          - try-omarchy
+  sandbox:
+    families: families.yaml
+    default_family: nixos
+    provisioner: flake
+    distrohop_provisioner: mise
+    selinux: machine
+    # Language overlays on NixOS flakes + Devbox. Node is opt-in, not pooled.
+    pool:
+      - nixos
+      - rust
+      - elixir
+      - mojo
+      - go
+      - python
+
+aliases:
+  # Host tmux: mac on macOS hosts, oma when Omarchy is the host OS.
+  host_tmux:
+    khire-mac-mini: mac
+    karans-mac-mini: mac
+    khire-mbp-13: oma
+    home-mbp-13: oma
+  # Peer tmux from the other side of the pair.
+  peer_tmux:
+    khire-mac-mini:
+      oma: try-omarchy
+      oma-s: try-omarchy-sandbox
+    khire-mbp-13:
+      mac: khire-mac-mini
+    home-mbp-13:
+      mac: khire-mac-mini
+
+hosts:
+  khire-mac-mini:
+    os: macos
+    role: termix-master
+    tailnet_fqdn: karans-mac-mini.tail1e8436.ts.net
+    ssh_port: 22
+    termix:
+      name: khire-mac-mini
+      ip: host.containers.internal
+      port: 22
+      username: karan
+      keychain: ssh.termix.login
+      tags: [interactive, login]
+    hostctl_termix:
+      name: khire-mac-mini-hostctl
+      ip: host.containers.internal
+      port: 22
+      username: karan
+      keychain: ssh.termix.hostctl
+      tags: [termix-master, hostctl]
+
+  try-omarchy:
+    os: omarchy-guest
+    role: interactive-peer
+    # Prefer MagicDNS once the guest is on the tailnet; loopback is the QEMU fallback.
+    tailnet_fqdn: try-omarchy.tail1e8436.ts.net
+    ssh_fallbacks:
+      - try-omarchy
+      - 127.0.0.1:2222
+    ssh_port: 22
+    termix:
+      name: try-omarchy
+      ip: host.containers.internal
+      port: 2222
+      username: karan
+      keychain: ssh.termix.login
+      tags: [interactive, omarchy]
+
+  try-omarchy-sandbox:
+    os: omarchy-podman
+    role: interactive-sandbox
+    via: try-omarchy
+    notes: oma-s attaches tmux inside podman containers on the Omarchy VM.
+
+  khire-mbp-13:
+    os: omarchy-host
+    role: future-omarchy-os
+    tailnet_fqdn: null
+    aliases: [home-mbp-13]
+    notes: Also called home-mbp-13. Default target for the custom Omarchy ISO / SD install. When Omarchy is the host OS, oma is local host tmux.
+
+  home-mbp-13:
+    alias_of: khire-mbp-13
+    notes: User name for khire-mbp-13. Same machine. Same ISO.
+
+keychain:
+  store: op-keychain
+  seed: just op-keychain-seed
+  broker: hauth
+  broker_docs: bin/hauth/README.md
+  aliases:
+    - ssh.termix.login
+    - ssh.termix.hostctl
+    - ssh.termix.iphone-hostctl
+    - termix.admin.username
+    - termix.admin.password

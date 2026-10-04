@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Prepare the home-mbp-13 Omarchy ISO build.
+# Official ISO is bootstrap. Real remaster is omarchy-iso-make on Arch.
+set -euo pipefail
+
+ISO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "${ISO_DIR}/.." && pwd)"
+# shellcheck source=../lib/common.sh
+. "${SCRIPT_DIR}/lib/common.sh"
+
+omarchy_cidata_dir() {
+    printf '%s\n' "${OMARCHY_STATE_DIR}/cidata"
+}
+
+omarchy_write_cidata() {
+    local dest keys creds
+    dest="$(omarchy_cidata_dir)"
+    mkdir -p "$dest"
+    cp "${ISO_DIR}/cidata/user_configuration.json.example" "${dest}/user_configuration.json"
+    keys="${OMARCHY_HOST_DIR}/authorized_keys"
+    if [ -f "$keys" ]; then
+        cp "$keys" "${dest}/authorized_keys"
+    else
+        omarchy_log "no ${keys} yet; run hostctl omarchy bind to publish keys into cidata"
+    fi
+    creds="${dest}/user_credentials.json"
+    if [ -n "${OMARCHY_ISO_PASSWORD_HASH:-}" ]; then
+        python3 - "$creds" "$OMARCHY_SSH_USER" "$OMARCHY_ISO_PASSWORD_HASH" <<'PY'
+import json, sys
+from pathlib import Path
+path, user, hashed = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+path.write_text(json.dumps({
+    "!users": [{"username": user, "enc_password": hashed, "sudo": True}]
+}, indent=2) + "\n")
+PY
+    elif [ ! -f "$creds" ]; then
+        omarchy_log "no OMARCHY_ISO_PASSWORD_HASH; installer will use the configurator unless you add ${creds}"
+    fi
+}
+
+omarchy_make_cidata_iso() {
+    local dest
+    dest="$(omarchy_cidata_dir)"
+    [ -d "$dest" ] || omarchy_die "missing cidata dir ${dest}"
+    rm -f "$OMARCHY_CIDATA_ISO"
+    local hybrid="${OMARCHY_STATE_DIR}/cidata-hybrid"
+    rm -f "$hybrid" "${hybrid}.iso"
+    hdiutil makehybrid -iso -joliet -default-volume-name cidata \
+        -o "$hybrid" "$dest" >/dev/null
+    if [ -f "${hybrid}.iso" ]; then
+        mv "${hybrid}.iso" "$OMARCHY_CIDATA_ISO"
+    elif [ -f "$hybrid" ]; then
+        mv "$hybrid" "$OMARCHY_CIDATA_ISO"
+    else
+        omarchy_die "hdiutil makehybrid did not write ${hybrid}.iso"
+    fi
+    omarchy_log "cidata ISO ${OMARCHY_CIDATA_ISO}"
+}
+
+omarchy_sync_iso_src() {
+    if [ -d "${OMARCHY_ISO_SRC}/.git" ]; then
+        omarchy_log "updating ${OMARCHY_ISO_SRC} (${OMARCHY_ISO_REF})"
+        git -C "$OMARCHY_ISO_SRC" fetch --quiet origin "$OMARCHY_ISO_REF"
+        git -C "$OMARCHY_ISO_SRC" checkout --quiet "$OMARCHY_ISO_REF"
+        git -C "$OMARCHY_ISO_SRC" pull --ff-only --quiet || true
+        return 0
+    fi
+    omarchy_log "cloning ${OMARCHY_ISO_REPO} -> ${OMARCHY_ISO_SRC}"
+    mkdir -p "$(dirname "$OMARCHY_ISO_SRC")"
+    git clone --branch "$OMARCHY_ISO_REF" --single-branch "$OMARCHY_ISO_REPO" "$OMARCHY_ISO_SRC"
+}
+
+omarchy_iso_build() {
+    mkdir -p "$OMARCHY_ISO_DIR/custom" "$OMARCHY_STATE_DIR"
+    omarchy_write_cidata
+    omarchy_make_cidata_iso
+    omarchy_sync_iso_src
+    if [ -x "${OMARCHY_ISO_SRC}/bin/omarchy-iso-make" ] && [ -f /etc/arch-release ]; then
+        omarchy_log "running omarchy-iso-make on Arch"
+        (
+            cd "$OMARCHY_ISO_SRC"
+            ./bin/omarchy-iso-make
+        )
+        local built
+        built="$(ls -1t "${OMARCHY_ISO_SRC}/release/"*.iso 2>/dev/null | head -1 || true)"
+        [ -n "$built" ] || omarchy_die "omarchy-iso-make finished but release/*.iso is missing"
+        mkdir -p "$(dirname "$OMARCHY_CUSTOM_ISO")"
+        cp "$built" "$OMARCHY_CUSTOM_ISO"
+        ln -sfn "$OMARCHY_CUSTOM_ISO" "$OMARCHY_CURRENT_ISO"
+        omarchy_log "custom ISO ${OMARCHY_CUSTOM_ISO}"
+        return 0
+    fi
+    cat <<EOF
+omarchy: custom remaster needs Arch (omarchy-iso-make).
+  source:   ${OMARCHY_ISO_SRC}
+  overlay:  ${ISO_DIR}
+  cidata:   ${OMARCHY_CIDATA_ISO}
+  current:  ${OMARCHY_CURRENT_ISO}
+  target:   ${OMARCHY_TARGET_HOST} (alias of khire-mbp-13)
+
+Until remaster runs, QEMU boots the official ${OMARCHY_ISO_VERSION} bootstrap
+plus this cidata drive. That is the default install for home-mbp-13.
+EOF
+}
+
+omarchy_iso_build

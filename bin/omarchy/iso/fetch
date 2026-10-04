@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Download the official Omarchy ISO as the bootstrap artifact.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=../lib/common.sh
+. "${ROOT}/lib/common.sh"
+
+omarchy_ensure_cache() {
+    mkdir -p "$OMARCHY_CACHE_DIR" "$OMARCHY_ISO_DIR/custom"
+}
+
+omarchy_sha256() {
+    shasum -a 256 "$1" | awk '{print $1}'
+}
+
+omarchy_iso_fetch() {
+    omarchy_ensure_cache
+    if [ -f "$OMARCHY_BOOTSTRAP_ISO" ]; then
+        local have
+        have="$(omarchy_sha256 "$OMARCHY_BOOTSTRAP_ISO")"
+        if [ "$have" = "$OMARCHY_ISO_SHA256" ]; then
+            omarchy_log "bootstrap ISO already verified ${OMARCHY_BOOTSTRAP_ISO}"
+        else
+            omarchy_log "cached ISO hash ${have} != ${OMARCHY_ISO_SHA256}; re-downloading"
+            rm -f "$OMARCHY_BOOTSTRAP_ISO"
+        fi
+    fi
+    if [ ! -f "$OMARCHY_BOOTSTRAP_ISO" ]; then
+        omarchy_log "downloading ${OMARCHY_ISO_URL}"
+        curl -fL -C - --retry 3 --retry-delay 2 -o "${OMARCHY_BOOTSTRAP_ISO}.partial" "$OMARCHY_ISO_URL"
+        mv "${OMARCHY_BOOTSTRAP_ISO}.partial" "$OMARCHY_BOOTSTRAP_ISO"
+        local have
+        have="$(omarchy_sha256 "$OMARCHY_BOOTSTRAP_ISO")"
+        [ "$have" = "$OMARCHY_ISO_SHA256" ] || omarchy_die "ISO hash ${have} != ${OMARCHY_ISO_SHA256}"
+    fi
+    if [ -e "$OMARCHY_CUSTOM_ISO" ]; then
+        ln -sfn "$OMARCHY_CUSTOM_ISO" "$OMARCHY_CURRENT_ISO"
+        omarchy_log "current.iso -> custom ${OMARCHY_CUSTOM_ISO}"
+    else
+        ln -sfn "$OMARCHY_BOOTSTRAP_ISO" "$OMARCHY_CURRENT_ISO"
+        omarchy_log "current.iso -> official bootstrap ${OMARCHY_ISO_VERSION}"
+    fi
+    ls -lh "$OMARCHY_CURRENT_ISO" "$OMARCHY_BOOTSTRAP_ISO"
+}
+
+omarchy_iso_fetch

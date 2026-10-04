@@ -1,0 +1,8 @@
+# Same language contract as attach family `elixir` / nixos sandbox.
+# Host bootstrap used brew elixir (1.20.4 / OTP 29). mac-s / oma-s load this file.
+[tools]
+rust = "latest"
+elixir = "latest"
+
+[settings]
+idiomatic_version_file_enable_tools = []

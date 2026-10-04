@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bin/agent-skills/install [options]
+
+Symlink every skill under profile/skills/shared into supported user-level agent
+skill directories. Existing non-matching files, directories, and symlinks are
+left untouched and reported as errors.
+
+Options:
+  --target NAME       Install one target; repeatable. Values:
+                      codex, cursor, claude, pi, hermes, all (default: all)
+  --home DIR          User home used to derive target directories.
+  --hermes-root DIR   Root containing isolated Hermes profile homes.
+  --dry-run           Print intended actions without changing files.
+  -h, --help          Show this help.
+
+Notes:
+  - Codex discovers user skills in ~/.agents/skills.
+  - Hermes gets the default ~/.hermes/skills plus every existing isolated
+    profile root and named runtime home under ~/.local/share/hermes-agents.
+    The profile-managed Hermes materializer also links shared skills for new
+    profiles; rerun this installer for homes created by other tooling.
+EOF
+}
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+profile_dir="$(cd "${script_dir}/../.." && pwd)"
+source_root="${profile_dir}/skills/shared"
+user_home="${HOME:?HOME is required}"
+hermes_root=""
+dry_run=0
+declare -a selected_targets=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target)
+      selected_targets+=("${2:?missing target}")
+      shift 2
+      ;;
+    --home)
+      user_home="${2:?missing home directory}"
+      shift 2
+      ;;
+    --hermes-root)
+      hermes_root="${2:?missing Hermes root}"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ ${#selected_targets[@]} -eq 0 ]]; then
+  selected_targets=(all)
+fi
+
+for selected_target in "${selected_targets[@]}"; do
+  case "$selected_target" in
+    all|codex|cursor|claude|pi|hermes) ;;
+    *)
+      echo "ERROR: unsupported target: $selected_target" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$hermes_root" ]]; then
+  hermes_root="${user_home}/.local/share/hermes-agents"
+fi
+
+target_selected() {
+  local candidate="$1"
+  local item
+  for item in "${selected_targets[@]}"; do
+    if [[ "$item" == "all" || "$item" == "$candidate" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_mkdir() {
+  local path="$1"
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf 'mkdir %s\n' "$path"
+  else
+    mkdir -p "$path"
+  fi
+}
+
+install_link() {
+  local skill_dir="$1"
+  local destination_root="$2"
+  local runtime="$3"
+  local skill_name target current
+
+  skill_name="$(basename "$skill_dir")"
+  target="${destination_root}/${skill_name}"
+
+  if [[ -L "$target" ]]; then
+    current="$(readlink "$target")"
+    if [[ "$current" == "$skill_dir" ]]; then
+      printf 'ok runtime=%s skill=%s target=%s\n' "$runtime" "$skill_name" "$target"
+      return 0
+    fi
+    echo "ERROR: refusing to replace symlink: $target -> $current" >&2
+    return 1
+  fi
+
+  if [[ -e "$target" ]]; then
+    echo "ERROR: refusing to replace existing path: $target" >&2
+    return 1
+  fi
+
+  run_mkdir "$destination_root"
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf 'link runtime=%s skill=%s source=%s target=%s\n' \
+      "$runtime" "$skill_name" "$skill_dir" "$target"
+  else
+    ln -s "$skill_dir" "$target"
+    printf 'linked runtime=%s skill=%s target=%s\n' "$runtime" "$skill_name" "$target"
+  fi
+}
+
+if [[ ! -d "$source_root" ]]; then
+  echo "ERROR: shared skill directory not found: $source_root" >&2
+  exit 1
+fi
+
+declare -a skill_dirs=()
+while IFS= read -r -d '' candidate; do
+  [[ -f "$candidate/SKILL.md" ]] || continue
+  skill_dirs+=("$candidate")
+done < <(find "$source_root" -mindepth 1 -maxdepth 1 -type d -print0)
+
+if [[ ${#skill_dirs[@]} -eq 0 ]]; then
+  echo "ERROR: no shared skills found under $source_root" >&2
+  exit 1
+fi
+
+declare -a runtime_targets=()
+if target_selected codex; then
+  runtime_targets+=("codex|${user_home}/.agents/skills")
+fi
+if target_selected cursor; then
+  runtime_targets+=("cursor|${user_home}/.cursor/skills")
+fi
+if target_selected claude; then
+  runtime_targets+=("claude|${user_home}/.claude/skills")
+fi
+if target_selected pi; then
+  runtime_targets+=("pi|${user_home}/.pi/agent/skills")
+fi
+if target_selected hermes; then
+  runtime_targets+=("hermes-default|${user_home}/.hermes/skills")
+  if [[ -d "$hermes_root" ]]; then
+    while IFS= read -r -d '' profile_home; do
+      runtime_targets+=("hermes:$(basename "$profile_home")|${profile_home}/skills")
+      if [[ -d "$profile_home/profiles" ]]; then
+        while IFS= read -r -d '' runtime_home; do
+          runtime_targets+=("hermes:$(basename "$profile_home"):$(basename "$runtime_home")|${runtime_home}/skills")
+        done < <(find "$profile_home/profiles" -mindepth 1 -maxdepth 1 -type d -print0)
+      fi
+    done < <(find "$hermes_root" -mindepth 1 -maxdepth 1 -type d -print0)
+  fi
+fi
+
+failures=0
+for runtime_target in "${runtime_targets[@]}"; do
+  runtime="${runtime_target%%|*}"
+  destination_root="${runtime_target#*|}"
+  for skill_dir in "${skill_dirs[@]}"; do
+    if ! install_link "$skill_dir" "$destination_root" "$runtime"; then
+      failures=$((failures + 1))
+    fi
+  done
+done
+
+if [[ "$failures" -ne 0 ]]; then
+  echo "ERROR: ${failures} skill link(s) were not installed" >&2
+  exit 1
+fi

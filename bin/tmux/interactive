@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# Host/sandbox-agnostic attach: mac, oma, <kind>-<instance>, trailing -s.
+# Prefers Tailscale FQDNs; falls back to local QEMU forwards.
+# Private keys come from op-keychain, never from `op`.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+INVENTORY="${HOSTCTL_INTERACTIVE:-${PROFILE_DIR}/bin/hostctl/interactive.yaml}"
+ATTACH_SPEC="${PROFILE_DIR}/bin/hostctl/lib/attach_spec.py"
+SANDBOX="${PROFILE_DIR}/bin/hostctl/sandbox"
+CONNECT="${SCRIPT_DIR}/tmux-connect"
+OP_KEYCHAIN="${PROFILE_DIR}/bin/op-keychain/op-keychain"
+HAUTH="${PROFILE_DIR}/bin/hauth/hauth"
+
+usage() {
+    cat <<'EOF'
+Usage: attach <kind>[-<instance>][-s] [session]
+       attach oma-default cos
+       attach --instance lab --session home oma
+
+  mac            Host tmux on a macOS host. From Omarchy, SSH to the mini.
+  oma            Omarchy instance tmux (default instance, session home).
+  oma-default    Same, targeting the instance titled default.
+  oma-default-s  Sandbox (podman tmux) on that Omarchy instance.
+  mac-s          Isolated podman sandbox on this host.
+
+Flags: --instance NAME  --session NAME  --family NAME  --ls
+Trailing -s is the sandbox marker. Family is picked from the distrohop pool.
+SSH keys: hauth unwrap-or-get ssh.termix.login when HAUTH_SVID is set, else op-keychain get (no 1Password popup).
+EOF
+}
+
+die() { printf 'attach: %s\n' "$*" >&2; exit 1; }
+
+current_role() {
+    if [ -f /etc/os-release ] && grep -qi 'omarchy' /etc/os-release 2>/dev/null; then
+        printf '%s\n' omarchy-host
+        return
+    fi
+    if [ "$(uname -s)" = "Darwin" ]; then
+        printf '%s\n' macos-host
+        return
+    fi
+    printf '%s\n' unknown
+}
+
+parse_spec() {
+    python3 "$ATTACH_SPEC" --inventory "$INVENTORY" "$@"
+}
+
+spec_field() {
+    python3 -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print("" if v is None else v if isinstance(v, str) else json.dumps(v))' "$1" <<<"$SPEC_JSON"
+}
+
+with_login_key() {
+    local dest="$1"
+    umask 077
+    if [ -x "$HAUTH" ]; then
+        "$HAUTH" unwrap-or-get ssh.termix.login >"$dest"
+    elif [ -x "$OP_KEYCHAIN" ]; then
+        "$OP_KEYCHAIN" get ssh.termix.login >"$dest"
+    else
+        die "op-keychain missing; run just op-keychain-seed"
+    fi
+    chmod 600 "$dest"
+}
+
+local_attach() {
+    local session="${1:-home}"
+    if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+        tmux switch-client -t "$session"
+        return $?
+    fi
+    # sesh list/connect needs zoxide. Without it, go straight to tmux.
+    if command -v sesh >/dev/null 2>&1 && command -v zoxide >/dev/null 2>&1; then
+        exec sesh connect "$session"
+    fi
+    if command -v tmux >/dev/null 2>&1; then
+        exec tmux new-session -A -s "$session"
+    fi
+    die "tmux is not installed"
+}
+
+local_ls() {
+    if command -v sesh >/dev/null 2>&1; then
+        sesh list
+        return 0
+    fi
+    "$CONNECT" --ls local
+}
+
+ssh_attach() {
+    local target="$1" session="$2"
+    local key
+    key="$(mktemp "${TMPDIR:-/tmp}/interactive-login.XXXXXX")"
+    trap 'rm -f "$key"' RETURN
+    with_login_key "$key"
+    ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -t "$target" \
+        "command -v sesh >/dev/null && sesh connect $(printf '%q' "$session") || tmux new-session -A -s $(printf '%q' "$session")"
+}
+
+ssh_ls() {
+    local target="$1"
+    local key
+    key="$(mktemp "${TMPDIR:-/tmp}/interactive-login.XXXXXX")"
+    trap 'rm -f "$key"' RETURN
+    with_login_key "$key"
+    ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 "$target" \
+        "command -v sesh >/dev/null && sesh list || tmux list-sessions"
+}
+
+iter_targets() {
+    python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin).get("targets") or []))' <<<"$SPEC_JSON"
+}
+
+host_owned_bind_hint() {
+    die "guest SSH is not answering. From this host: hostctl omarchy bind (no guest terminal)"
+}
+
+attach_host() {
+    local session="$1" ls="$2"
+    case "$(current_role)" in
+        macos-host)
+            if [ "$ls" = "1" ]; then local_ls; else local_attach "$session"; fi
+            ;;
+        omarchy-host)
+            local mini
+            mini="$(python3 - "$INVENTORY" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text()
+want = "khire-mac-mini"
+in_host = False
+for raw in text.splitlines():
+    if raw.startswith("  ") and not raw.startswith("    ") and raw.strip().endswith(":"):
+        in_host = raw.strip()[:-1] == want
+        continue
+    if in_host and raw.strip().startswith("tailnet_fqdn:"):
+        print(raw.split(":", 1)[1].strip())
+        raise SystemExit(0)
+print("karans-mac-mini.tail1e8436.ts.net")
+PY
+)"
+            if [ "$ls" = "1" ]; then ssh_ls "$mini"; else ssh_attach "$mini" "$session"; fi
+            ;;
+        *)
+            die "unknown host role; cannot route host attach"
+            ;;
+    esac
+}
+
+attach_peer() {
+    local session="$1" ls="$2"
+    case "$(current_role)" in
+        omarchy-host)
+            if [ "$ls" = "1" ]; then local_ls; else local_attach "$session"; fi
+            ;;
+        macos-host)
+            local target
+            if [ "$ls" = "1" ]; then
+                while IFS= read -r target; do
+                    [ -n "$target" ] || continue
+                    ssh_ls "$target" && return 0
+                done < <(iter_targets)
+                host_owned_bind_hint
+            fi
+            while IFS= read -r target; do
+                [ -n "$target" ] || continue
+                if ssh_attach "$target" "$session"; then
+                    return 0
+                fi
+            done < <(iter_targets)
+            host_owned_bind_hint
+            ;;
+        *)
+            die "unknown host role; cannot route peer attach"
+            ;;
+    esac
+}
+
+attach_peer_sandbox() {
+    local session="$1" ls="$2"
+    local remote
+    remote='if [ "${1:-}" = "--ls" ]; then
+  podman ps --format "{{.Names}}" 2>/dev/null || true
+  exit 0
+fi
+name="${1:-}"
+if podman inspect "$name" >/dev/null 2>&1; then
+  exec podman exec -it "$name" bash -lc "command -v tmux >/dev/null && tmux new-session -A -s ${name} || exec bash"
+fi
+tmux new-session -A -s "$name"'
+    case "$(current_role)" in
+        omarchy-host)
+            if [ "$ls" = "1" ]; then
+                bash -lc "$remote" -- --ls
+            else
+                bash -lc "$remote" -- "$session"
+            fi
+            ;;
+        macos-host)
+            local target key
+            key="$(mktemp "${TMPDIR:-/tmp}/interactive-login.XXXXXX")"
+            trap 'rm -f "$key"' EXIT
+            with_login_key "$key"
+            while IFS= read -r target; do
+                [ -n "$target" ] || continue
+                if [ "$ls" = "1" ]; then
+                    ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -t "$target" \
+                        "bash -s -- --ls" <<<"$remote" && return 0
+                elif ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -t "$target" \
+                    "bash -s -- $(printf '%q' "$session")" <<<"$remote"; then
+                    return 0
+                fi
+            done < <(iter_targets)
+            host_owned_bind_hint
+            ;;
+        *)
+            die "unknown host role; cannot route peer sandbox"
+            ;;
+    esac
+}
+
+case "${1:-}" in
+    -h|--help|help|"") usage; exit 0 ;;
+esac
+
+SPEC_JSON="$(parse_spec "$@")" || exit $?
+KIND="$(spec_field kind)"
+INSTANCE="$(spec_field instance)"
+SESSION="$(spec_field session)"
+FAMILY="$(spec_field family)"
+SANDBOX_FLAG="$(spec_field sandbox)"
+LS_FLAG="$(spec_field list_sessions)"
+OS_CLASS="$(spec_field os_class)"
+ROLE="$(spec_field role)"
+
+list_bit=0
+[ "$LS_FLAG" = "True" ] || [ "$LS_FLAG" = "true" ] || [ "$LS_FLAG" = "1" ] && list_bit=1
+sandbox_bit=0
+[ "$SANDBOX_FLAG" = "True" ] || [ "$SANDBOX_FLAG" = "true" ] || [ "$SANDBOX_FLAG" = "1" ] && sandbox_bit=1
+
+if [ "$sandbox_bit" = "1" ] && [ "$ROLE" = "host" ]; then
+    if [ "$list_bit" = "1" ]; then
+        "$SANDBOX" ls --kind "$KIND" --instance "$INSTANCE" --session "$SESSION" ${FAMILY:+--family "$FAMILY"}
+    else
+        "$SANDBOX" attach --kind "$KIND" --instance "$INSTANCE" --session "$SESSION" ${FAMILY:+--family "$FAMILY"}
+    fi
+    exit $?
+fi
+
+if [ "$sandbox_bit" = "1" ]; then
+    attach_peer_sandbox "$SESSION" "$list_bit"
+    exit $?
+fi
+
+if [ "$ROLE" = "host" ] || { [ "$KIND" = "oma" ] && [ "$(current_role)" = "omarchy-host" ]; }; then
+    attach_host "$SESSION" "$list_bit"
+    exit $?
+fi
+
+attach_peer "$SESSION" "$list_bit"

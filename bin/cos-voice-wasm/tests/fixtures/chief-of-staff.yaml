@@ -1,0 +1,16 @@
+name: chief-of-staff
+description: "Fixture only. No secrets."
+
+endpoint:
+  base_url: https://api.cartesia.ai
+  base_url_env: CARTESIA_BASE_URL
+
+tts:
+  enabled: true
+  model: sonic-3.5
+  voice: ""
+
+stt:
+  enabled: true
+  model: ink-2
+  language: en

@@ -1,0 +1,6 @@
+package cos:voice@0.1.0;
+
+/// Deterministic Cos-voice apply. No Cartesia keys, no :8787 takeover.
+world apply {
+    export apply-json: func(input: string) -> result<string, string>;
+}

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Phone-facing sandbox attach: termix-s [session] → attach mac-s [session]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+ATTACH="${PROFILE_DIR}/bin/tmux/interactive"
+
+exec "$ATTACH" mac-s "$@"

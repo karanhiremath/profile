@@ -1,0 +1,115 @@
+#!/usr/bin/env zsh
+# fleet — lane session manager for the agentic OS.
+#
+# Two sessions per lane, by design:
+#   cos-<lane>   coordination and planning   windows: cos, think
+#   <lane>       the actual workflow         windows: do, pi
+#
+# stdout = structured payload. stderr = human diagnostics. No status theater.
+set -uo pipefail
+
+AO_LANES=(ao0 ao1 ao2 ao3 ao4)
+INFRA_LANES=(infra0 infra1 infra2 infra3 infra4)
+THINKER_MODEL=${FLEET_THINKER_MODEL:-claude-opus-5}
+# Lanes read their specs and charters from the private vault, and worker artifacts
+# from the pi jobs root. Both are outside a lane's cwd, so grant them declaratively
+# at launch instead of answering a permission prompt per session.
+FLEET_DOC_DIR=${FLEET_DOC_DIR:-$HOME/src/notes/03_tech/agentic-os/fleet}
+FLEET_ARTIFACT_DIR=${FLEET_ARTIFACT_DIR:-$HOME/.pi/agent/jobs/projects}
+DOER_MODEL=${FLEET_DOER_MODEL:-claude-sonnet-5}
+WIDTH=${FLEET_WIDTH:-200}
+HEIGHT=${FLEET_HEIGHT:-50}
+
+lane_dir() {
+  case $1 in
+    ao0|ao3|ao4)   print -r -- "$HOME/src/notes" ;;
+    ao1|ao2)       print -r -- "$HOME/src/profile" ;;
+    infra*)        print -r -- "$HOME/src/home-infra" ;;
+    *)             print -r -- "$HOME" ;;
+  esac
+}
+
+# The claude invocation a lane pane should run. Narrow --add-dir grants, not a wide one.
+claude_cmd() {  # model
+  print -r -- "claude --model $1 --add-dir ${FLEET_DOC_DIR} --add-dir ${FLEET_ARTIFACT_DIR}"
+}
+
+usage() {
+  cat >&2 <<'EOF'
+fleet — lane session manager
+
+  fleet up [lane ...]        create coordination + workflow sessions (default: all ao*)
+  fleet up --infra           create the infra family
+  fleet ls                   list lane sessions and their panes (tsv)
+  fleet attach <lane>        attach the workflow session
+  fleet plan <lane>          attach the coordination session
+  fleet start <lane>        start the claude thinker+doer panes with --add-dir grants
+  fleet steer <target> <msg> send a line to a window, e.g. `fleet steer ao2:do "..."`
+  fleet down <lane>          kill both sessions for a lane
+
+Layout:
+  cos-<lane>  :cos    shell for the herm-tui cos coordinator (model never overridden)
+              :think  claude --model $THINKER_MODEL (+ --add-dir grants)
+  <lane>      :do     claude --model $DOER_MODEL   (+ --add-dir grants)
+              :pi     pi implementor fleet
+
+Env: FLEET_THINKER_MODEL FLEET_DOER_MODEL FLEET_WIDTH FLEET_HEIGHT
+EOF
+}
+
+new_session() {  # name, dir, first-window
+  tmux has-session -t "=$1" 2>/dev/null && return 0
+  tmux new-session -d -s "$1" -x "$WIDTH" -y "$HEIGHT" -n "$3" -c "$2"
+}
+
+add_window() {   # session, name, dir
+  tmux list-windows -t "=$1" -F '#{window_name}' 2>/dev/null | grep -qx "$2" && return 0
+  tmux new-window -t "$1" -n "$2" -c "$3"
+}
+
+lane_up() {
+  local lane=$1 dir; dir=$(lane_dir "$lane")
+  new_session "cos-$lane" "$dir" cos   || return 1
+  add_window  "cos-$lane" think "$dir" || return 1
+  new_session "$lane"     "$dir" do    || return 1
+  add_window  "$lane"     pi    "$dir" || return 1
+  printf '%s\t%s\t%s\t%s\t%s\n' "$lane" "cos-${lane}:cos" "cos-${lane}:think" "${lane}:do" "${lane}:pi"
+}
+
+cmd_up() {
+  local -a lanes
+  if [[ ${1:-} == --infra ]]; then lanes=($INFRA_LANES); shift
+  elif (( $# )); then lanes=("$@")
+  else lanes=($AO_LANES); fi
+  local l rc=0
+  for l in $lanes; do lane_up "$l" || rc=1; done
+  return $rc
+}
+
+cmd_ls() {
+  local T=$'\t'
+  tmux list-panes -a -F "#{session_name}${T}#{window_name}${T}#{pane_current_command}${T}#{pane_id}" 2>/dev/null \
+    | grep -E '^(cos-)?(ao|infra)[0-9]' || return 1
+}
+
+cmd_steer() {  # target, message — literal send then a separate Enter
+  local target=$1; shift
+  tmux send-keys -t "$target" -l "$*" || return 1
+  tmux send-keys -t "$target" Enter
+}
+
+case ${1:-} in
+  up)     shift; cmd_up "$@" ;;
+  ls)     cmd_ls ;;
+  attach) tmux attach -t "=${2:?lane required}" ;;
+  plan)   tmux attach -t "=cos-${2:?lane required}" ;;
+  start)  # start the claude panes for a lane with the right grants
+          lane=${2:?lane required}
+          cmd_steer "cos-${lane}:think" "$(claude_cmd "$THINKER_MODEL")"
+          cmd_steer "${lane}:do"        "$(claude_cmd "$DOER_MODEL")" ;;
+  steer)  shift; cmd_steer "$@" ;;
+  down)   tmux kill-session -t "=${2:?lane required}" 2>/dev/null
+          tmux kill-session -t "=cos-${2}" 2>/dev/null ;;
+  -h|--help|help|"") usage; [[ -z ${1:-} ]] && exit 2 ;;
+  *)      print -u2 "fleet: unknown subcommand: $1"; usage; exit 2 ;;
+esac

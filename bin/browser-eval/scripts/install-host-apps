@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Install Dia and Comet into the eval apps dir. Never /Applications.
+# Usage: install-host-apps [--dia] [--comet] [--skip-download]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+. "${SCRIPT_DIR}/../lib/common.sh"
+ensure_dirs
+
+WANT_DIA=1
+WANT_COMET=1
+SKIP_DOWNLOAD=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dia) WANT_COMET=0; shift ;;
+    --comet) WANT_DIA=0; shift ;;
+    --skip-download) SKIP_DOWNLOAD=1; shift ;;
+    -h|--help|help) sed -n '2,3p' "$0" | sed 's/^# //'; exit 0 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+
+copy_app_from_dmg() {
+  local dmg="$1" dest_name="$2"
+  [[ -f "$dmg" ]] || die "missing dmg: $dmg"
+  local mnt
+  mnt="$(mktemp -d "${CACHE_DIR}/mnt.XXXXXX")"
+  if ! hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt" >/dev/null; then
+    rmdir "$mnt"
+    die "failed to attach $dmg"
+  fi
+  local src
+  src="$(find "$mnt" -maxdepth 2 -name '*.app' -print -quit || true)"
+  if [[ -z "$src" ]]; then
+    hdiutil detach "$mnt" >/dev/null || true
+    die "no .app in $dmg"
+  fi
+  local dest="${APPS_DIR}/${dest_name}"
+  rm -rf "$dest"
+  ditto "$src" "$dest"
+  hdiutil detach "$mnt" >/dev/null || true
+  rmdir "$mnt" 2>/dev/null || true
+  log "installed ${dest}"
+  codesign -dv --verbose=2 "$dest" 2>&1 | head -20 || true
+  spctl --assess --verbose=4 "$dest" 2>&1 || log "spctl assess failed (recorded, not fatal)"
+}
+
+download_if_needed() {
+  local url="$1" dest="$2"
+  if [[ -f "$dest" ]]; then
+    log "cache hit $dest"
+    return 0
+  fi
+  if [[ "$SKIP_DOWNLOAD" -eq 1 ]]; then
+    die "missing $dest and --skip-download is set"
+  fi
+  log "fetch $url"
+  curl -fL --retry 3 --retry-delay 2 -o "${dest}.partial" "$url"
+  mv "${dest}.partial" "$dest"
+}
+
+if [[ "$WANT_DIA" -eq 1 ]]; then
+  if [[ -d "$DIA_APP" ]]; then
+    log "dia already at $DIA_APP"
+  else
+    dia_dmg="${CACHE_DIR}/Dia-latest.dmg"
+    download_if_needed "$DIA_URL" "$dia_dmg"
+    copy_app_from_dmg "$dia_dmg" "Dia.app"
+  fi
+fi
+
+if [[ "$WANT_COMET" -eq 1 ]]; then
+  if [[ -d "$COMET_APP" ]]; then
+    log "comet already at $COMET_APP"
+  else
+    comet_dmg="${CACHE_DIR}/comet_latest.dmg"
+    if [[ -f "$COMET_FIXTURE" && ! -f "$comet_dmg" ]]; then
+      log "copying local Comet fixture"
+      cp "$COMET_FIXTURE" "$comet_dmg"
+    else
+      download_if_needed "$COMET_URL" "$comet_dmg"
+    fi
+    copy_app_from_dmg "$comet_dmg" "Comet.app"
+  fi
+fi
+
+log "done. apps in $APPS_DIR"
+ls -la "$APPS_DIR"
