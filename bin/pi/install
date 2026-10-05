@@ -117,11 +117,16 @@ configure_pi_agent() {
         "${PROFILE_DIR}/bin/atop/harness-sync" apply || true
     fi
     if [ -d "$extensions_src" ] && compgen -G "${extensions_src}/*.ts" >/dev/null; then
-        cp "${extensions_src}"/*.ts "$extensions_dir"/
+        for f in "${extensions_src}"/*.ts; do
+            # harness-sync may already have linked this file into place
+            [ "$f" -ef "$extensions_dir/$(basename "$f")" ] || cp "$f" "$extensions_dir"/
+        done
     fi
     if [ -d "$extensions_src/lib" ] && compgen -G "${extensions_src}/lib/*.ts" >/dev/null; then
         mkdir -p "$extensions_dir/lib"
-        cp "${extensions_src}/lib/"*.ts "$extensions_dir/lib"/
+        for f in "${extensions_src}/lib/"*.ts; do
+            [ "$f" -ef "$extensions_dir/lib/$(basename "$f")" ] || cp "$f" "$extensions_dir/lib"/
+        done
     fi
 
     if [ "$profile_selector" = "personal" ]; then
