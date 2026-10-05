@@ -1,0 +1,381 @@
+#!/usr/bin/env zsh
+# yt-history — archive YouTube watch history metadata/transcripts to Drive.
+#
+# Auth is Chrome cookies via yt-dlp --cookies-from-browser. This script never
+# writes a cookie file. Video files are on-demand (get), not part of sync.
+set -euo pipefail
+
+DEFAULT_GMAIL_MOUNT="${HOME}/Library/CloudStorage/GoogleDrive-karan.hiremath@gmail.com"
+DEFAULT_KROP_MOUNT="${HOME}/Library/CloudStorage/GoogleDrive-karan@krop.ai"
+DEFAULT_ROOT="${DEFAULT_GMAIL_MOUNT}/My Drive/youtube-history"
+DEFAULT_KROP_ROOT="${DEFAULT_KROP_MOUNT}/My Drive/youtube-history"
+
+ROOT="${YT_HISTORY_ROOT:-$DEFAULT_ROOT}"
+KROP_ROOT="${YT_HISTORY_KROP_ROOT:-$DEFAULT_KROP_ROOT}"
+
+usage() {
+  cat <<'EOF'
+Usage: yt-history <command> [args]
+
+Archive YouTube watch history metadata and English transcripts to Google Drive.
+Video files are downloaded only on demand via `get`.
+
+Commands:
+  sync [--limit N]              Pull new :ythistory entries (skip video)
+  get <id|url> [--height 1080]  Download mp4 at height ≤ H into items/<id>/
+  tag <id> <label>              Append id, label, timestamp to tags.tsv
+                                (krop = possibly relevant to krop.ai work)
+  promote <id>                  Copy items/<id>/ to the krop.ai Drive mount
+                                Disabled unless YT_HISTORY_KROP_ENABLED=1
+  status                        Item count, tag counts, last sync, Drive path
+  help, --help                  Show this help
+
+Env:
+  YT_HISTORY_ROOT           Override archive root (default: gmail Drive)
+  YT_HISTORY_KROP_ROOT      Override krop promotion root
+  YT_HISTORY_KROP_ENABLED   Set to 1 to enable promote
+
+Auth: yt-dlp --cookies-from-browser chrome. Never writes a cookie file.
+The first live sync triggers a macOS Keychain prompt for "Chrome Safe Storage".
+EOF
+}
+
+die() {
+  print -u2 -- "yt-history: $*"
+  exit 1
+}
+
+need_ytdlp() {
+  if ! command -v yt-dlp >/dev/null 2>&1; then
+    print -u2 -- "yt-history: yt-dlp is not on PATH; install it first (not via this tool)"
+    exit 1
+  fi
+}
+
+is_positive_int() {
+  case "${1:-}" in
+    ''|*[!0-9]*|0) return 1 ;;
+  esac
+  return 0
+}
+
+need_root() {
+  if [[ -z ${YT_HISTORY_ROOT:-} ]]; then
+    if [[ ! -d "$DEFAULT_GMAIL_MOUNT" ]]; then
+      print -u2 -- "yt-history: Google Drive mount missing: ${DEFAULT_GMAIL_MOUNT}"
+      exit 1
+    fi
+    if [[ ! -d "${DEFAULT_GMAIL_MOUNT}/My Drive" ]]; then
+      print -u2 -- "yt-history: Google Drive 'My Drive' missing: ${DEFAULT_GMAIL_MOUNT}/My Drive"
+      exit 1
+    fi
+    return 0
+  fi
+  if [[ -d "$ROOT" ]]; then
+    return 0
+  fi
+  local parent="${ROOT:h}"
+  if [[ ! -d "$parent" ]]; then
+    print -u2 -- "yt-history: YT_HISTORY_ROOT parent missing: ${parent}"
+    exit 1
+  fi
+}
+
+ensure_layout() {
+  need_root
+  mkdir -p "${ROOT}/items"
+  [[ -f "${ROOT}/archive.txt" ]] || : > "${ROOT}/archive.txt"
+  if [[ ! -f "${ROOT}/index.tsv" ]] || [[ ! -s "${ROOT}/index.tsv" ]]; then
+    print -r -- $'synced_at\tid\ttitle\tchannel\turl\tduration' > "${ROOT}/index.tsv"
+  fi
+  [[ -f "${ROOT}/tags.tsv" ]] || : > "${ROOT}/tags.tsv"
+}
+
+extract_id() {
+  local raw="$1"
+  local id=""
+  case "$raw" in
+    *youtube.com/watch*)
+      id="${raw#*v=}"
+      id="${id%%&*}"
+      id="${id%%\?*}"
+      ;;
+    *youtu.be/*)
+      id="${raw##*youtu.be/}"
+      id="${id%%\?*}"
+      id="${id%%&*}"
+      id="${id%%/*}"
+      ;;
+    *youtube.com/shorts/*)
+      id="${raw##*shorts/}"
+      id="${id%%\?*}"
+      id="${id%%&*}"
+      id="${id%%/*}"
+      ;;
+    *youtube.com/embed/*)
+      id="${raw##*embed/}"
+      id="${id%%\?*}"
+      id="${id%%&*}"
+      id="${id%%/*}"
+      ;;
+    *)
+      id="$raw"
+      ;;
+  esac
+  id="${id//$'\n'/}"
+  id="${id//$'\r'/}"
+  [[ -n $id ]] || die "could not extract a video id from: ${raw}"
+  print -r -- "$id"
+}
+
+info_json_for() {
+  local id="$1"
+  local exact="${ROOT}/items/${id}/${id}.info.json"
+  if [[ -f "$exact" ]]; then
+    print -r -- "$exact"
+    return 0
+  fi
+  local -a matches
+  matches=("${ROOT}/items/${id}"/*.info.json(N))
+  if (( ${#matches} )); then
+    print -r -- "${matches[1]}"
+    return 0
+  fi
+  return 1
+}
+
+tsv_row_from_info() {
+  local info="$1" synced_at="$2" fallback_id="$3"
+  if ! command -v python3 >/dev/null 2>&1; then
+    print -r -- "${synced_at}	${fallback_id}				"
+    return 0
+  fi
+  python3 -c '
+import json, sys
+path, ts, fallback_id = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def clean(v):
+    if v is None:
+        return ""
+    return str(v).replace("\t", " ").replace("\n", " ").replace("\r", " ")
+
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    data = {}
+
+vid = clean(data.get("id") or fallback_id)
+title = clean(data.get("title"))
+channel = clean(data.get("channel") or data.get("uploader") or data.get("channel_id"))
+url = clean(
+    data.get("webpage_url")
+    or data.get("original_url")
+    or (f"https://www.youtube.com/watch?v={vid}" if vid else "")
+)
+duration = data.get("duration")
+dur_s = "" if duration is None else str(duration)
+sys.stdout.write("\t".join([ts, vid, title, channel, url, dur_s]) + "\n")
+' "$info" "$synced_at" "$fallback_id"
+}
+
+new_archive_lines() {
+  local before="$1"
+  if [[ -s "$before" ]]; then
+    grep -Fvx -f "$before" "${ROOT}/archive.txt" || true
+  else
+    cat "${ROOT}/archive.txt"
+  fi
+}
+
+index_new_ids() {
+  local before="$1"
+  local synced_at id line vid info
+  synced_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    vid="${line#* }"
+    vid="${vid%% *}"
+    id="$vid"
+    [[ -n $id ]] || continue
+    if info="$(info_json_for "$id")"; then
+      tsv_row_from_info "$info" "$synced_at" "$id" >> "${ROOT}/index.tsv"
+    else
+      print -r -- "${synced_at}	${id}			https://www.youtube.com/watch?v=${id}	" >> "${ROOT}/index.tsv"
+    fi
+  done < <(new_archive_lines "$before")
+}
+
+cmd_sync() {
+  local limit=""
+  while (( $# )); do
+    case "$1" in
+      --limit)
+        (( $# >= 2 )) || die "sync --limit requires N"
+        limit="$2"
+        is_positive_int "$limit" || die "sync --limit N must be a positive integer"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        die "sync: unknown argument: $1"
+        ;;
+    esac
+  done
+
+  need_ytdlp
+  ensure_layout
+
+  local before
+  before="$(mktemp "${TMPDIR:-/tmp}/yt-history-archive.XXXXXX")"
+  cp "${ROOT}/archive.txt" "$before"
+
+  local -a ytdlp_args
+  ytdlp_args=(
+    --cookies-from-browser chrome
+    --download-archive "${ROOT}/archive.txt"
+    --force-write-archive
+    --break-on-existing
+    --write-info-json
+    --write-auto-subs
+    --write-subs
+    --sub-langs 'en.*'
+    --sub-format vtt
+    --skip-download
+    --sleep-requests 1
+    --sleep-interval 2
+    --max-sleep-interval 5
+    -o "${ROOT}/items/%(id)s/%(id)s.%(ext)s"
+  )
+  if [[ -n $limit ]]; then
+    ytdlp_args+=(--playlist-end "$limit")
+  fi
+
+  local rc=0
+  yt-dlp "${ytdlp_args[@]}" -- :ythistory || rc=$?
+  index_new_ids "$before"
+  rm -f "$before"
+  # yt-dlp uses 101 when a download cap / break condition is hit.
+  if (( rc == 0 || rc == 101 )); then
+    return 0
+  fi
+  exit "$rc"
+}
+
+cmd_get() {
+  local target="" height=1080
+  while (( $# )); do
+    case "$1" in
+      --height)
+        (( $# >= 2 )) || die "get --height requires H"
+        height="$2"
+        is_positive_int "$height" || die "get --height H must be a positive integer"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        [[ -z $target ]] || die "get: extra argument: $1"
+        target="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n $target ]] || die "get: id or url required"
+
+  need_ytdlp
+  ensure_layout
+
+  local id url
+  id="$(extract_id "$target")"
+  mkdir -p "${ROOT}/items/${id}"
+  if [[ $target == http* ]]; then
+    url="$target"
+  else
+    url="https://www.youtube.com/watch?v=${id}"
+  fi
+
+  yt-dlp \
+    --cookies-from-browser chrome \
+    -f "bv*[height<=${height}]+ba/b[height<=${height}]/b" \
+    --merge-output-format mp4 \
+    --remux-video mp4 \
+    -o "${ROOT}/items/${id}/%(id)s.%(ext)s" \
+    -- "$url"
+}
+
+cmd_tag() {
+  (( $# == 2 )) || die "usage: yt-history tag <id> <label>"
+  local id="$1" label="$2"
+  ensure_layout
+  local ts
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  print -r -- "${id}	${label}	${ts}" >> "${ROOT}/tags.tsv"
+}
+
+cmd_promote() {
+  (( $# == 1 )) || die "usage: yt-history promote <id>"
+  if [[ ${YT_HISTORY_KROP_ENABLED:-0} != 1 ]]; then
+    print -u2 -- "yt-history: promote is disabled. Set YT_HISTORY_KROP_ENABLED=1 to copy to the krop.ai Drive mount (future destination)."
+    exit 3
+  fi
+
+  need_root
+  local id="$1"
+  local src="${ROOT}/items/${id}"
+  [[ -d "$src" ]] || die "no such item: ${id} (${src})"
+  if [[ ! -d "$DEFAULT_KROP_MOUNT" ]]; then
+    die "krop.ai Google Drive mount missing: ${DEFAULT_KROP_MOUNT}"
+  fi
+  mkdir -p "${KROP_ROOT}/items"
+  cp -R "$src" "${KROP_ROOT}/items/${id}"
+  print -r -- "promoted ${id} -> ${KROP_ROOT}/items/${id}"
+}
+
+cmd_status() {
+  need_root
+  local items=0 last="never"
+  if [[ -d "${ROOT}/items" ]]; then
+    local -a dirs
+    dirs=("${ROOT}/items"/*(N/))
+    items="${#dirs}"
+  fi
+  print -r -- "root	${ROOT}"
+  print -r -- "items	${items}"
+  if [[ -f "${ROOT}/tags.tsv" ]]; then
+    awk -F '\t' 'NF >= 2 { c[$2]++ } END { for (k in c) printf "tag\t%s\t%s\n", k, c[k] }' "${ROOT}/tags.tsv" | sort
+  fi
+  if [[ -f "${ROOT}/index.tsv" ]] && (( $(wc -l < "${ROOT}/index.tsv") > 1 )); then
+    last="$(tail -n 1 "${ROOT}/index.tsv" | cut -f1)"
+    [[ $last == synced_at ]] && last="never"
+  elif [[ -f "${ROOT}/archive.txt" ]] && [[ -s "${ROOT}/archive.txt" ]]; then
+    last="$(date -u -r "${ROOT}/archive.txt" +%Y-%m-%dT%H:%M:%SZ)"
+  fi
+  print -r -- "last_sync	${last}"
+  print -r -- "drive	${DEFAULT_ROOT}"
+}
+
+main() {
+  local cmd="${1:-}"
+  if [[ -z $cmd ]]; then
+    usage
+    exit 1
+  fi
+  shift
+  case "$cmd" in
+    sync) cmd_sync "$@" ;;
+    get) cmd_get "$@" ;;
+    tag) cmd_tag "$@" ;;
+    promote) cmd_promote "$@" ;;
+    status) cmd_status "$@" ;;
+    help|--help|-h) usage ;;
+    *) die "unknown command: ${cmd}" ;;
+  esac
+}
+
+main "$@"
