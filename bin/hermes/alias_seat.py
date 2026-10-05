@@ -255,7 +255,11 @@ def validate_instance(base_profile: str, instance: str) -> str:
 def instance_profile(base: str, instance: str) -> str:
     seat = seat_by_profile(base) or seat_by_alias(base)
     if seat is None:
-        raise SystemExit(f"ERROR: unknown lane family: {base}")
+        parsed = parse_instance_profile(base)
+        if parsed is None:
+            raise SystemExit(f"ERROR: unknown lane family: {base}")
+        validate_instance(str(parsed[0]["profile"]), parsed[1])
+        return validate_instance(base, instance)
     return validate_instance(str(seat["profile"]), instance)
 
 

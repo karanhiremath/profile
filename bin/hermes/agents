@@ -135,12 +135,16 @@ attach_live_tui() {
 mint_sibling_seat() {
   MINT_PROFILE=""
   MINT_SESSION=""
-  local _next _profile _session
+  local _next _profile _session _instance _base
   _next="$("$PY" "$SEAT_PY" next-seat "$1" 2>/dev/null)" || return 1
   _profile="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("profile", ""))')"
   _session="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("session", ""))')"
   [ -n "$_profile" ] && [ -n "$_session" ] || return 1
-  MINT_PROFILE="$_profile"
+  _instance="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("instance", ""))')"
+  [ -n "$_instance" ] || return 1
+  _base="${_profile%-$_instance}"
+  MINT_PROFILE="$("$PY" "$PY_BACKEND" ensure-lane "$_base" "$_instance")" || return 1
+  [ "$MINT_PROFILE" = "$_profile" ] || return 1
   MINT_SESSION="$_session"
 }
 

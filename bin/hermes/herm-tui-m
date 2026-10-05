@@ -170,12 +170,20 @@ attach_or_switch() {
 # Spawn-always helper: mint the next free sibling seat and retarget the
 # launch globals (PROFILE/SESSION/TARGET) at it.
 mint_sibling() {
-  local _next _m_profile _m_session
+  local _next _m_profile _m_session _m_instance _m_base _ensured
   _next="$("$PY" "$SCRIPT_DIR/alias_seat.py" next-seat "$1" 2>/dev/null)" \
     || die "no free sibling seat for $1 (home busy)"
   _m_profile="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("profile", ""))')"
   _m_session="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("session", ""))')"
   [ -n "$_m_profile" ] && [ -n "$_m_session" ] || die "sibling seat mint failed for $1"
+  if [ "$DRY" -eq 0 ]; then
+    _m_instance="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("instance", ""))')"
+    [ -n "$_m_instance" ] || die "sibling seat missing instance for $1"
+    _m_base="${_m_profile%-$_m_instance}"
+    _ensured="$("$PY" "$SCRIPT_DIR/hermes_agents.py" ensure-lane "$_m_base" "$_m_instance")" \
+      || die "cannot create sibling profile $_m_profile"
+    [ "$_ensured" = "$_m_profile" ] || die "sibling profile mismatch for $1"
+  fi
   PROFILE="$_m_profile"
   SESSION="$_m_session"
   TARGET="$SESSION:$WINDOW"
