@@ -35,6 +35,10 @@ _pi_resolve() {
   do
     [ -x "$_cand" ] && { printf '%s\n' "$_cand"; return 0; }
   done
+  # Image-managed installs (e.g. mise shims in toolbox sandboxes): PATH lookup
+  # that skips functions, so it never resolves to this wrapper.
+  _cand="$(whence -p pi 2>/dev/null || type -P pi 2>/dev/null)"
+  [ -n "$_cand" ] && [ -x "$_cand" ] && { printf '%s\n' "$_cand"; return 0; }
   return 1
 }
 
