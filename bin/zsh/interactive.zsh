@@ -1,9 +1,30 @@
 # Sourced once at the end of zshrc.bootstrap, after host-local PATH mutations.
-# Env integration must run in this shell; completion generation must not block it.
-if (( $+commands[mise] )); then
-    eval "$(command mise activate zsh)"
-elif [[ -x /opt/homebrew/bin/mise ]]; then
-    eval "$(/opt/homebrew/bin/mise activate zsh)"
+# Tool shims select repo-pinned versions without starting mise at shell startup.
+# Full environment hooks are opt-in, or initialized on the first explicit mise
+# command. A background process cannot update this shell's environment.
+_profile_mise_shims="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims"
+if (( $+commands[mise] )) || [[ -x /opt/homebrew/bin/mise ]]; then
+    _profile_mise_binary="${commands[mise]:-/opt/homebrew/bin/mise}"
+    if [[ "${PROFILE_MISE_MODE:-shims}" == activate ]]; then
+        eval "$(command "$_profile_mise_binary" activate zsh)"
+    else
+        typeset -U path
+        path=("$_profile_mise_shims" $path)
+        mise() {
+            local activation
+            unset -f mise
+            activation="$(command "$_profile_mise_binary" activate zsh)" || return
+            eval "$activation"
+            mise "$@"
+        }
+    fi
+fi
+unset _profile_mise_shims
+
+# Environment exports were resolved with shell builtins. Shim repair is I/O
+# maintenance and belongs outside the foreground startup path.
+if (( $+functions[herm_fork_ensure_shim] )); then
+    (herm_fork_ensure_shim) </dev/null >/dev/null 2>&1 &!
 fi
 
 _profile_omp_cache="${XDG_CACHE_HOME:-$HOME/.cache}/profile/zsh/omp.zsh"

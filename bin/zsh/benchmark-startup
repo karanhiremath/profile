@@ -1,0 +1,43 @@
+#!/usr/bin/env zsh
+# Measure shell configuration and first-prompt hooks separately from process launch.
+# Only paths, status and timings are emitted; never trace commands or env values.
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    print -r -- 'Usage: zsh -dfi bin/zsh/benchmark-startup [zshrc | --modules]'
+    exit 0
+fi
+zmodload zsh/datetime
+if [[ "${1:-}" == --modules ]]; then
+    for module in zsh/zle zsh/complete zsh/complist zsh/parameter zsh/system; do
+        started=$EPOCHREALTIME
+        zmodload "$module"
+        print -r -- "{\"module\":\"$module\",\"ms\":$(( (EPOCHREALTIME - started) * 1000 ))}"
+    done
+    exit 0
+fi
+exec 3>&1
+source() {
+    local started=$EPOCHREALTIME rc elapsed
+    builtin source "$@" >/dev/null 2>/dev/null
+    rc=$?
+    elapsed=$(( (EPOCHREALTIME - started) * 1000 ))
+    local source_path="$1"
+    source_path=${source_path//\\/\\\\}
+    source_path=${source_path//\"/\\\"}
+    source_path=${source_path//$'\n'/\\n}
+    source_path=${source_path//$'\r'/\\r}
+    source_path=${source_path//$'\t'/\\t}
+    print -r -u3 -- "{\"source\":\"$source_path\",\"ms\":$elapsed,\"status\":$rc}"
+    return $rc
+}
+started=$EPOCHREALTIME
+source "${1:-$HOME/.zshrc}"
+config_ms=$(( (EPOCHREALTIME - started) * 1000 ))
+started=$EPOCHREALTIME
+(( $+functions[precmd] )) && precmd >/dev/null 2>/dev/null
+for hook in ${precmd_functions[@]}; do
+    "$hook" >/dev/null 2>/dev/null
+done
+# Expand the prompt too: PROMPT_SUBST can hide synchronous CLI work.
+print -P -- "$PROMPT" >/dev/null 2>/dev/null
+prompt_ms=$(( (EPOCHREALTIME - started) * 1000 ))
+print -r -- "{\"config_ms\":$config_ms,\"prompt_ms\":$prompt_ms,\"ready_ms\":$((config_ms + prompt_ms))}"

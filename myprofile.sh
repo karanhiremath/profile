@@ -379,7 +379,7 @@ if [ -f "$HOME/src/profile/bin/hermes/herm-fork-env.sh" ]; then
     # shellcheck disable=SC1090
     . "$HOME/src/profile/bin/hermes/herm-fork-env.sh"
     export_herm_fork_env >/dev/null 2>&1 || true
-    herm_fork_ensure_shim >/dev/null 2>&1 || true
+    # Shim verification/repair is detached by bin/zsh/interactive.zsh.
 fi
 
 # Hermes voice/agent launcher (profiles -> isolated agents; CLI/TUI/gateway)

@@ -44,10 +44,18 @@ keep that pattern for any new installer.
 
 ## Startup work
 
-The bootstrap loads shared functions once, then activates mise once after host-local
-PATH changes. Keep host fragments free of redundant `mise activate` calls.
-Environment activation stays in the current shell; a background child cannot
-modify the parent's PATH or shell functions.
+The bootstrap loads shared functions once. mise tool shims are prepended after
+host-local PATH changes; full activation is lazy on the first `mise` command.
+**Tradeoff:** shims select tool versions but do not automatically activate project
+environment variables. Set `PROFILE_MISE_MODE=activate` in a host fragment if you
+require eager environment hooks (slower). Keep fragments free of redundant
+activation calls. Never cache generated environment values.
+
+Hermes overlay selection uses shell builtins; shim verification/repair runs
+detached. The prompt renders without a synchronous VCS probe: a single Git pipe
+worker updates branch/dirty state through ZLE. Obsolete-directory results are
+discarded; branch text is not evaluated as shell code. `compinit` still runs its
+security audit, once, with standard completion paths already registered.
 
 `omp` completions load from `${XDG_CACHE_HOME:-$HOME/.cache}/profile/zsh/omp.zsh`.
 A disowned worker refreshes missing/stale caches (24 hours, or binary/worker
@@ -67,3 +75,15 @@ on every shell startup.
 - `uv run --no-project tests/test_zsh_startup.py`
 
 Both use isolated fixtures; no host state touched.
+
+## Measurements
+
+- `zsh -df bin/zsh/benchmark-launches`: 3 warmups + 20 launches each for minimal,
+  interactive and login shells; NDJSON mean/min/max/standard deviation.
+- `zsh -dfi bin/zsh/benchmark-startup`: source-only timings, then first-prompt hooks
+  and prompt expansion. No command tracing or environment values are emitted.
+- `zsh -dfi bin/zsh/benchmark-startup --modules`: optional module-load timings.
+
+The first measures wall time including process launch; the second excludes it.
+Neither includes terminal rendering; validate async prompt updates in a real TTY.
+Do not claim sub-100ms wall time from a configuration-only measurement.
