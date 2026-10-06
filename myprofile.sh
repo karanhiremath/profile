@@ -347,6 +347,17 @@ _agents_completions() {
 }
 compdef _agents_completions agents
 
+# Package caches live on per-user scratch, not $HOME, wherever scratch exists
+# (devlarge /home is a ~100GB NFS quota). Layout from bin/agent-sandbox/ensure-user-scratch.
+# Hosts without /scratch (macOS) keep tool defaults.
+_scratch_cache="/scratch/people/${USER}/cache"
+if [ -d "$_scratch_cache" ] && [ -w "$_scratch_cache" ]; then
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-${_scratch_cache}/uv}"
+    export PIP_CACHE_DIR="${PIP_CACHE_DIR:-${_scratch_cache}/pip}"
+    export npm_config_cache="${npm_config_cache:-${_scratch_cache}/npm}"
+fi
+unset _scratch_cache
+
 # Hermes toolchain env. pnpm provides the hermes/hermes-agent/herm launchers on
 # PATH (~/.local/bin); they need the isolated toolchain's Python venv + bun on
 # PATH and HERMES_TOOLCHAIN_HOME exported to resolve. Guarded + idempotent:
