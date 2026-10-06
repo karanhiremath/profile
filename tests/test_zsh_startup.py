@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+import pty
+import select
 import shutil
 import subprocess
 import tempfile
@@ -252,6 +255,50 @@ printf '%s\\n' '## topic...origin/topic'
             )
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.log.exists())
+
+    def test_benchmark_preserves_completion_scope(self) -> None:
+        self.seed_cache('_omp() { :; }; compdef _omp omp\n')
+        (self.home / ".zshrc.d/20-scope.zsh").write_text(
+            '_test_completion_scope() { [[ "${_comps[omp]}" == _omp ]]; }\n'
+            'precmd_functions+=(_test_completion_scope)\n'
+        )
+        result = subprocess.run(
+            [ZSH, "-dfi", str(ROOT / "bin/zsh/benchmark-startup"), str(self.repo / "zshrc.bootstrap")],
+            env=self.env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["config_status"], 0)
+        self.assertEqual(payload["prompt_status"], 0)
+        self.assertGreaterEqual(payload["ready_ms"], payload["config_ms"])
+
+    def test_async_prompt_updates_in_a_real_pty_without_enter(self) -> None:
+        self.seed_cache()
+        self.script("git", "sleep .1\nprintf '%s\\n' '## pty-topic'\n")
+        (self.home / ".zshrc").write_text('source "$BOOT"\nTMOUT=5\n')
+        env = dict(self.env, TERM="xterm-256color")
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.chdir(self.home)
+            os.execve(ZSH, [ZSH, "-di"], env)
+        frame = bytearray()
+        try:
+            deadline = time.monotonic() + 8
+            while b"pty-topic" not in frame and time.monotonic() < deadline:
+                readable, _, _ = select.select([fd], [], [], 0.1)
+                if readable:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    frame.extend(chunk)
+            self.assertIn(b"pty-topic", frame, "Git callback did not redraw the first prompt")
+        finally:
+            os.write(fd, b"exit\\r")
+            os.waitpid(pid, 0)
+            os.close(fd)
 
     def test_binary_upgrade_refreshes_cache(self) -> None:
         self.seed_cache("# previous cache\n")
