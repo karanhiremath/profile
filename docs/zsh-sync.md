@@ -42,6 +42,28 @@ macOS direct-exec runs scripts with `/bin/bash` (3.2): a failed `.` builtin is f
 there even under `|| true`. Installers guard sourced helpers with existence checks —
 keep that pattern for any new installer.
 
+## Startup work
+
+The bootstrap loads shared functions once, then activates mise once after host-local
+PATH changes. Keep host fragments free of redundant `mise activate` calls.
+Environment activation stays in the current shell; a background child cannot
+modify the parent's PATH or shell functions.
+
+`omp` completions load from `${XDG_CACHE_HOME:-$HOME/.cache}/profile/zsh/omp.zsh`.
+A disowned worker refreshes missing/stale caches (24 hours, or binary/worker
+upgrade). Cold starts pick up the finished cache on a subsequent prompt. A kernel
+lock prevents concurrent generators; failures retain the old cache, and successful
+writes are syntax-checked and atomically replaced. No generator output reaches the
+terminal. Run `bin/zsh/refresh-completions --help` for manual refresh usage.
+
+fzf uses standard package locations or `${FZF_BASE}/shell`, without calling
+Homebrew. iTerm integration only loads inside iTerm. Host-local Homebrew setup
+should use its known installation prefix rather than launching `brew shellenv`
+on every shell startup.
+
 ## Tests
 
-`python3 tests/test_zsh_sync.py` (uses `ZSH_SYNC_HOME` fixtures; no host state touched).
+- `uv run --no-project tests/test_zsh_sync.py`
+- `uv run --no-project tests/test_zsh_startup.py`
+
+Both use isolated fixtures; no host state touched.
