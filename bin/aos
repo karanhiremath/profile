@@ -233,7 +233,7 @@ cmd_seat() {
 			fi
 			PROFILE_DIR="$PROFILE_DIR" SEAT_SOURCE="$src" \
 				SEAT_SCHEMA="${SEAT_SCHEMA:-$AOS_ROOT/config/aos/seat.v1.schema.json}" \
-				python3 <(cat <<'PYCHECK'
+				python3 -c "$(cat <<'PYCHECK'
 import json
 import os
 import re
@@ -432,7 +432,7 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 PYCHECK
-)
+)"
 			;;
 		-h|--help|help)
 			seat_usage
