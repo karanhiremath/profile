@@ -7,7 +7,13 @@ alias relaod="reload"
 autoload -U colors && colors
 autoload -Uz promptinit && promptinit
 
-# initialize completio
+# Register standard completion paths before the single audited compinit run.
+# Keep the security audit: it costs tens of ms here, not the hundreds from CLIs.
+typeset -U fpath
+for _profile_completion_dir in /opt/homebrew/share/zsh/site-functions /usr/local/share/zsh/site-functions; do
+    [[ -d "$_profile_completion_dir" ]] && fpath=("$_profile_completion_dir" $fpath)
+done
+unset _profile_completion_dir
 autoload -Uz compinit
 compinit
 
@@ -36,28 +42,8 @@ if command -v fzf >/dev/null 2>&1; then
     fi
 fi
 
-# Load version control information
-autoload -Uz vcs_info
-
-# Format the vcs_info_msg_0_ variable
-zstyle ':vcs_info:git:*' formats '%b'
-
-# Set up the prompt (with git branch name)
-setopt PROMPT_SUBST
-
-precmd() {
-    vcs_info
-    if [[ -n ${vcs_info_msg_0_} ]]; then
-        STATUS='$(command git status --porcelain 2> /dev/null | tail -n1)'
-        if [[ -n $STATUS ]]; then
-            PROMPT="%F{9}%D{%Y-%m-%d %H:%M:%S}%f %F{11}|%f %F{12}%n%f%F{9}@%m%f %F{11}|%f %F{9}%~%f $prompt_newline%F{9}(%f%F{9}${vcs_info_msg_0_}%f%F{9})%f %F{11}>%f %F{15}"
-        else
-            PROMPT="%F{9}%D{%Y-%m-%d %H:%M:%S}%f %F{11}|%f %F{12}%n%f%F{9}@%m%f %F{11}|%f %F{9}%~%f $prompt_newline%F{9}(%f%F{10}${vcs_info_msg_0_}%f%F{9})%f %F{11}>%f %F{15}"
-        fi
-    else
-        PROMPT="%F{9}%D{%Y-%m-%d %H:%M:%S}%f %F{11}|%f %F{12}%n%f%F{9}@%m%f %F{11}|%f %F{9}%~%f $prompt_newline %F{11}>%f %F{15}"
-    fi
-}
+# No synchronous VCS probe on the first prompt or subsequent redraws.
+source "${PROFILE_DIR}/bin/zsh/prompt.zsh"
 
 bindkey "^[[H" beginning-of-line
 bindkey "^[[F" end-of-line

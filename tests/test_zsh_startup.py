@@ -22,7 +22,7 @@ class TestZshStartup(unittest.TestCase):
         self.bin = self.home / "bin"
         self.bin.mkdir()
         (self.repo / "bin/zsh").mkdir(parents=True)
-        for name in ("interactive.zsh", "refresh-completions"):
+        for name in ("interactive.zsh", "refresh-completions", "prompt.zsh"):
             shutil.copy2(ROOT / "bin/zsh" / name, self.repo / "bin/zsh" / name)
         shutil.copy2(ROOT / "zshrc.bootstrap", self.repo / "zshrc.bootstrap")
         shutil.copy2(ROOT / "zsh_profile.sh", self.repo / "zsh_profile.sh")
@@ -51,8 +51,16 @@ class TestZshStartup(unittest.TestCase):
             TEST_LOG=str(self.log),
             TEST_RELEASE=str(self.release),
             TEST_STARTED=str(self.started),
+            MISE_DATA_DIR=str(self.home / "data/mise"),
+            PROFILE_MISE_MODE="shims",
         )
-        self.script("mise", 'printf "mise\\n" >> "$TEST_LOG"\nprintf "%s\\n" \'export TEST_MISE_PATH="$PATH"\'\n')
+        self.script("mise", '''printf 'mise\\n' >> "$TEST_LOG"
+if [[ "${1:-}" == activate ]]; then
+    printf '%s\\n' 'export TEST_MISE_PATH="$PATH"' 'mise() { command mise "$@"; }'
+else
+    printf '%s\\n' fake-mise
+fi
+''')
         self.script("brew", 'printf "brew\\n" >> "$TEST_LOG"\nexit 1\n')
         self.script("fzf", "exit 0\n")
         self.script("omp", 'printf "omp\\n" >> "$TEST_LOG"\nprintf "%s\\n" \'export TEST_COMPLETIONS=loaded\'\n')
@@ -101,10 +109,29 @@ printf '%s\\n' 'export TEST_COMPLETIONS=loaded'
         self.seed_cache()
         result = self.shell(
             'source "$BOOT"; print -r -- "$TEST_PROFILE_LOADS:$TEST_COMPLETIONS"; '
-            '[[ "$TEST_MISE_PATH" == "$TEST_LOCAL_PATH" ]]'
+            '[[ "$path[1]" == "$MISE_DATA_DIR/shims" ]]'
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "1:loaded")
+        self.assertFalse(self.log.exists(), "warm startup must not invoke a CLI")
+
+    def test_mise_activation_is_lazy_and_forwards_arguments(self) -> None:
+        self.seed_cache()
+        result = self.shell(
+            'source "$BOOT"; [[ ! -e "$TEST_LOG" ]] || exit 1; '
+            'mise --version; [[ -n "$TEST_MISE_PATH" ]]'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "fake-mise")
+        self.assertEqual(self.log.read_text().splitlines(), ["mise", "mise"])
+
+    def test_full_mise_activation_remains_available(self) -> None:
+        self.seed_cache()
+        self.env["PROFILE_MISE_MODE"] = "activate"
+        result = self.shell(
+            'source "$BOOT"; [[ "$TEST_MISE_PATH" == "$TEST_LOCAL_PATH" ]]'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.log.read_text().splitlines(), ["mise"])
 
     def test_cold_start_returns_before_generator_finishes(self) -> None:
@@ -159,6 +186,70 @@ printf '%s\\n' 'export TEST_COMPLETIONS=loaded'
                 self.assertEqual(worker.wait(timeout=15), 0)
         self.assertEqual(self.log.read_text().splitlines(), ["omp"])
         self.assertEqual(self.refresh().stdout.strip(), '{"refreshed":false}')
+
+    def test_prompt_does_not_wait_for_git(self) -> None:
+        self.seed_cache()
+        self.script("git", '''printf 'git\\n' >> "$TEST_LOG"
+: > "$TEST_STARTED"
+for ((i=0; i<100; i++)); do
+    [[ -f "$TEST_RELEASE" ]] && break
+    sleep 0.05
+done
+[[ -f "$TEST_RELEASE" ]]
+printf '%s\\n' '## topic...origin/topic'
+: > "$TEST_FINISHED"
+''')
+        finished = self.home / "finished"
+        self.env["TEST_FINISHED"] = str(finished)
+        try:
+            result = self.shell('source "$BOOT"; precmd; precmd; print -r -- ready')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "ready")
+            self.wait_for(self.started)
+            self.assertFalse(finished.exists())
+        finally:
+            self.release.touch()
+        self.wait_for(finished)
+        self.assertEqual(self.log.read_text().splitlines(), ["git"])
+
+    def test_async_prompt_escapes_branch_and_does_not_execute_it(self) -> None:
+        self.seed_cache()
+        pwn = self.home / "pwn"
+        self.env["TEST_PWN"] = str(pwn)
+        self.script("git", "printf '%s\\n' '## topic%$(touch${IFS}$TEST_PWN)...origin/topic' ' M file'\n")
+        result = self.shell(
+            'source "$BOOT"; precmd; _profile_git_ready "$_profile_git_fd"; '
+            'print -P -- "$PROMPT"; [[ "$_profile_git_segment" == *"%F{9}"* ]]'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('topic%$(touch${IFS}$TEST_PWN)', result.stdout)
+        self.assertFalse(pwn.exists())
+
+    def test_async_prompt_discards_stale_cwd_results(self) -> None:
+        self.seed_cache()
+        self.script("git", "printf '%s\\n' '## old-topic'\n")
+        other = self.home / "other"
+        other.mkdir()
+        self.env["TEST_OTHER"] = str(other)
+        result = self.shell(
+            'source "$BOOT"; precmd; cd "$TEST_OTHER"; '
+            '_profile_git_ready "$_profile_git_fd"; [[ -z "$_profile_git_segment" ]]'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fork_env_resolver_uses_no_external_grep(self) -> None:
+        self.seed_cache()
+        overlay = self.home / "overlay"
+        (overlay / "agent").mkdir(parents=True)
+        (overlay / "agent/cursor_sdk_client.py").write_text("_operator_run_timeout_seconds = 0\n")
+        self.env["COSW_TIMEOUT_FREE_PYTHONPATH"] = str(overlay)
+        self.env["FORK_ENV"] = str(ROOT / "bin/hermes/fork-env.sh")
+        self.script("grep", 'printf "grep\\n" >> "$TEST_LOG"\nexit 1\n')
+        result = self.shell(
+            'source "$FORK_ENV"; [[ "$HERMES_AGENT_ROOT" == "$COSW_TIMEOUT_FREE_PYTHONPATH" ]]'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.log.exists())
 
     def test_binary_upgrade_refreshes_cache(self) -> None:
         self.seed_cache("# previous cache\n")
