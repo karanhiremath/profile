@@ -55,28 +55,67 @@ def run_plan(*args: str, env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 class CoswLaunchPlanTest(unittest.TestCase):
-    @requires_host_checkout
-    def test_default_is_host_timeout_free_cursor_grok(self):
+    def test_default_is_host_moa(self):
         plan = run_plan()
         self.assertEqual(plan["backend"], "local")
         self.assertEqual(plan["sandbox"], "0")
-        self.assertEqual(plan["provider"], "cursor")
-        self.assertEqual(plan["model"], "grok-4.6:fast")
-        self.assertEqual(plan["cursor_sdk"], "1")
-        self.assertEqual(plan["timeout_free"], "1")
-        self.assertEqual(plan["compose"], "0")
-        self.assertEqual(plan["compose_service"], "")
-        self.assertTrue(plan["pythonpath"].endswith("timeout-free-cursor-sdk-20260831T1834"))
-        self.assertTrue(plan["persona"].endswith("cosw-host-dispatch.md"))
-
-    def test_codex_seat(self):
-        plan = run_plan("--codex")
-        self.assertEqual(plan["backend"], "local")
-        self.assertEqual(plan["provider"], "openai-codex")
-        self.assertEqual(plan["model"], "gpt-5.5")
+        self.assertEqual(plan["seat"], "moa")
+        self.assertEqual(plan["provider"], "moa")
+        self.assertEqual(plan["model"], "default")
         self.assertEqual(plan["cursor_sdk"], "0")
         self.assertEqual(plan["timeout_free"], "0")
         self.assertEqual(plan["pythonpath"], "")
+        self.assertEqual(plan["compose"], "0")
+        self.assertEqual(plan["compose_service"], "")
+        self.assertTrue(plan["persona"].endswith("cosw-host-dispatch.md"))
+
+    def test_moa_seat_alias(self):
+        plan = run_plan("--moa")
+        self.assertEqual(plan["seat"], "moa")
+        self.assertEqual(plan["provider"], "moa")
+        self.assertEqual(plan["model"], "default")
+        self.assertEqual(plan["cursor_sdk"], "0")
+
+    def test_codex_and_oai_seats(self):
+        for flag in ("--codex", "--oai"):
+            with self.subTest(flag=flag):
+                plan = run_plan(flag)
+                self.assertEqual(plan["backend"], "local")
+                self.assertEqual(plan["provider"], "openai-codex")
+                self.assertEqual(plan["model"], "gpt-6.1-sol")
+                self.assertEqual(plan["cursor_sdk"], "0")
+                self.assertEqual(plan["timeout_free"], "0")
+                self.assertEqual(plan["pythonpath"], "")
+
+    def test_gpt_5_5_legacy_seat(self):
+        plan = run_plan("--gpt-5.5")
+        self.assertEqual(plan["provider"], "openai-codex")
+        self.assertEqual(plan["model"], "gpt-5.5")
+
+    @requires_host_checkout
+    def test_grok_seat_is_non_fast_cursor(self):
+        for flag in ("--grok", "--cursor-grok"):
+            with self.subTest(flag=flag):
+                plan = run_plan(flag)
+                self.assertEqual(plan["provider"], "cursor")
+                self.assertEqual(plan["model"], "grok-4.6")
+                self.assertEqual(plan["cursor_sdk"], "1")
+                self.assertEqual(plan["timeout_free"], "1")
+                self.assertTrue(plan["pythonpath"].endswith("timeout-free-cursor-sdk-20260831T1834"))
+
+    def test_anthropic_seat_aliases(self):
+        expected = {
+            "--sonnet": "claude-sonnet-5",
+            "--opus": "claude-opus-5",
+            "--fable": "claude-fable-5",
+        }
+        for flag, model in expected.items():
+            with self.subTest(flag=flag):
+                plan = run_plan(flag)
+                self.assertEqual(plan["provider"], "anthropic")
+                self.assertEqual(plan["model"], model)
+                self.assertEqual(plan["cursor_sdk"], "0")
+                self.assertEqual(plan["timeout_free"], "0")
 
     def test_xai_grok_seat_is_not_cursor(self):
         plan = run_plan("--xai-grok")
@@ -173,19 +212,18 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertEqual(plan["model"], "gpt-5.6-luna")
         self.assertEqual(plan["thinking"], "high")
 
-    @requires_host_checkout
     def test_thinking_only_flag_keeps_default_seat(self):
         plan = run_plan("--thinking", "low")
-        self.assertEqual(plan["seat"], "cursor-grok")
-        self.assertEqual(plan["provider"], "cursor")
-        self.assertEqual(plan["model"], "grok-4.6:fast")
+        self.assertEqual(plan["seat"], "moa")
+        self.assertEqual(plan["provider"], "moa")
+        self.assertEqual(plan["model"], "default")
         self.assertEqual(plan["thinking"], "low")
-        self.assertEqual(plan["cursor_sdk"], "1")
-        self.assertEqual(plan["timeout_free"], "1")
+        self.assertEqual(plan["cursor_sdk"], "0")
+        self.assertEqual(plan["timeout_free"], "0")
 
     def test_flag_conflicts_with_seat_preset_fail(self):
         proc = subprocess.run(
-            [str(COSW), "--codex", "--model", "gpt-5.5", "--print-plan"],
+            [str(COSW), "--codex", "--model", "gpt-6.1-sol", "--print-plan"],
             capture_output=True,
             text=True,
         )

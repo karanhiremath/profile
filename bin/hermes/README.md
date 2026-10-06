@@ -115,8 +115,12 @@ cos sandbox status          # personal CoS image / family / container
 cos sandbox families        # distrohop catalog
 cos sandbox rebuild         # personal default: arch-toolkit
 bin/hermes/cos-s ls         # list personal sandbox short names
-cosw                        # host-native CoS-W on openai-codex/gpt-6.1-sol (optimal for now)
-cosw --cursor-grok          # host-native CoS-W (timeout-free cursor/grok-4.6:fast)
+cosw                        # host-native CoS-W on moa/default
+cosw --grok                 # host-native CoS-W on cursor/grok-4.6 (non-fast)
+cosw --oai / --codex        # host-native CoS-W on openai-codex/gpt-6.1-sol
+cosw --sonnet               # host-native CoS-W on anthropic/claude-sonnet-5
+cosw --opus                 # host-native CoS-W on anthropic/claude-opus-5
+cosw --fable                # host-native CoS-W on anthropic/claude-fable-5
 cosw --gpt-5.5              # legacy: host-native CoS-W on openai-codex/gpt-5.5
 cosw --xai-grok             # host-native CoS-W on xAI grok-4.6 (not Cursor SDK)
 cosw --lane o1              # isolated work sibling seat
@@ -145,11 +149,16 @@ The catalog lives in `~/src/karan.hiremath/agentic/hermes/sandboxes/catalog.yaml
 
 Seats (launch-scoped; they do not rewrite the committed profile YAML lock):
 
-- default / `--cursor-grok` — `cursor/grok-4.6:fast` with
+- default / `--moa` — `moa/default`, with the committed CoS-W profile owning
+  the reference/aggregator preset
+- `--grok` / `--cursor-grok` — `cursor/grok-4.6` (non-fast) with
   `PYTHONPATH` pinned at the timeout-free Cursor SDK worktree so the 180s
   nested-run bomb does not fire
-- default seat — `openai-codex/gpt-6.1-sol` (ChatGPT Codex billing; optimal for now)
-- `--codex` / `--gpt-6.1-sol` — same as the default seat
+- `--oai` / `--codex` / `--gpt-6.1-sol` — `openai-codex/gpt-6.1-sol`
+  (ChatGPT Codex billing)
+- `--sonnet` — `anthropic/claude-sonnet-5`
+- `--opus` — `anthropic/claude-opus-5`
+- `--fable` — `anthropic/claude-fable-5`
 - `--gpt-5.5` — legacy alias: `openai-codex/gpt-5.5`
 - `--xai-grok` — xAI `grok-4.6` (requires `XAI_API_KEY` or `hermes auth add xai-oauth`)
 

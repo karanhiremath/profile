@@ -14,7 +14,7 @@
 # that contain slashes (together/zai-org/GLM-5.3-Flash style) therefore work
 # with a bare --model too. No secret material flows through this helper.
 
-LLM_KNOWN_PROVIDERS="openai-codex openai anthropic anthropic-beta azure-openai-responses amazon-bedrock cursor together xai xai-oauth openrouter pi nemoclaw ollama moa google google-vertex moonshotai groq cerebras zai mistral deepseek"
+LLM_KNOWN_PROVIDERS="openai-codex openai anthropic anthropic-beta azure-openai-responses amazon-bedrock cursor copilot together xai x-ai xai-oauth openrouter nous pi nemoclaw ollama moa google google-vertex moonshotai groq cerebras zai mistral deepseek"
 
 llm_flags_is_known_provider() {
   local p

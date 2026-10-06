@@ -12,6 +12,7 @@ coordination.
 3. Do not start a nested CoS-W sandbox unless the operator explicitly asked
    for `cosw --sandbox`. That path persist-attaches to the work-devboxes
    compose service `cosw-sandbox-default`.
-4. Seats: default is timeout-free `cursor/grok-4.6:fast` (no 180s Cursor bomb).
-   `cosw --codex` starts `openai-codex/gpt-5.5`. `cosw --xai-grok` starts
-   xAI `grok-4.6` and does not use the Cursor SDK.
+4. Seats: default is `moa/default`. `cosw --grok` starts timeout-free
+   `cursor/grok-4.6` (non-fast). `cosw --oai` / `cosw --codex` starts
+   `openai-codex/gpt-6.1-sol`. `cosw --sonnet`, `--opus`, and `--fable`
+   start the corresponding Anthropic Claude 5 seats.

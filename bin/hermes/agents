@@ -236,9 +236,9 @@ case "$cmd" in
     if [ -n "$thinking" ]; then
       export HERMES_AGENT_LLM_THINKING="$thinking"
     fi
-    # Cursor SDK on Mini rejects grok-4.6:fast. Strip the thinking suffix.
+    # Cursor SDK on Mini rejects colon variants. Strip suffixes before launch.
     case "${HERMES_MODEL:-}" in
-      grok-4.6:fast|grok-4.6:*)
+      grok-4.6:*)
         export HERMES_AGENT_LLM_MODEL=grok-4.6
         export HERMES_INFERENCE_MODEL=grok-4.6
         export HERMES_MODEL=grok-4.6

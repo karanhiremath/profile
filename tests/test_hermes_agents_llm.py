@@ -32,13 +32,13 @@ class HermesAgentsLlmRenderTest(unittest.TestCase):
                 "toolsets": ["terminal", "file"],
                 "llm": {
                     "provider": "cursor",
-                    "model": "grok-4.6:fast",
+                    "model": "grok-4.6",
                     "thinking": "xhigh",
                 },
             }
         )
         self.assertEqual(cfg["model"]["provider"], "cursor")
-        self.assertEqual(cfg["model"]["default"], "grok-4.6:fast")
+        self.assertEqual(cfg["model"]["default"], "grok-4.6")
         self.assertEqual(cfg["agent"]["reasoning_effort"], "xhigh")
 
     def test_materialize_writes_thinking_and_syncs_cursor_key(self):
@@ -56,7 +56,7 @@ class HermesAgentsLlmRenderTest(unittest.TestCase):
                         "toolsets": ["terminal"],
                         "llm": {
                             "provider": "cursor",
-                            "model": "grok-4.6:fast",
+                            "model": "grok-4.6",
                             "thinking": "xhigh",
                         },
                     }
@@ -71,7 +71,7 @@ class HermesAgentsLlmRenderTest(unittest.TestCase):
                 home = module.materialize("chief-of-staff-work")
             config = yaml.safe_load((home / "config.yaml").read_text())
             self.assertEqual(config["model"]["provider"], "cursor")
-            self.assertEqual(config["model"]["default"], "grok-4.6:fast")
+            self.assertEqual(config["model"]["default"], "grok-4.6")
             self.assertEqual(config["agent"]["reasoning_effort"], "xhigh")
             env_file = module._read_env_file(home / ".env")
             self.assertEqual(env_file.get("CURSOR_API_KEY"), "cursor_test_key")
@@ -99,7 +99,7 @@ class HermesAgentsLlmRenderTest(unittest.TestCase):
                         },
                         "llm": {
                             "provider": "cursor",
-                            "model": "grok-4.6:fast",
+                            "model": "grok-4.6",
                             "thinking": "xhigh",
                         },
                     }
@@ -136,7 +136,7 @@ class HermesAgentsLlmRenderTest(unittest.TestCase):
                         "toolsets": ["terminal"],
                         "llm": {
                             "provider": "cursor",
-                            "model": "grok-4.6:fast",
+                            "model": "grok-4.6",
                             "thinking": "xhigh",
                         },
                     }
@@ -173,7 +173,7 @@ class HermesAgentsLlmRenderTest(unittest.TestCase):
                         "toolsets": ["terminal"],
                         "llm": {
                             "provider": "cursor",
-                            "model": "grok-4.6:fast",
+                            "model": "grok-4.6",
                             "thinking": "xhigh",
                         },
                     }
@@ -222,13 +222,15 @@ def _write_seat(profiles: Path, llm=None) -> None:
 
 
 class HermesAgentsModelRouterTest(unittest.TestCase):
-    ROUTER_LLM = {"provider": "cursor", "model": "grok-4.6:fast", "thinking": "xhigh"}
+    ROUTER_LLM = {"provider": "moa", "model": "default", "thinking": "xhigh"}
     ROUTER_CHAIN = [
-        {"provider": "openai-codex", "model": "gpt-5.5"},
-        {"provider": "openai-codex", "model": "gpt-5.6-luna"},
-        {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+        {"provider": "openai-codex", "model": "gpt-6-astra"},
         {"provider": "openai-codex", "model": "gpt-5.6-sol"},
-        {"provider": "cursor", "model": "grok-4.6:fast"},
+        {"provider": "cursor", "model": "grok-4.6"},
+        {"provider": "anthropic", "model": "claude-sonnet-5"},
+        {"provider": "anthropic", "model": "claude-opus-5"},
+        {"provider": "anthropic", "model": "claude-fable-5"},
+        {"provider": "openai-codex", "model": "gpt-5.5"},
     ]
 
     def test_router_fills_missing_llm_keys_and_installs_chain_excluding_primary(self):
@@ -244,9 +246,9 @@ class HermesAgentsModelRouterTest(unittest.TestCase):
             self.assertEqual(profile["llm"]["model"], "gpt-5.5")
             self.assertEqual(profile["llm"]["thinking"], "xhigh")
             chain = profile["fallback_model"]
-            self.assertEqual(chain[0], {"provider": "openai-codex", "model": "gpt-5.6-luna"})
+            self.assertEqual(chain[0], {"provider": "openai-codex", "model": "gpt-6-astra"})
             self.assertNotIn({"provider": "openai-codex", "model": "gpt-5.5"}, chain)
-            self.assertIn({"provider": "cursor", "model": "grok-4.6:fast"}, chain)
+            self.assertIn({"provider": "cursor", "model": "grok-4.6"}, chain)
 
     def test_router_llm_defaults_when_profile_has_no_llm(self):
         module = load_module()
@@ -257,11 +259,10 @@ class HermesAgentsModelRouterTest(unittest.TestCase):
             _write_seat(profiles)
             with patch.dict(os.environ, {"HERMES_AGENT_PROFILE_PATH": str(profiles)}, clear=False):
                 profile = module.load_profile("chief-of-staff-work")
-            self.assertEqual(profile["llm"]["provider"], "cursor")
-            self.assertEqual(profile["llm"]["model"], "grok-4.6:fast")
+            self.assertEqual(profile["llm"]["provider"], "moa")
+            self.assertEqual(profile["llm"]["model"], "default")
             chain = profile["fallback_model"]
-            self.assertNotIn({"provider": "cursor", "model": "grok-4.6:fast"}, chain)
-            self.assertEqual(chain[0], {"provider": "openai-codex", "model": "gpt-5.5"})
+            self.assertEqual(chain[0], {"provider": "openai-codex", "model": "gpt-6-astra"})
 
     def test_profile_fallback_model_wins_over_router(self):
         module = load_module()
@@ -271,7 +272,7 @@ class HermesAgentsModelRouterTest(unittest.TestCase):
             _write_router(profiles, llm=self.ROUTER_LLM, fallback=self.ROUTER_CHAIN)
             _write_seat(
                 profiles,
-                llm={"provider": "cursor", "model": "grok-4.6:fast"},
+                llm={"provider": "cursor", "model": "grok-4.6"},
             )
             # Re-write the seat with an explicit fallback_model to check precedence.
             seat_path = profiles / "chief-of-staff-work.yaml"
@@ -287,7 +288,7 @@ class HermesAgentsModelRouterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             profiles = Path(tmp) / "profiles"
             profiles.mkdir()
-            _write_seat(profiles, llm={"provider": "cursor", "model": "grok-4.6:fast"})
+            _write_seat(profiles, llm={"provider": "cursor", "model": "grok-4.6"})
             with patch.dict(os.environ, {"HERMES_AGENT_PROFILE_PATH": str(profiles)}, clear=False):
                 profile = module.load_profile("chief-of-staff-work")
             self.assertNotIn("fallback_model", profile)
@@ -339,7 +340,7 @@ class HermesAgentsModelRouterTest(unittest.TestCase):
             config = yaml.safe_load((home / "config.yaml").read_text())
             self.assertEqual(config["model"]["default"], "gpt-5.5")
             chain = config["fallback_model"]
-            self.assertEqual(chain[0], {"provider": "openai-codex", "model": "gpt-5.6-luna"})
+            self.assertEqual(chain[0], {"provider": "openai-codex", "model": "gpt-6-astra"})
             self.assertNotIn({"provider": "openai-codex", "model": "gpt-5.5"}, chain)
 
 
