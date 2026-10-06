@@ -218,7 +218,7 @@ printf '%s\\n' '## topic...origin/topic'
         self.env["TEST_PWN"] = str(pwn)
         self.script("git", "printf '%s\\n' '## topic%$(touch${IFS}$TEST_PWN)...origin/topic' ' M file'\n")
         result = self.shell(
-            'source "$BOOT"; precmd; _profile_git_ready "$_profile_git_fd"; '
+            'source "$BOOT"; precmd; _profile_git_ready "$_profile_git_fd" hup; '
             'print -P -- "$PROMPT"; [[ "$_profile_git_segment" == *"%F{9}"* ]]'
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -245,10 +245,12 @@ printf '%s\\n' '## topic...origin/topic'
         self.env["COSW_TIMEOUT_FREE_PYTHONPATH"] = str(overlay)
         self.env["FORK_ENV"] = str(ROOT / "bin/hermes/fork-env.sh")
         self.script("grep", 'printf "grep\\n" >> "$TEST_LOG"\nexit 1\n')
-        result = self.shell(
-            'source "$FORK_ENV"; [[ "$HERMES_AGENT_ROOT" == "$COSW_TIMEOUT_FREE_PYTHONPATH" ]]'
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        for shell in (ZSH, "/bin/bash"):
+            result = subprocess.run(
+                [shell, "-c", 'source "$FORK_ENV"; [[ "$HERMES_AGENT_ROOT" == "$COSW_TIMEOUT_FREE_PYTHONPATH" ]]'],
+                env=self.env, capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.log.exists())
 
     def test_binary_upgrade_refreshes_cache(self) -> None:

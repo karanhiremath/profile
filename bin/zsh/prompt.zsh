@@ -1,9 +1,10 @@
 # Render immediately. Git runs in a pipe worker and updates the prompt via ZLE.
 # Never splice repo-controlled branch text into PROMPT's shell program.
 setopt PROMPT_SUBST
-_profile_git_segment=''
-_profile_git_pwd=''
-_profile_git_fd=''
+# Preserve the outstanding descriptor across `source ~/.zshrc` reloads.
+typeset -g _profile_git_segment="${_profile_git_segment:-}"
+typeset -g _profile_git_pwd="${_profile_git_pwd:-}"
+typeset -g _profile_git_fd="${_profile_git_fd:-}"
 
 _profile_git_worker() {
     local cwd="$1" output branch='' dirty=0
@@ -29,7 +30,7 @@ _profile_prompt_render() {
 
 _profile_git_ready() {
     local fd="$1" cwd branch dirty color=10
-    if [[ -z "${2:-}" ]] &&
+    if [[ -z "${2:-}" || "${2:-}" == hup ]] &&
             IFS= read -r -u "$fd" cwd &&
             IFS= read -r -u "$fd" branch &&
             IFS= read -r -u "$fd" dirty; then
@@ -57,8 +58,9 @@ precmd() {
     # At most one worker per shell; never cancel an in-flight git operation.
     # Newline-containing directories cannot use this line-oriented protocol.
     if [[ -z "$_profile_git_fd" && "$PWD" != *$'\n'* ]] && (( $+commands[git] )); then
-        exec {_profile_git_fd}< <(_profile_git_worker "$PWD" 2>/dev/null 3>&-)
+        exec {_profile_git_fd}< <(exec 2>/dev/null 3>&-; _profile_git_worker "$PWD")
         zle -F "$_profile_git_fd" _profile_git_ready
     fi
+    return 0
 }
 _profile_prompt_render
