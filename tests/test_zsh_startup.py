@@ -294,11 +294,24 @@ printf '%s\\n' '## topic...origin/topic'
                     if not chunk:
                         break
                     frame.extend(chunk)
-            self.assertIn(b"pty-topic", frame, "Git callback did not redraw the first prompt")
+            self.assertIn(b"pty-topic", frame, frame.decode(errors="replace"))
         finally:
-            os.write(fd, b"exit\\r")
-            os.waitpid(pid, 0)
+            os.write(fd, b"exit\r")
+            # Drain the PTY while waiting: ZLE may be blocked on terminal output.
+            deadline = time.monotonic() + 10
+            exited = False
+            while time.monotonic() < deadline:
+                if os.waitpid(pid, os.WNOHANG)[0]:
+                    exited = True
+                    break
+                readable, _, _ = select.select([fd], [], [], 0.1)
+                if readable:
+                    try:
+                        frame.extend(os.read(fd, 65536))
+                    except OSError:
+                        break
             os.close(fd)
+            self.assertTrue(exited, frame.decode(errors="replace"))
 
     def test_binary_upgrade_refreshes_cache(self) -> None:
         self.seed_cache("# previous cache\n")
