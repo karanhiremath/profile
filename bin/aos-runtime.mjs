@@ -4,10 +4,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile, mkdir, rename, lstat, copyFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { resolve, join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const LIMIT = 4 * 1024 * 1024;
 const phases = new Set(['preparing', 'prepared', 'aligning', 'aligned', 'queued', 'switched', 'successor', 'compacted-triage', 'failed']);
@@ -73,7 +73,7 @@ export function projectBinding(reply, who, kernel, operation, now = Date.now()) 
   const nodes = Array.isArray(reply.graph?.nodes) ? reply.graph.nodes : [];
   const edges = Array.isArray(reply.graph?.edges) ? reply.graph.edges : [];
   const scoped = reply.graph?.session_id === who.session_id && reply.graph?.project === who.project && reply.graph?.kernel_id === kernel;
-  const graph = scoped ? {
+  const graph = scoped && fresh ? {
     nodes: nodes.slice(0, 200).filter(node => id(node?.id)).map(node => ({ id: node.id, label: publicText(node.label ?? node.id), state: ['running', 'succeeded', 'failed', 'blocked', 'stale'].includes(node.state) ? node.state : 'unknown' })),
     edges: edges.slice(0, 400).filter(edge => id(edge?.src) && id(edge?.dst)).map(edge => ({ src: edge.src, dst: edge.dst, rel: publicText(edge.rel) })),
   } : { nodes: [], edges: [] };
@@ -82,7 +82,7 @@ export function projectBinding(reply, who, kernel, operation, now = Date.now()) 
 export async function bind(who, adapter, kernel, run = command) {
   identity(who);
   if (!id(kernel)) fail('kernel_pin_required');
-  const operation = hash(JSON.stringify(who));
+  const operation = hash(JSON.stringify(Object.fromEntries(['session_id', 'harness', 'host', 'profile', 'profile_digest', 'worktree', 'project'].map(key => [key, who[key]]))));
   const request = { schema: 'aos.kernel-binding.v1', kernel_id: kernel, operation_id: operation, identity: who };
   const receipt = await run(adapter, { ...request, op: 'bind' });
   if (receipt?.schema !== request.schema || receipt.kernel_id !== kernel || receipt.operation_id !== operation || receipt.accepted !== true) fail('binding_receipt_rejected');
@@ -94,6 +94,7 @@ export async function bind(who, adapter, kernel, run = command) {
 export async function usage(path, sid) {
   const totals = { input: 0, output: 0, cache_read: null, cache_write: null, total: null, turns: 0 };
   let latest; let native; const persisted = new Map(); const streamed = new Map();
+  const reported = { cache_read: 0, cache_write: 0, total: 0 };
   const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
   for await (const line of lines) {
     let row; try { row = JSON.parse(line); } catch { continue; }
@@ -112,10 +113,11 @@ export async function usage(path, sid) {
     totals.turns++;
     totals.input += data.input; totals.output += data.output;
     for (const [out, field] of [['cache_read', 'cacheRead'], ['cache_write', 'cacheWrite'], ['total', 'totalTokens']]) {
-      if (number(data[field])) totals[out] = (totals[out] ?? 0) + data[field];
+      if (number(data[field])) { totals[out] = (totals[out] ?? 0) + data[field]; reported[out]++; }
     }
     latest = data;
   }
+  for (const key of Object.keys(reported)) if (reported[key] !== totals.turns) totals[key] = null;
   return { tokens: totals.turns ? totals : null, context: number(latest?.context_used) && number(latest?.context_max) && latest.context_max > 0
     ? { used: latest.context_used, limit: latest.context_max, percent: 100 * latest.context_used / latest.context_max, state: 'reported' }
     : { state: 'unavailable' } };
@@ -135,6 +137,17 @@ async function emit(event) {
     await writeFile(path, JSON.stringify(event) + '\n', { flag: 'a', mode: 0o600 });
   }
 }
+export function telemetry(value, sid, now = Date.now()) {
+  const at = Date.parse(value?.observed_at);
+  if (value?.schema !== 'aos.session-telemetry.v1' || value.session_id !== sid || !Number.isFinite(at) || at > now || now - at > 30000) return null;
+  const data = value.tokens;
+  const context = value.context;
+  return {
+    tokens: number(data?.input) && number(data?.output) && number(data?.turns) ? { input: data.input, output: data.output, turns: data.turns,
+      cache_read: number(data.cache_read) ? data.cache_read : null, cache_write: number(data.cache_write) ? data.cache_write : null, total: number(data.total) ? data.total : null } : null,
+    context: number(context?.used) && number(context?.limit) && context.limit > 0 ? { used: context.used, limit: context.limit, percent: 100 * context.used / context.limit, state: 'reported' } : { state: 'unavailable' },
+  };
+}
 export async function status(sid, cfg, path, home = homedir()) {
   if (!id(sid) || sid.includes('/')) fail('session_id_rejected');
   let snapshot = { tokens: null, context: { state: 'unavailable' } };
@@ -148,6 +161,13 @@ export async function status(sid, cfg, path, home = homedir()) {
       if (cfg.identity.session_id !== sid) fail('session_mismatch');
       const reply = await command(cfg.adapter, { schema: 'aos.kernel-binding.v1', op: 'observe', kernel_id: cfg.kernel_id, operation_id: cfg.operation_id, identity: cfg.identity });
       projected = projectBinding(reply, cfg.identity, cfg.kernel_id, cfg.operation_id);
+      if (projected.kernel.state === 'attached') {
+        const observed = telemetry(reply.telemetry, sid);
+        if (observed) snapshot = { tokens: observed.tokens ?? snapshot.tokens, context: observed.context.state === 'reported' ? observed.context : snapshot.context };
+      }
+      if (projected.kernel.state === 'attached' && reply.handoff?.schema === 'aos.handoff.v1' && reply.handoff.source_session_id === sid) {
+        prep = { ...reply.handoff, schema: 'pi.handoff-prep.v1' };
+      }
     } catch { projected.kernel = { state: 'disconnected' }; }
   }
   return { schema: 'aos.session.v1', session_id: sid, captured_at: new Date().toISOString(), ...snapshot, handoff: handoff(prep, sid), ...projected };
@@ -157,8 +177,22 @@ function artifact(value) {
   if (!id(value.name) || !safe(value.source) || !safe(value.destination) || (value.expected !== undefined && value.expected !== null && !/^[a-f0-9]{64}$/.test(value.expected))) fail('artifact_rejected');
   return value;
 }
-export async function target(request, root) {
+export async function target(request, root, run = command) {
   exact(request, ['schema', 'op', 'artifacts']);
+  if (request.schema === 'aos.fleet-target.v1' && request.op === 'discover' && request.artifacts === undefined) {
+    let sandboxes = { state: 'blocked', items: [] };
+    try {
+      const rows = await run(['podman', 'ps', '-a', '--format', 'json'], {});
+      if (!Array.isArray(rows)) fail('sandbox_inventory_rejected');
+      const items = rows.map(row => {
+        const name = Array.isArray(row.Names) ? row.Names[0] : row.Names;
+        if (!id(name) || name.includes('/')) fail('sandbox_identity_rejected');
+        return { name, state: ['running', 'exited', 'created', 'paused', 'stopped'].includes(row.State) ? row.State : 'unknown' };
+      });
+      sandboxes = { state: 'observed', items };
+    } catch {}
+    return { schema: request.schema, host: publicText(hostname()), toolkit_digest: hash(await readFile(fileURLToPath(import.meta.url))), sandboxes };
+  }
   if (request.schema !== 'aos.fleet-target.v1' || !['check', 'apply'].includes(request.op) || !Array.isArray(request.artifacts)) fail('target_request_rejected');
   const items = [];
   for (const row of request.artifacts) {
@@ -188,6 +222,25 @@ export async function target(request, root) {
   }
   return { schema: 'aos.fleet-target.v1', artifacts: items };
 }
+export async function discover(manifest, run = command) {
+  exact(manifest, ['schema', 'targets']);
+  if (manifest.schema !== 'aos.fleet-reconcile.v1' || !Array.isArray(manifest.targets) || !manifest.targets.length) fail('manifest_rejected');
+  const targets = [];
+  for (const host of manifest.targets) {
+    exact(host, ['id', 'command', 'artifacts']);
+    if (!id(host.id)) fail('target_rejected');
+    try {
+      const reply = await run(host.command, { schema: 'aos.fleet-target.v1', op: 'discover' });
+      if (reply?.schema !== 'aos.fleet-target.v1' || !/^[a-f0-9]{64}$/.test(reply.toolkit_digest) || !Array.isArray(reply.sandboxes?.items) || !['observed', 'blocked'].includes(reply.sandboxes.state)) fail('discovery_reply_rejected');
+      targets.push({ id: host.id, state: reply.sandboxes.state, toolkit_digest: reply.toolkit_digest,
+        sandboxes: reply.sandboxes.items.map(item => {
+          if (!id(item.name) || !['running', 'exited', 'created', 'paused', 'stopped', 'unknown'].includes(item.state)) fail('sandbox_identity_rejected');
+          return { name: item.name, state: item.state, install_state: 'unchecked' };
+        }) });
+    } catch { targets.push({ id: host.id, state: 'blocked', sandboxes: [] }); }
+  }
+  return { schema: 'aos.fleet-discovery.v1', targets };
+}
 export async function reconcile(manifest, apply = false, run = command) {
   exact(manifest, ['schema', 'targets']);
   if (manifest.schema !== 'aos.fleet-reconcile.v1' || !Array.isArray(manifest.targets) || !manifest.targets.length) fail('manifest_rejected');
@@ -198,6 +251,7 @@ export async function reconcile(manifest, apply = false, run = command) {
     const artifacts = [];
     for (const row of host.artifacts) {
       artifact(row);
+      if (!(await lstat(row.source)).isFile()) fail('source_not_regular');
       const bytes = await readFile(row.source);
       if (bytes.length > LIMIT || /(?:-----BEGIN .*PRIVATE KEY|(?:api[_-]?key|access[_-]?token|password|secret[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9+/=_-]{16,})/i.test(bytes.toString())) fail('source_secret_rejected');
       // Applying only committed tracked source. Operator must explicitly
@@ -242,13 +296,17 @@ async function stdin() {
 }
 export async function main(args) {
   if (args.includes('--help') || !args.length) {
-    process.stderr.write('Usage: aos fleet reconcile --manifest <json> [--check|--apply]\n       aos session bind --identity <json> --adapter <argv-json> --kernel-id <id>\n       aos session status --session <id> [--session-file <jsonl>]\n       aos-runtime.mjs target --root <home> --stdin\n--stdin accepts the manifest/identity instead of a file. No shell, credential provisioning, restart or implicit kernel.\n'); return;
+    process.stderr.write('Usage: aos fleet discover --manifest <json>\n       aos fleet reconcile --manifest <json> [--check|--apply]\n       aos session bind --identity <json> --adapter <argv-json> --kernel-id <id>\n       aos session status --session <id> [--session-file <jsonl>]\n       aos-runtime.mjs target --root <home> --stdin\n--stdin accepts the manifest/identity instead of a file. No shell, credential provisioning, restart or implicit kernel.\n'); return;
   }
   const [plane, verb, ...rest] = args;
   const opts = options(plane === 'target' ? args.slice(1) : rest);
+  if (opts.apply && opts.check) fail('mode_conflict');
+  if (process.env.CARTESIA_EVENT_BUSES || process.env.CARTESIA_EVENT_BUS || process.env.CARTESIA_EVENT_PROFILE) fail('event_sink_unsupported');
+  if ((process.env.CARTESIA_EVENT_SINKS ?? '').split(',').filter(Boolean).some(sink => !sink.startsWith('file:') || !safe(sink.slice(5)))) fail('event_sink_unsupported');
   const store = process.env.AOS_BINDINGS_HOME ?? join(homedir(), '.local/state/aos/bindings');
   let result;
-  if (plane === 'fleet' && verb === 'reconcile') result = await reconcile(opts.stdin ? await stdin() : await json(opts.manifest), !!opts.apply);
+  if (plane === 'fleet' && verb === 'discover') result = await discover(opts.stdin ? await stdin() : await json(opts.manifest));
+  else if (plane === 'fleet' && verb === 'reconcile') result = await reconcile(opts.stdin ? await stdin() : await json(opts.manifest), !!opts.apply);
   else if (plane === 'target') result = await target(await stdin(), opts.root ?? homedir());
   else if (plane === 'session' && verb === 'bind') {
     const who = identity(opts.stdin ? await stdin() : await json(opts.identity));
@@ -265,7 +323,7 @@ export async function main(args) {
   } else fail('command_rejected');
   await emit({ schema: 'aos.runtime-event.v1', plane, verb, at: new Date().toISOString(), state: result.kernel?.state ?? result.mode ?? 'observed' });
   process.stdout.write(JSON.stringify(result) + '\n');
-  if (result.targets?.some(item => item.state !== 'current')) process.exitCode = 1;
+  if (result.targets?.some(item => !['current', 'observed'].includes(item.state))) process.exitCode = 1;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2)).catch(() => {
   // Do not print arbitrary exception messages (paths/adapter output can contain secrets).

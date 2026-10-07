@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bind, projectBinding, usage, handoff, target, reconcile, status, command } from './aos-runtime.mjs';
+import { bind, projectBinding, usage, handoff, target, reconcile, discover, telemetry, status, command } from './aos-runtime.mjs';
 const root = dirname(fileURLToPath(import.meta.url));
 const hash = data => createHash('sha256').update(data).digest('hex');
 const who = { schema: 'aos.identity.v1', session_id: 'native-1', harness: 'pi', host: 'host-a', profile: 'implementor', profile_digest: 'a'.repeat(64), worktree: '/repo', project: 'project-a' };
@@ -14,6 +14,16 @@ function reply(operation, extra = {}) {
   return { schema: 'aos.kernel-binding.v1', kernel_id: 'original', observed_at: new Date().toISOString(), heartbeat_at: new Date().toISOString(), binding: { ...who, operation_id: operation, accepted: true }, graph: { kernel_id: 'original', session_id: who.session_id, project: who.project, nodes: [{ id: 'n1', label: 'Worker', state: 'running', secret: 'NEVER' }], edges: [] }, ...extra };
 }
 async function temp(t) { const dir = await mkdtemp(join(tmpdir(), 'aos-runtime-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
+test('discovery includes stopped sandboxes; unavailable inventory is not empty-success', async () => {
+  const manifest = { schema: 'aos.fleet-reconcile.v1', targets: [{ id: 'host-a', command: ['target'] }] };
+  const got = await discover(manifest, async (_, request) => target(request, '/fixture', async () => [{ Names: ['box-a'], State: 'running' }, { Names: ['box-b'], State: 'exited' }]));
+  assert.equal(got.targets[0].state, 'observed');
+  assert.deepEqual(got.targets[0].sandboxes.map(row => row.state), ['running', 'exited']);
+  const blocked = await discover(manifest, async (_, request) => target(request, '/fixture', async () => { throw new Error('custody blocked'); }));
+  assert.equal(blocked.targets[0].state, 'blocked');
+  const empty = await discover(manifest, async (_, request) => target(request, '/fixture', async () => []));
+  assert.equal(empty.targets[0].state, 'observed'); assert.deepEqual(empty.targets[0].sandboxes, []);
+});
 test('binding requires receipt then independent matching native identity and graph', async () => {
   const calls = [];
   const got = await bind(who, ['adapter'], 'original', async (_, request) => {
@@ -50,6 +60,26 @@ test('both token formats; persistence authoritative, IDs deduped; cumulative != 
   await writeFile(path, JSON.stringify({ type: 'message_end', message: { ...msg, usage: { input: 2, output: 3, context_used: 600, context_max: 1000 } } }));
   const streamed = await usage(path, who.session_id);
   assert.equal(streamed.tokens.input, 2); assert.equal(streamed.tokens.cache_read, null); assert.equal(streamed.context.percent, 60);
+});
+test('partial cache reporting stays unknown; binding keys have stable order', async t => {
+  const dir = await temp(t); const path = join(dir, 'session.jsonl');
+  await writeFile(path, [{ type: 'message', message: { id: 'a', role: 'assistant', usage: { input: 1, output: 1, cacheRead: 4 } } }, { type: 'message', message: { id: 'b', role: 'assistant', usage: { input: 2, output: 2 } } }].map(JSON.stringify).join('\n'));
+  assert.equal((await usage(path, who.session_id)).tokens.cache_read, null);
+  const operations = [];
+  const run = async (_, request) => {
+    operations.push(request.operation_id);
+    return request.op === 'bind' ? { schema: request.schema, kernel_id: 'original', operation_id: request.operation_id, accepted: true } : reply(request.operation_id);
+  };
+  await bind(who, ['adapter'], 'original', run);
+  await bind(Object.fromEntries(Object.entries(who).reverse()), ['adapter'], 'original', run);
+  assert.equal(new Set(operations).size, 1);
+});
+test('native kernel telemetry is correlated, fresh and public-only', () => {
+  const value = { schema: 'aos.session-telemetry.v1', session_id: who.session_id, observed_at: new Date().toISOString(), tokens: { input: 10, output: 2, turns: 1, cache_read: 5, secret: 'NEVER' }, context: { used: 600, limit: 1000 }, secret: 'NEVER' };
+  const got = telemetry(value, who.session_id);
+  assert.equal(got.context.percent, 60); assert.equal(got.tokens.cache_write, null); assert.equal(JSON.stringify(got).includes('NEVER'), false);
+  assert.equal(telemetry(value, 'other'), null);
+  assert.equal(telemetry({ ...value, observed_at: new Date(Date.now() - 60000).toISOString() }, who.session_id), null);
 });
 test('handoff queue is not completion, identity mismatch fails closed', () => {
   const prep = { schema: 'pi.handoff-prep.v1', source_session_id: who.session_id, phase: 'queued', child_session_id: 'child-1' };
