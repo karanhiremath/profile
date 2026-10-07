@@ -167,8 +167,8 @@ split_ssh_targets() {
 }
 
 # Runs a remote command, trying comma-separated SSH targets in order.
-# Returns: 0 = command succeeded, 2 = SSH reached host but command failed
-# (e.g. no tmux server), 1 = every SSH target failed to connect (exit 255).
+# Returns: 0 = command succeeded, otherwise failure (never an empty inventory).
+# Preserve remote command status; 255 means transport failure and permits fallback.
 # A non-255 remote status stops fallback — do not burn time on ProxyJump
 # after a successful tailnet login.
 remote_tmux_cmd() {
@@ -184,7 +184,7 @@ remote_tmux_cmd() {
             return 0
         fi
         if [[ "$status" -ne 255 ]]; then
-            return 2
+            return "$status"
         fi
     done < <(split_ssh_targets "$ssh_target")
     return 1
@@ -235,13 +235,8 @@ cmd_ls() {
         return 0
     else
         status=$?
-        if [[ "$status" -eq 2 ]]; then
-            echo "tmux-connect: no attachable sessions on $name" >&2
-            : | write_session_cache "$name"
-            return 0
-        fi
-        echo "tmux-connect: could not list sessions on $name" >&2
-        return 1
+        echo "tmux-connect: session probe failed on $name (status=$status); cached inventory preserved" >&2
+        return "$status"
     fi
 }
 

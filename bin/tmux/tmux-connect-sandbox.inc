@@ -88,13 +88,8 @@ cmd_sandbox_ls() {
         return 0
     else
         status=$?
-        if [[ "$status" -eq 2 ]]; then
-            echo "tmux-connect: no running sandboxes on $name" >&2
-            : | write_sandbox_cache "$name"
-            return 0
-        fi
-        echo "tmux-connect: could not list sandboxes on $name" >&2
-        return 1
+        echo "tmux-connect: sandbox probe failed on $name (status=$status); cached inventory preserved" >&2
+        return "$status"
     fi
 }
 
@@ -109,9 +104,8 @@ cmd_sandbox_sessions_ls() {
 
     if [[ "$name" == "local" || "$name" == "mac" ]]; then
         if ! listing=$(podman exec "$sandbox" tmux list-sessions 2>/dev/null); then
-            echo "tmux-connect: no attachable sessions in $sandbox on $name" >&2
-            : | write_sandbox_session_cache "$name" "$sandbox"
-            return 0
+            echo "tmux-connect: session probe failed in $sandbox on $name; cached inventory preserved" >&2
+            return 1
         fi
         printf '%s\n' "$listing"
         printf '%s\n' "$listing" | awk -F: '{print $1}' | write_sandbox_session_cache "$name" "$sandbox"
@@ -130,13 +124,8 @@ cmd_sandbox_sessions_ls() {
         return 0
     else
         status=$?
-        if [[ "$status" -eq 2 ]]; then
-            echo "tmux-connect: no attachable sessions in $sandbox on $name" >&2
-            : | write_sandbox_session_cache "$name" "$sandbox"
-            return 0
-        fi
-        echo "tmux-connect: could not list sessions in $sandbox on $name" >&2
-        return 1
+        echo "tmux-connect: session probe failed in $sandbox on $name (status=$status); cached inventory preserved" >&2
+        return "$status"
     fi
 }
 
