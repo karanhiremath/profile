@@ -46,7 +46,8 @@ test('reject mismatched kernel, native identity, operation, future or stale hear
   }
   const data = reply(operation); data.graph.session_id = 'other';
   assert.equal(projectBinding(data, who, 'original', operation).graph.state, 'unavailable');
-  await assert.rejects(() => bind(who, [], 'original', async () => ({ accepted: true })), /receipt/);
+  await assert.rejects(() => bind(who, ['adapter'], 'original', async () => ({ accepted: true })), /receipt/);
+  await assert.rejects(() => bind(who, ['adapter', '--token=SECRET'], 'original'), /public_adapter/);
 });
 test('both token formats; persistence authoritative, IDs deduped; cumulative != context', async t => {
   const dir = await temp(t); const path = join(dir, 'session.jsonl');
@@ -130,6 +131,12 @@ test('schema rejection, source secret redaction, no fabricated attached state', 
   await assert.rejects(() => reconcile({ ...manifest, extra: true }), /schema/);
   const got = await status(who.session_id, undefined, undefined, dir);
   assert.equal(got.kernel.state, 'unbound'); assert.equal(got.tokens, null);
+});
+test('secret paths and symlinked session files are never read', async t => {
+  const dir = await temp(t); const path = join(dir, 'auth.json'); await writeFile(path, 'SECRET');
+  await assert.rejects(() => usage(path, who.session_id), /protected_usage_path/);
+  await symlink(path, join(dir, 'session.jsonl'));
+  await assert.rejects(() => usage(join(dir, 'session.jsonl'), who.session_id), /protected_usage_path/);
 });
 test('argv adapter rejects prose/nonzero and never relays secret stderr', async () => {
   await assert.rejects(() => command([process.execPath, '-e', 'process.stderr.write("SECRET");process.exit(1)'], {}), /adapter_failed/);

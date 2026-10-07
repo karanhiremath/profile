@@ -24,6 +24,7 @@ function exact(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key))) fail('schema_rejected');
 }
 async function json(path) {
+  if (!safe(path)) fail('protected_path');
   const stat = await lstat(path);
   if (!stat.isFile() || stat.size > LIMIT) fail('invalid_file');
   return JSON.parse(await readFile(path, 'utf8'));
@@ -81,6 +82,7 @@ export function projectBinding(reply, who, kernel, operation, now = Date.now()) 
 }
 export async function bind(who, adapter, kernel, run = command) {
   identity(who);
+  if (!Array.isArray(adapter) || !adapter.length || adapter.length > 16 || adapter.some(arg => typeof arg !== 'string' || arg.length > 1024 || /[\r\n\0]/.test(arg) || /(?:^--?(?:token|api-key|password|secret|authorization|header)(?:=|$)|^(?:Bearer|Basic) |(?:access_token|api_key|password)=|^sk-[A-Za-z0-9])/i.test(arg))) fail('public_adapter_required');
   if (!id(kernel)) fail('kernel_pin_required');
   const operation = hash(JSON.stringify(Object.fromEntries(['session_id', 'harness', 'host', 'profile', 'profile_digest', 'worktree', 'project'].map(key => [key, who[key]]))));
   const request = { schema: 'aos.kernel-binding.v1', kernel_id: kernel, operation_id: operation, identity: who };
@@ -92,13 +94,14 @@ export async function bind(who, adapter, kernel, run = command) {
   return { ...projection, operation_id: operation };
 }
 export async function usage(path, sid) {
+  if (!safe(path) || !path.endsWith('.jsonl') || !(await lstat(path)).isFile()) fail('protected_usage_path');
   const totals = { input: 0, output: 0, cache_read: null, cache_write: null, total: null, turns: 0 };
   let latest; let native; const persisted = new Map(); const streamed = new Map();
   const reported = { cache_read: 0, cache_write: 0, total: 0 };
   const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
   for await (const line of lines) {
     let row; try { row = JSON.parse(line); } catch { continue; }
-    if (row.type === 'session') { native = row.id; continue; }
+    if (row.type === 'session') { native = row.id; if (native && native !== sid) fail('session_mismatch'); continue; }
     if (!['message', 'message_end'].includes(row.type) || row.message?.role !== 'assistant') continue;
     const msg = row.message; const data = msg.usage;
     if (!data || !number(data.input) || !number(data.output)) continue;
