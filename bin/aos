@@ -15,6 +15,8 @@ usage() {
 	cat <<'EOF'
 Usage: aos <subcommand> [args]
 
+  fleet [args]    structured profile digest reconcile (check/apply, explicit manifest)
+  session [args]  kernel bind/readback + context, raw tokens, handoff projection
   status          AOS inventory: harness-sync status + tool presence + bus config
   sync [args]     harness-sync apply (link skills/extensions, merge packages)
   pull [args]     harness-sync pull [--all] [ssh-host]  (personal-safe set)
@@ -108,6 +110,7 @@ cmd_install() {
 }
 
 case "${1:-help}" in
+	fleet|session) exec node "$PROFILE_DIR/bin/aos-runtime.mjs" "$@" ;;
 	status) shift; cmd_status "$@" ;;
 	sync)   shift; exec "$PROFILE_DIR/bin/atop/harness-sync" apply "$@" ;;
 	pull)   shift; exec "$PROFILE_DIR/bin/atop/harness-sync" pull "$@" ;;
