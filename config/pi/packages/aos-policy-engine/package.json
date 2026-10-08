@@ -1,0 +1,18 @@
+{
+  "name": "aos-policy-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "In-process AOS filter + policy engine for pi / herm-tui.",
+  "keywords": ["pi-package"],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}

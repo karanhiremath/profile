@@ -30,6 +30,9 @@ Principle: isolate first; widen only with an explicit reason.
 ## Typical commands
 
 ```bash
+just agentic-dev                 # host mode: all agentic CLIs + CosW (includes atop)
+just agentic-dev --mode sandbox --project krop-tf
+just agentic-dev --mode sandbox --project <work-project> --class work
 hs                 # local Hermes/herdr sandbox for the current repo
 hs foo             # local Hermes/herdr sandbox for ~/src/foo
 hs --status foo    # print resolved repo/profile/session/sandbox boundary

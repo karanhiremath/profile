@@ -69,6 +69,14 @@ Other:
   --print-plan                         print resolved launch plan and exit
   --json                               with --print-plan, emit one JSON line
   --dispatch-doctor                    probe host-control only
+  sessions                             list running cosw-family tmux sessions (JSON)
+  attach [session]                     explicitly attach to a running cosw TUI pane
+
+Spawn-always: every cosw launch spawns a NEW tmux TUI session. When the
+singular seat is busy, the next free sibling seat (cosw-a1, cosw-a2, ...;
+own HERMES_HOME + session) is minted automatically. cosw never switches or
+attaches the current client to an existing session; use `cosw attach` or
+`cosw sessions` + explicit choice for that.
   --refresh-gh-auth                    restage sandbox GitHub auth
   -h, --help                           this help
 
@@ -668,7 +676,14 @@ emit_catalog_plan_fields() {
 }
 
 print_cosw_plan() {
-  local sandbox=0 pythonpath="" timeout_free=0 xai_auth=0 persona catalog_plan
+  local sandbox=0 pythonpath="" timeout_free=0 xai_auth=0 persona catalog_plan seat_plan=""
+  # Capture seat metadata so JSON mode emits only the combined plan.
+  local seat_py="$SCRIPT_DIR/alias_seat.py"
+  local seat_bin="${HERMES_PYTHON:-${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}/venv/bin/python}"
+  [ -x "$seat_bin" ] || seat_bin="$(command -v python3 2>/dev/null || true)"
+  if [ -n "$seat_bin" ] && [ -f "$seat_py" ]; then
+    seat_plan="$("$seat_bin" "$seat_py" resolve-profile "$COSW_PROFILE" 2>/dev/null || true)"
+  fi
   if [ "$COSW_FORCE_SANDBOX" = "1" ]; then
     sandbox=1
   fi
@@ -694,11 +709,18 @@ print_cosw_plan() {
     COSW_PLAN_PYTHONPATH="$pythonpath" COSW_PLAN_XAI_AUTH="$xai_auth" COSW_PLAN_PERSONA="$persona" \
     COSW_PLAN_PROFILE="$COSW_PROFILE" COSW_PLAN_PROFILE_PATH="${COSW_PROFILE_MODEL_PATH:-}" \
     COSW_PLAN_MODEL_SOURCE="${COSW_PROFILE_MODEL_SOURCE:-none}" COSW_PLAN_RUNG="${COSW_PROFILE_MODEL_RUNG:-}" \
-    COSW_PLAN_CATALOG="$catalog_plan" python3 - <<'PY'
+    COSW_PLAN_CATALOG="$catalog_plan" COSW_PLAN_SEAT_METADATA="$seat_plan" python3 - <<'PY'
 import json
 import os
 
-payload = {
+try:
+    payload = json.loads(os.environ.get("COSW_PLAN_SEAT_METADATA") or "{}")
+except ValueError:
+    payload = {}
+if not isinstance(payload, dict):
+    payload = {}
+# Resolved launch fields take precedence over seat resolver defaults.
+payload.update({
     "schema": "cosw-plan.v1",
     "backend": os.environ["COSW_PLAN_BACKEND"],
     "sandbox": os.environ["COSW_PLAN_SANDBOX"] == "1",
@@ -715,7 +737,7 @@ payload = {
     "profile_path": os.environ["COSW_PLAN_PROFILE_PATH"],
     "model_source": os.environ["COSW_PLAN_MODEL_SOURCE"],
     "rung": os.environ["COSW_PLAN_RUNG"],
-}
+})
 for line in os.environ.get("COSW_PLAN_CATALOG", "").splitlines():
     if "=" not in line:
         continue
@@ -728,6 +750,7 @@ print(json.dumps(payload, separators=(",", ":")))
 PY
     return
   fi
+  [ -z "$seat_plan" ] || printf '%s\n' "$seat_plan"
   if [ "$sandbox" = "1" ]; then
     printf 'backend=docker\n'
   else
@@ -1275,6 +1298,22 @@ done
 strip_cosw_args "$@"
 apply_cosw_seat
 ensure_lane_profile
+
+# Explicit session surfaces; attaching is never implicit at launch.
+# `cosw sessions` lists running cosw-family tmux sessions (JSON).
+# `cosw attach [session]` attaches to a live cosw TUI pane on request only.
+if [ "${#COSW_ARGS[@]}" -gt 0 ]; then
+  _cosw_sub="${COSW_ARGS[0]}"
+  case "$_cosw_sub" in
+    sessions|attach)
+      if [ "${#COSW_ARGS[@]}" -gt 1 ]; then
+        exec "$SCRIPT_DIR/agents" "$_cosw_sub" "$COSW_PROFILE" "${COSW_ARGS[@]:1}"
+      fi
+      exec "$SCRIPT_DIR/agents" "$_cosw_sub" "$COSW_PROFILE"
+      ;;
+  esac
+  unset _cosw_sub
+fi
 
 if [ "${COSW_SANDBOX_STACK:-0}" = "1" ]; then
   work_devbox="$(work_devbox_cmd)" || die "work-devbox helper missing; keep $HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox"

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Draft only. Do not launchctl load until you want a weekly reminder.
+     This prints the job prompt; it does not drive a browser. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.karanhiremath.pplx-library-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/karanhiremath/src/profile/bin/perplexity/pplx-library-sync</string>
+    <string>--print-prompt</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>0</integer>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/karanhiremath/.local/share/pplx-research/library-sync-prompt.out</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/karanhiremath/.local/share/pplx-research/library-sync-prompt.err</string>
+</dict>
+</plist>

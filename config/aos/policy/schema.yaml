@@ -1,0 +1,71 @@
+# aos.policy.v1 — AOS filter + policy engine contract
+#
+# One schema for every harness attachment point: inbound/outbound bytes,
+# context, memory, catalogs (tools/skills/extensions/prompts/harness
+# primitives), CoT / MoA between collaborative wrappers, and graph-eng
+# edges / node introspection. Adapters compile the same documents into
+# Cursor / Claude / Codex / pi / Hermes / herm-tui permission files.
+#
+# Silent rules mutate the stream and never emit policy language into
+# CoT, MoA, or human-visible tokens.
+
+schema: aos.policy.schema.v1
+
+surfaces:
+  - stream.inbound          # bytes into the model
+  - stream.outbound         # bytes from the model to the human
+  - stream.tts              # text about to be spoken (Cartesia / voice agents)
+  - context
+  - memory
+  - catalog.tools
+  - catalog.skills
+  - catalog.extensions
+  - catalog.prompts
+  - catalog.harness
+  - cot                     # chain-of-thought / thinking
+  - moa                     # mixture-of-agents / inter-wrapper
+  - graph.edge
+  - graph.node.introspect
+
+match_kinds:
+  - name                    # catalog item equals
+  - prefix
+  - contains
+  - text                    # substring (legacy)
+  - regex
+  - exact                   # full utterance equals after normalize
+  - sentence                # a sentence equals after normalize (not a substring)
+  - all
+
+actions:
+  - allow
+  - deny
+  - drop
+  - redact
+  - rewrite
+  - strip
+  - remap
+  - wrap
+
+visibility:
+  visible: may appear in operator logs
+  silent: never appear in CoT, MoA, or model/human output tokens
+
+modes:
+  filter: start from the input; deny/strip/remap matching items
+  exclusive: default-deny the surface; only explicit allow rules survive
+
+when_keys:
+  wrapper: herm-tui | hermes | herm | pi | cursor | cursor-ide | claude | codex
+  provider: cursor | anthropic | openai | ...
+  class: implementor | reviewer | planner | orchestrator | ...
+  agent: fleet agent identity
+  class_not: invert class match
+  host_class: personal | work
+
+acl_capabilities:
+  - policy.read
+  - policy.write
+  - policy.apply
+  - policy.compile
+  - policy.grant

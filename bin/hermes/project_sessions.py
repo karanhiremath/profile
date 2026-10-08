@@ -37,6 +37,32 @@ from typing import Any
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _apply_host_env() -> None:
+    if os.environ.get("HERMES_PROJECT_REGISTRY_PATH") and os.environ.get("AGENTIC_HOST_CLASS"):
+        return
+    script = Path(__file__).resolve().parent.parent / "agentic-dev" / "host-env.sh"
+    if not script.is_file():
+        return
+    try:
+        raw = subprocess.check_output(["bash", str(script), "--json"], text=True)
+        data = json.loads(raw)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        return
+    os.environ.setdefault("AGENTIC_HOST_CLASS", str(data.get("class") or ""))
+    os.environ.setdefault("HERMES_AGENT_PROFILE_PATH", str(data.get("HERMES_AGENT_PROFILE_PATH") or ""))
+    os.environ.setdefault(
+        "HERMES_PROJECT_REGISTRY_PATH", str(data.get("HERMES_PROJECT_REGISTRY_PATH") or "")
+    )
+    os.environ.setdefault(
+        "HERMES_PROJECT_REGISTRY_DIRS",
+        os.environ.get("HERMES_PROJECT_REGISTRY_PATH", ""),
+    )
+
+
+_apply_host_env()
+
 DEFAULT_REGISTRY_DIRS = [
     Path.home() / "src" / "karan.hiremath" / "agentic" / "hermes" / "projects",
     Path.home() / "src" / "hermes" / "projects",

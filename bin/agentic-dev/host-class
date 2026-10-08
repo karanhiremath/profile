@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Print personal|work. See host-env.sh.
+set -euo pipefail
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+exec "$DIR/host-env.sh" --class

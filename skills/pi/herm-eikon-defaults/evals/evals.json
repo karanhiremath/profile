@@ -1,0 +1,23 @@
+{
+  "skill_name": "herm-eikon-defaults",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "A new cosw sibling has the wrong avatar. Make Ares the default without changing my Nighttide colors or restarting existing sessions.",
+      "expected_output": "Scope to CoS-W, inspect actual runtime preference and packed-file presence, set Ares through existing tooling, verify persistence and parent inheritance, leave live sessions alone.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "My tui.json says ares but the sidebar renders the default face. Diagnose this locally without reading credentials or fetching the catalog.",
+      "expected_output": "Check active runtime home and missing/mislocated packed Ares asset; use an installed local package and verify selected file, not just the preference.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I customized one research lane to mono; make its next sibling inherit mono but keep the main cosw on Ares.",
+      "expected_output": "Nearest-parent avatar selection wins for new nested seats; preserve explicit lane/runtime customizations and isolate families.",
+      "files": []
+    }
+  ]
+}

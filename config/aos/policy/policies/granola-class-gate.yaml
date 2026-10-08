@@ -1,0 +1,41 @@
+schema: aos.policy.v1
+id: granola-class-gate
+priority: 40
+enabled: true
+mode: filter
+description: Granola MCP and granola skills stay librarian/notetaker only.
+when:
+  class_not:
+    - librarian
+    - notetaker
+surfaces:
+  - catalog.tools
+  - catalog.skills
+  - catalog.extensions
+rules:
+  - id: deny-granola-tools
+    surface: catalog.tools
+    action: deny
+    match:
+      kind: contains
+      any:
+        - granola
+        - query_granola_meetings
+        - list_meetings
+        - get_meetings
+        - get_meeting_transcript
+        - list_meeting_folders
+  - id: deny-granola-skills
+    surface: catalog.skills
+    action: deny
+    match:
+      kind: contains
+      any:
+        - granola
+  - id: deny-granola-extensions
+    surface: catalog.extensions
+    action: deny
+    match:
+      kind: contains
+      any:
+        - granola

@@ -1,0 +1,56 @@
+# Desired harness state for pi / herm / skills / packages.
+# Auth never lives here. Work-only trees stay off personal hosts.
+
+schema: kh.harness-manifest.v1
+
+hosts:
+  personal:
+    match: [khire-mac-mini, home-mac-mini]  # Mini DHCP may also be unknown*.attlocal.net
+    packages:
+      - src/pi-cursor-sdk          # local fork preferred when present
+      - npm:pi-cursor-sdk          # fallback if no checkout
+      - config/pi/packages/pi-profile-management
+      - config/pi/packages/aos-policy-engine
+    extensions:
+      - handoff.ts
+      - compact-handoff.ts
+      - harness-sync.ts
+      - together-spend.ts
+    skills:
+      - herdr-pane-management
+      - herm-tui-profiles
+      - session-compaction
+    forbidden:
+      - pi-csec
+      - cdev-session
+      - job-bus
+      - fips-watch-status
+      - fleet-nudge-monitor
+      - csec-ops
+    herm_tui: fork
+
+  work:
+    match: [karans-macbook-pro-1, karans-macbook-pro, cxis-devlarge-2, tc2]
+    packages:
+      - src/pi-cursor-sdk
+      - npm:pi-cursor-sdk
+      - config/pi/packages/pi-profile-management
+      - config/pi/packages/aos-policy-engine
+    work_packages_optional:
+      - pi-csec
+      - scripts/cdev/session-harnesses/pi
+    extensions:
+      - handoff.ts
+      - compact-handoff.ts
+      - harness-sync.ts
+      - together-spend.ts
+    skills:
+      - session-compaction
+    extensions_from_source_host: true
+    herm_tui: fork
+
+# pull defaults (override with an explicit host or HARNESS_SOURCE_HOST)
+source_host:
+  work: home-mac-mini          # Mini edits reconcile onto work Macs
+  all: tc2                     # harness-sync pull --all (any class)
+  personal: ""                 # personal pull without --all must pass a host

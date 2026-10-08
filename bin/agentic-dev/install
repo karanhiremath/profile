@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# Install all agentic toolkits, then provision host-class CosW state.
+# Usage: install [--mode host|sandbox] [--project NAME] [--class personal|work]
+#                [--install-tools] [--skip-provision] [--help]
+set -uo pipefail
+
+usage() {
+  cat <<'EOF'
+just agentic-dev / bin/agentic-dev/install — agentic toolkit installer.
+
+Modes:
+  host      (default) install every agentic CLI onto this machine, then
+            provision CosW for the host class
+  sandbox   no host-global installs unless --install-tools; materialize
+            isolated state for --project
+
+Host class (auto, or --class / AGENTIC_HOST_CLASS / PROFILE_ENV):
+  personal  home-mac CosW → krop-tf / krop-infra / krop-ai
+            never reads or writes ~/src/karan.hiremath
+  work      CosW → work checkout agentic Hermes profiles/projects
+            never bootstraps krop-*
+
+Toolkit set (host mode, resilient — one failure does not abort the rest):
+  mise, claude, pi, omp, copilot-cli, cursor-cli, cursor-setup,
+  hermes, herdr, atop, codex, cmux, gemini-cli, omnigent,
+  pi-skills / harness-sync apply, linear open-issue hook, then provision
+
+Overrides:
+  --mode host|sandbox
+  --project NAME          required for sandbox; optional host-mode subset
+  --class personal|work
+  --install-tools         sandbox: also run host CLI installers
+  --skip-provision        install CLIs only
+  AGENTIC_PREFIX          sandbox dest root (default ~/.local/share/agentic-sandboxes/<class>/<project>)
+  AGENTIC_MODE            host|sandbox
+  AGENTIC_PROJECT         project name
+EOF
+}
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+AGENTIC_DEV_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "$AGENTIC_DEV_DIR/../.." && pwd)}"
+APP_BIN="${APP_BIN:-$PROFILE_DIR/bin}"
+export PROFILE_DIR APP_BIN
+
+MODE="${AGENTIC_MODE:-host}"
+PROJECT="${AGENTIC_PROJECT:-}"
+CLASS_OVERRIDE=""
+INSTALL_TOOLS=0
+SKIP_PROVISION=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    --mode) MODE="${2:?missing mode}"; shift 2 ;;
+    --project) PROJECT="${2:?missing project}"; shift 2 ;;
+    --class) CLASS_OVERRIDE="${2:?missing class}"; shift 2 ;;
+    --install-tools) INSTALL_TOOLS=1; shift ;;
+    --skip-provision) SKIP_PROVISION=1; shift ;;
+    host|sandbox)
+      MODE="$1"
+      shift
+      ;;
+    *)
+      echo "agentic-dev/install: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$MODE" in
+  host|sandbox) ;;
+  *)
+    echo "agentic-dev/install: invalid --mode $MODE" >&2
+    exit 2
+    ;;
+esac
+
+if [ -n "$CLASS_OVERRIDE" ]; then
+  case "$CLASS_OVERRIDE" in
+    personal|work) export AGENTIC_HOST_CLASS="$CLASS_OVERRIDE" ;;
+    *)
+      echo "agentic-dev/install: invalid --class $CLASS_OVERRIDE" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+# shellcheck source=host-env.sh
+. "$AGENTIC_DEV_DIR/host-env.sh"
+CLASS="$AGENTIC_HOST_CLASS"
+
+if [ "$MODE" = sandbox ] && [ -z "$PROJECT" ]; then
+  echo "agentic-dev/install: sandbox mode requires --project" >&2
+  exit 2
+fi
+
+if [ "$MODE" = sandbox ]; then
+  AGENTIC_PREFIX="${AGENTIC_PREFIX:-$HOME/.local/share/agentic-sandboxes/${CLASS}/${PROJECT}}"
+  export AGENTIC_PREFIX
+  export AGENT_SANDBOX_ROOT="$AGENTIC_PREFIX"
+  export PI_AGENT_DIR="${PI_AGENT_DIR:-$AGENTIC_PREFIX/pi-agent}"
+  mkdir -p "$AGENTIC_PREFIX/bin" "$PI_AGENT_DIR"
+fi
+
+export AGENTIC_MODE="$MODE"
+export AGENTIC_PROJECT="$PROJECT"
+
+should_install_tools() {
+  if [ "$MODE" = host ]; then
+    return 0
+  fi
+  [ "$INSTALL_TOOLS" -eq 1 ]
+}
+
+step_names=()
+step_rcs=()
+run_step() {
+  local label="$1"
+  shift
+  echo ""
+  echo "=== ${label} ==="
+  if "$@"; then
+    step_names+=("$label")
+    step_rcs+=(0)
+  else
+    local rc=$?
+    step_names+=("$label")
+    step_rcs+=("$rc")
+    echo "!! ${label} FAILED (rc=${rc}); continuing with remaining installers..." >&2
+  fi
+}
+
+echo "agentic-dev: class=${CLASS} plane=${AGENTIC_COSW_PLANE} mode=${MODE}${PROJECT:+ project=${PROJECT}}"
+
+if should_install_tools; then
+  run_step "mise"        "$APP_BIN/mise/install"
+  run_step "claude"      "$APP_BIN/claude/install"
+  run_step "pi"          "$APP_BIN/pi/install"
+  run_step "omp"         "$APP_BIN/omp/install"
+  run_step "copilot-cli" "$APP_BIN/copilot-cli/install"
+  run_step "cursor-cli"  "$APP_BIN/cursor-cli/install"
+  if [ -x "$APP_BIN/cursor-cli/setup" ]; then
+    run_step "cursor-setup" "$APP_BIN/cursor-cli/setup"
+  fi
+  run_step "hermes"      "$APP_BIN/hermes/install"
+  run_step "herdr"       "$APP_BIN/herdr/install"
+  run_step "atop"        "$APP_BIN/atop/install"
+  run_step "codex"       "$APP_BIN/codex/install"
+  run_step "cmux"        "$APP_BIN/cmux/install"
+  run_step "gemini-cli"  "$APP_BIN/gemini-cli/install"
+  run_step "omnigent"    "$APP_BIN/omnigent/install"
+  run_step "linear"      "$APP_BIN/linear/install"
+  run_step "pi-skills" bash -c '
+    set -euo pipefail
+    mkdir -p "$HOME/.pi/agent/skills"
+    if [ -d "$PROFILE_DIR/skills/pi" ]; then
+      for skill in "$PROFILE_DIR"/skills/pi/*; do
+        [ -d "$skill" ] || continue
+        dest="$HOME/.pi/agent/skills/$(basename "$skill")"
+        if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+          rm -rf "$dest"
+        fi
+        ln -fns "$skill" "$dest"
+      done
+    fi
+    if [ -x "$APP_BIN/atop/resolve-skill-conflicts" ]; then
+      "$APP_BIN/atop/resolve-skill-conflicts"
+    fi
+    if [ -x "$APP_BIN/atop/harness-sync" ]; then
+      "$APP_BIN/atop/harness-sync" apply || true
+    fi
+  '
+else
+  echo "sandbox mode: skipping host-global CLI installs (pass --install-tools to mutate the host)"
+  if [ -x "$APP_BIN/atop/install" ]; then
+    run_step "atop-link" "$APP_BIN/atop/install"
+  fi
+fi
+
+if [ "$SKIP_PROVISION" -eq 0 ]; then
+  provision_args=(--mode "$MODE")
+  [ -n "$PROJECT" ] && provision_args+=(--project "$PROJECT")
+  run_step "provision" "$AGENTIC_DEV_DIR/provision" "${provision_args[@]}"
+fi
+
+echo ""
+echo "=== agentic-dev summary (class=${CLASS} mode=${MODE}) ==="
+failed=0
+if [ "${#step_names[@]}" -eq 0 ]; then
+  echo "  (no toolkit steps)"
+else
+  for i in "${!step_names[@]}"; do
+    if [ "${step_rcs[$i]}" -eq 0 ]; then
+      printf '  ok    %s\n' "${step_names[$i]}"
+    else
+      printf '  FAIL  %s (rc=%s)\n' "${step_names[$i]}" "${step_rcs[$i]}"
+      failed=1
+    fi
+  done
+fi
+
+if [ "$failed" -ne 0 ]; then
+  echo "One or more installers failed; see logs above." >&2
+  exit 1
+fi
+echo "✓ agentic-dev ready"

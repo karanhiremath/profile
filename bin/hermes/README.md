@@ -74,6 +74,12 @@ the same home closes the gateway pipe.
   (`chief-of-staff-NAME` / `chief-of-staff-work-NAME`, tmux `cos-NAME` /
   `cosw-NAME`) so parallel TUIs do not share a home or lock. Omitting
   `--lane` keeps the default single-pane seat.
+- Spawn-always: `cos` / `cosw` launch (`agents up`) NEVER attaches to or
+  switches the client toward an existing TUI. Every launch spawns a NEW tmux
+  TUI session; when the seat's home is busy, the next free sibling seat
+  (`cosw-a1`, `cosw-a2`, ...; own home + session) is minted automatically.
+- Attaching to a running TUI is explicit only: `cosw sessions` lists running
+  family sessions (JSON) and `cosw attach [session]` attaches on request.
 - `cosw` is a different home and session. Personal hosts must not create it.
 - `~/.hermes` (`factory` / `project-manager`) is never a Cos inbox or seat.
 - Launchers export `HERMES_ALIAS_PIN=1` and write `alias.seat.json` so herm-tui
@@ -105,7 +111,7 @@ New profile colors/eikons: `skills/herm-tui-profiles/SKILL.md`.
 
 ## CoS / PM / PL command model
 
-These commands are generic profile-level wrappers. They do not embed work/private project state; they resolve profiles and project session registries from the normal Hermes search paths.
+These commands are generic profile-level wrappers. They do not embed work/private project state; they resolve profiles and project session registries from the class-gated Hermes search paths (`bin/agentic-dev/host-env.sh`). Personal hosts load `~/src/hermes` only (krop CosW). Work hosts load the work-checkout registry and never bootstrap krop-*.
 
 ```bash
 cos                         # agents up chief-of-staff
@@ -120,6 +126,8 @@ cosw --cursor-grok          # host-native CoS-W (timeout-free cursor/grok-4.6:fa
 cosw --gpt-5.5              # legacy: host-native CoS-W on openai-codex/gpt-5.5
 cosw --xai-grok             # host-native CoS-W on xAI grok-4.6 (not Cursor SDK)
 cosw --lane o1              # isolated work sibling seat
+cosw sessions               # list running cosw-family tmux sessions (JSON)
+cosw attach [session]       # explicitly attach to a running cosw TUI pane
 cosw --host-tools           # Hermes TUI on the host; no container
 cosw sandbox status         # image / family / container / materialized backend
 cosw sandbox up             # start long-lived attachable CoS-W container
@@ -231,6 +239,9 @@ bin/hermes/agents new my-voice          # scaffold profiles/my-voice.yaml from T
   - `profile` → `bin/hermes/profiles/` (this repo — generic `TEMPLATE` only)
   Override the whole path with `HERMES_AGENT_PROFILE_PATH` (os.pathsep-separated).
   Create into a specific repo: `agents new <name> --dir work|personal|profile|<path>`.
+- TUI: many panes per home. Each pane owns its `tui_gateway` pipe and Hermes
+  session. Extra panes start `herm --fresh` so they do not resume the live
+  session (that closed the pipe). Steer via `atop vi`, not a shared TUI.
 - Isolated homes live under `${XDG_DATA_HOME:-~/.local/share}/hermes-validation/<profile>/`.
 - Secrets: `CARTESIA_API_KEY` (+ internal endpoint hosts like
   `CARTESIA_STAGING_URL`) live in machine-local `~/.hermes/.env`, never here.
@@ -248,7 +259,15 @@ The installer uses `uv venv`, installs the small Python helper dependency (`PyYA
 
 The TUI installer downloads the Bun release asset for the current OS/arch, verifies it against `SHASUMS256.txt`, and installs it under the Hermes toolchain instead of using the global Bun installer. `herm` always execs the local fork (`~/src/herm-tui` or `~/src/herm` via `herm-fork-env.sh`), never published npm `herm-tui`. `just hermes` / `install` / `install-tui` / shell profile all rewrite `~/.local/bin/herm` to that checkout.
 
-`install` writes user-local shims to `${HERMES_SHIM_DIR:-$HOME/.local/bin}` for `hermes`, `hermes-agent`, and `herm`. If that directory is already on PATH, no `source <(.../env)` step is needed.
+`install` writes user-local shims to `${HERMES_SHIM_DIR:-$HOME/.local/bin}` for `hermes`, `hermes-agent`, and `herm`. Shims put that directory first on PATH so `cos`/`agents` cannot pick up a published npm/pnpm `herm-tui`. If `~/src/herm` exists, toolchain `herm` wrappers are overwritten to exec the fork.
+
+Hermes Python aliases (`hermes`, `hermes-agent`, `cosw`, `cos`, `agents`, `pm`, `pl`) source `fork-env.sh` and prefer the `karanhiremath/hermes-agent` checkout (timeout-free Cursor SDK overlay) over the published PyPI/npm wheel. `fork-env.sh` also sets `HERMES_AGENT_ROOT` so herm's gateway does not prepend `~/.hermes/hermes-agent` and drop the Cursor provider. `herm` prefers `~/src/herm` (fork of liftaris/herm). Keep forks current with:
+
+```bash
+bin/hermes/fork-sync status
+bin/hermes/fork-sync ensure
+bin/hermes/fork-sync fetch
+```
 
 Hermes Python aliases (`hermes`, `hermes-agent`, `cosw`, `cos`, `agents`, `pm`, `pl`) source `fork-env.sh` and prefer the `karanhiremath/hermes-agent` checkout (timeout-free Cursor SDK overlay) over the published PyPI/npm wheel. `herm` prefers `~/src/herm` (fork of liftaris/herm). Keep forks current with:
 

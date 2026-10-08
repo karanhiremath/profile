@@ -298,11 +298,18 @@ _agents_completions() {
     if [[ -n "$HERMES_AGENT_PROFILE_PATH" ]]; then
         dirs=(${(s/:/)HERMES_AGENT_PROFILE_PATH})
     else
-        dirs=(
-            "$HOME/src/karan.hiremath/agentic/hermes/profiles"
-            "$HOME/src/hermes/profiles"
-            "$HOME/src/profile/bin/hermes/profiles"
-        )
+        if [[ "${AGENTIC_HOST_CLASS:-}" == personal ]]; then
+            dirs=(
+                "$HOME/src/hermes/profiles"
+                "$HOME/src/profile/bin/hermes/profiles"
+            )
+        else
+            dirs=(
+                "$HOME/src/karan.hiremath/agentic/hermes/profiles"
+                "$HOME/src/hermes/profiles"
+                "$HOME/src/profile/bin/hermes/profiles"
+            )
+        fi
     fi
     local d f
     for d in $dirs; do
@@ -372,12 +379,13 @@ if [ -f "$HOME/src/profile/bin/hermes/herm-fork-env.sh" ]; then
     # shellcheck disable=SC1090
     . "$HOME/src/profile/bin/hermes/herm-fork-env.sh"
     export_herm_fork_env >/dev/null 2>&1 || true
-    herm_fork_ensure_shim >/dev/null 2>&1 || true
+    # Shim verification/repair is detached by bin/zsh/interactive.zsh.
 fi
 
 # Hermes voice/agent launcher (profiles -> isolated agents; CLI/TUI/gateway)
 alias agents="$HOME/src/profile/bin/hermes/agents"
 alias cos="$HOME/src/profile/bin/hermes/cos"
+alias cos-gpt5.5="$HOME/src/profile/bin/hermes/cos-gpt5.5"
 alias cosw="$HOME/src/profile/bin/hermes/cosw"
 alias dreamw="$HOME/src/profile/bin/hermes/dreamw"
 alias pm="$HOME/src/profile/bin/hermes/pm"
@@ -391,6 +399,7 @@ _hermes_project_completions() {
 compdef _hermes_project_completions pm
 compdef _hermes_project_completions pl
 
-# Source work-specific extensions if present
-# karan.hiremath provides: tc (training clusters), ic (inference clusters), dashboard
-[ -f "$HOME/src/karan.hiremath/scripts/shell-ext.sh" ] && source "$HOME/src/karan.hiremath/scripts/shell-ext.sh"
+# Work-host extensions only. Personal class never sources the work checkout.
+if [ "${AGENTIC_HOST_CLASS:-}" != personal ] && [ -f "$HOME/src/karan.hiremath/scripts/shell-ext.sh" ]; then
+    source "$HOME/src/karan.hiremath/scripts/shell-ext.sh"
+fi

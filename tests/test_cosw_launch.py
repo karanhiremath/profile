@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -99,17 +101,63 @@ fallback_model:
 """
 
 
-def run_plan_json(*args: str, profile_text: str) -> dict[str, object]:
+@contextmanager
+def seat_plan_fixture():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        home = root / "home"
+        home.mkdir()
+        profiles = root / "profiles"
+        profiles.mkdir()
+        (profiles / "chief-of-staff-work.yaml").write_text(DECLARED_TIERS_PROFILE, encoding="utf-8")
+        metadata = {
+            "alias": "cosw",
+            "profile": "chief-of-staff-work",
+            "session": "cosw",
+            "home": str(root / "agents/chief-of-staff-work"),
+            "runtime_home": str(root / "agents/chief-of-staff-work/profiles/chief-of-staff-work"),
+        }
+        seat_python = root / "seat-python"
+        seat_python.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "assert sys.argv[2:] == ['resolve-profile', 'chief-of-staff-work']\n"
+            "sys.stderr.write('contained seat resolver diagnostic\\n')\n"
+            f"print(json.dumps({metadata!r}))\n",
+            encoding="utf-8",
+        )
+        seat_python.chmod(0o755)
+        env = os.environ.copy()
+        for key in list(env):
+            if key.startswith("COSW_"):
+                env.pop(key)
+        env.update({
+            "HOME": str(home),
+            "XDG_DATA_HOME": str(root / "data"),
+            "HERMES_AGENT_PROFILE_PATH": str(profiles),
+            "HERMES_PYTHON": str(seat_python),
+            "HERMES_AGENT_TERMINAL_BACKEND": "local",
+            "COSW_WORK_DEVBOX": str(root / "no-work-devbox"),
+            "XAI_API_KEY": "",
+        })
+        yield env, metadata
+
+
+def run_plan_json(
+    *args: str,
+    profile_text: str,
+    env: dict[str, str] | None = None,
+) -> dict[str, object]:
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "chief-of-staff-work.yaml").write_text(profile_text, encoding="utf-8")
-        env = os.environ.copy()
-        env["HERMES_AGENT_PROFILE_PATH"] = tmp
+        merged = os.environ.copy() if env is None else env.copy()
+        merged["HERMES_AGENT_PROFILE_PATH"] = tmp
         proc = subprocess.run(
             [str(COSW), "--print-plan", "--json", *args],
             check=True,
             capture_output=True,
             text=True,
-            env=env,
+            env=merged,
         )
     lines = proc.stdout.splitlines()
     assert len(lines) == 1, proc.stdout
@@ -286,6 +334,41 @@ class CoswLaunchPlanTest(unittest.TestCase):
         self.assertEqual(payload["model_source"], "tiers")
         self.assertEqual(payload["rung"], "fallback")
         self.assertIs(payload["sandbox"], False)
+
+    def test_human_plan_retains_seat_metadata_and_resolved_primary(self):
+        with seat_plan_fixture() as (env, metadata):
+            proc = subprocess.run(
+                [str(COSW), "--print-plan"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        lines = proc.stdout.splitlines()
+        self.assertEqual(json.loads(lines[0]), metadata)
+        fields = dict(line.split("=", 1) for line in lines[1:] if "=" in line)
+        self.assertEqual(fields["profile"], metadata["profile"])
+        self.assertEqual(fields["provider"], "together")
+        self.assertEqual(fields["model"], "zai-org/GLM-5.3-Flash")
+        self.assertEqual(fields["model_source"], "tiers")
+        self.assertEqual(fields["rung"], "primary")
+        self.assertNotIn("contained seat resolver diagnostic", proc.stdout)
+
+    def test_json_plan_combines_seat_metadata_with_each_resolved_rung(self):
+        for args, provider, model, rung in (
+            ((), "together", "zai-org/GLM-5.3-Flash", "primary"),
+            (("--codex",), "openai-codex", "gpt-6.1-sol", "fallback"),
+        ):
+            with self.subTest(rung=rung), seat_plan_fixture() as (env, metadata):
+                payload = run_plan_json(*args, profile_text=DECLARED_TIERS_PROFILE, env=env)
+                self.assertEqual(payload["schema"], "cosw-plan.v1")
+                for key, value in metadata.items():
+                    self.assertEqual(payload[key], value)
+                self.assertEqual(payload["provider"], provider)
+                self.assertEqual(payload["model"], model)
+                self.assertEqual(payload["rung"], rung)
+                self.assertEqual(payload["model_source"], "tiers")
+                self.assertIs(payload["sandbox"], False)
 
     def test_flag_conflicts_with_seat_preset_fail(self):
         proc = subprocess.run(

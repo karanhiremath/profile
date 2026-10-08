@@ -156,6 +156,13 @@ write_shim() {
 # pnpm may place its own global launchers in $SHIM_DIR (~/.local/bin). Replace
 # them with env-setting shims that exec the package entrypoints directly, so the
 # Hermes Python venv and Bun runtime are always on PATH even in non-login shells.
+HERMES_AGENT_OVERLAY="${HERMES_AGENT_OVERLAY:-$HOME/src/hermes-agent-worktrees/timeout-free-cursor-sdk}"
+if [ -f "$HERMES_AGENT_OVERLAY/pyproject.toml" ]; then
+  uv pip install --python "$VENV/bin/python" -e "$HERMES_AGENT_OVERLAY"
+elif [ -f "${HERMES_AGENT_FORK:-$HOME/src/hermes-agent}/pyproject.toml" ]; then
+  uv pip install --python "$VENV/bin/python" -e "${HERMES_AGENT_FORK:-$HOME/src/hermes-agent}"
+fi
+
 write_shim hermes       node "$hermes_entry"
 write_shim hermes-agent node "$hermes_agent_entry"
 write_herm_fork_shim

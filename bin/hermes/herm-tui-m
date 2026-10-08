@@ -21,6 +21,17 @@ export PATH="$HOME/.local/bin:$HERMES_TOOLCHAIN_HOME/bun/bin:$PNPM_HOME/bin:$HER
 
 PY="${HERMES_PYTHON:-$HERMES_TOOLCHAIN_HOME/venv/bin/python}"
 [ -x "$PY" ] || PY="python3"
+CLAIM_PROFILE=""
+CLAIM_TOKEN=""
+release_launch_claim() {
+  if [ -n "$CLAIM_PROFILE" ] && [ -n "$CLAIM_TOKEN" ]; then
+    "$PY" "$SCRIPT_DIR/alias_seat.py" release-claim "$CLAIM_PROFILE" "$$" "$CLAIM_TOKEN"
+  fi
+}
+trap release_launch_claim EXIT
+wait_child_claim() {
+  "$PY" "$SCRIPT_DIR/alias_seat.py" wait-transfer "$CLAIM_PROFILE" "$$" "$CLAIM_TOKEN"
+}
 
 usage() {
   cat <<'EOF'
@@ -44,12 +55,15 @@ Options:
   --attach      tmux attach only; do not launch
   --here        run in this pane (no tmux create/switch)
   --dry-run     print the plan and exit
+  sessions      list running family tmux sessions (JSON)
+  attach [s]    attach to the live TUI pane (optionally by session name)
   -h, --help    show this help
 
-If a live herm-tui already holds HERMES_HOME, *-m attaches that pane
-(desktop :0 or whichever pane holds the lock), never window :m blindly.
-A second TUI pane kills the gateway pipe. Work profiles are resolved,
-never created, on a personal host.
+Spawn-always: a default launch NEVER attaches to an existing TUI. A busy
+home (one pane per home) mints the next free sibling seat (own HERMES_HOME
++ tmux session) and spawns there. Attaching is explicit only:
+`*-m <alias> attach` / `--attach`. Work profiles are resolved, never
+created, on a personal host.
 EOF
 }
 
@@ -164,8 +178,45 @@ attach_or_switch() {
   fi
 }
 
+# Spawn-always helper: mint the next free sibling seat and retarget the
+# launch globals (PROFILE/SESSION/TARGET) at it.
+mint_sibling() {
+  local _next _m_profile _m_session _m_instance _m_base _ensured
+  release_launch_claim
+  CLAIM_PROFILE=""
+  CLAIM_TOKEN=""
+  if [ "$DRY" -eq 1 ]; then
+    _next="$("$PY" "$SCRIPT_DIR/alias_seat.py" next-seat "$1")" \
+      || die "no free sibling seat for $1 (home busy)"
+  else
+    _next="$("$PY" "$SCRIPT_DIR/alias_seat.py" next-seat "$1" "$$")" \
+      || die "no free sibling seat for $1 (home busy)"
+  fi
+  _m_profile="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("profile", ""))')"
+  _m_session="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("session", ""))')"
+  [ -n "$_m_profile" ] && [ -n "$_m_session" ] || die "sibling seat mint failed for $1"
+  if [ "$DRY" -eq 0 ]; then
+    CLAIM_PROFILE="$_m_profile"
+    CLAIM_TOKEN="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["claim_token"])')"
+    _m_instance="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("instance", ""))')"
+    [ -n "$_m_instance" ] || die "sibling seat missing instance for $1"
+    _m_base="${_m_profile%-$_m_instance}"
+    _ensured="$("$PY" "$SCRIPT_DIR/hermes_agents.py" ensure-lane "$_m_base" "$_m_instance")" \
+      || die "cannot create sibling profile $_m_profile"
+    [ "$_ensured" = "$_m_profile" ] || die "sibling profile mismatch for $1"
+  fi
+  PROFILE="$_m_profile"
+  SESSION="$_m_session"
+  TARGET="$SESSION:$WINDOW"
+  log "spawn-always: minted sibling seat $PROFILE (session $SESSION)"
+}
+
 build_launch() {
-  LAUNCH=("$SCRIPT_DIR/agents" up "$1" --surface "$2" --)
+  LAUNCH=()
+  if [ -n "$CLAIM_TOKEN" ]; then
+    LAUNCH=(env "HERMES_SEAT_CLAIM_PROFILE=$CLAIM_PROFILE" "HERMES_SEAT_CLAIM_TOKEN=$CLAIM_TOKEN")
+  fi
+  LAUNCH+=("$SCRIPT_DIR/agents" up "$1" --surface "$2" --here --)
   if [ "$2" = "cli" ]; then
     LAUNCH+=(--continue --cli)
   else
@@ -184,6 +235,8 @@ ATTACH_ONLY=0
 HERE=0
 DRY=0
 PROJECT=""
+SUBCMD=""
+ATTACH_SESSION=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -214,12 +267,26 @@ while [ "$#" -gt 0 ]; do
         shift
         continue
       fi
+      if [ -z "$SUBCMD" ] && [ "$ALIAS" != "pm" ] && [ "$ALIAS" != "pl" ]; then
+        case "$1" in
+          sessions) SUBCMD="sessions"; shift; continue ;;
+          attach) SUBCMD="attach"; shift; continue ;;
+        esac
+      fi
+      if [ "$SUBCMD" = "attach" ] && [ -z "$ATTACH_SESSION" ]; then
+        ATTACH_SESSION="$1"
+        shift
+        continue
+      fi
       die "unexpected argument: $1"
       ;;
   esac
 done
 
 [ -n "$ALIAS" ] || { usage >&2; exit 2; }
+if [ "$HERE" -eq 1 ] && { [ "$ATTACH_ONLY" -eq 1 ] || [ "$SUBCMD" = "attach" ]; }; then
+  die "--here cannot be combined with attach or --attach"
+fi
 
 if [ "$ALIAS" = "pm" ] || [ "$ALIAS" = "pl" ]; then
   [ -n "$PROJECT" ] || die "$ALIAS-m needs a registered project name"
@@ -246,6 +313,10 @@ case "$ALIAS" in
   *) die "unknown target: $ALIAS (use cos|cosw|notes|notesw|pm|pl)" ;;
 esac
 
+if [ "$SUBCMD" = "sessions" ]; then
+  exec "$PY" "$SCRIPT_DIR/alias_seat.py" sessions "$ALIAS"
+fi
+
 PROFILE=""
 if ! PROFILE="$(resolve_named_profile "$ALIAS")"; then
   case "$ALIAS" in
@@ -261,6 +332,7 @@ if ! PROFILE="$(resolve_named_profile "$ALIAS")"; then
   esac
 fi
 
+BASE_PROFILE="$PROFILE"
 SESSION="$(session_for "$ALIAS")"
 WINDOW="m"
 TARGET="$SESSION:$WINDOW"
@@ -268,28 +340,31 @@ WORKDIR="$(workdir_for "$ALIAS")"
 RUNTIME_HOME=""
 LOCK_HELD=0
 LIVE_TARGET=""
-if [ "$DRY" -eq 1 ]; then
-  if probe_existing_lock "$PROFILE"; then
-    LOCK_HELD=1
-  fi
-else
-  RUNTIME_HOME="$(runtime_home_for "$PROFILE")"
-  if tui_lock_held "$PROFILE"; then
-    LOCK_HELD=1
+# Probing and explicit attach never materialize a home. Launch mutation is
+# delegated to agents only after the wrapper reserves the selected seat.
+if probe_existing_lock "$PROFILE"; then
+  LOCK_HELD=1
+  if [ "$DRY" -eq 0 ]; then
     LIVE_TARGET="$(live_tui_target "$PROFILE" "$SESSION")"
   fi
 fi
 
 ACTION="launch"
-if [ "$ATTACH_ONLY" -eq 1 ]; then
+if [ "$ATTACH_ONLY" -eq 1 ] || [ "$SUBCMD" = "attach" ]; then
   ACTION="attach"
-elif [ "$LOCK_HELD" -eq 1 ]; then
-  ACTION="attach-live-tui"
-  if [ -n "$LIVE_TARGET" ]; then
-    TARGET="$LIVE_TARGET"
-  fi
-  if [ "$SURFACE" = "tui" ]; then
-    log "live TUI holds ${RUNTIME_HOME:-$PROFILE}; attaching $TARGET instead of a second TUI"
+fi
+
+# Spawn-always: a busy home (live TUI holds the lock) never steals the
+# client. Mint the next free sibling seat and spawn a NEW TUI there.
+if [ "$ACTION" = "launch" ]; then
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    mint_sibling "$BASE_PROFILE"
+  elif [ "$DRY" -eq 0 ]; then
+    if CLAIM_TOKEN="$("$PY" "$SCRIPT_DIR/alias_seat.py" claim "$PROFILE" "$$")"; then
+      CLAIM_PROFILE="$PROFILE"
+    else
+      mint_sibling "$BASE_PROFILE"
+    fi
   fi
 fi
 
@@ -302,6 +377,7 @@ if [ "$DRY" -eq 1 ]; then
   printf 'workdir=%s\n' "$WORKDIR"
   printf 'surface=%s\n' "$SURFACE"
   printf 'here=%s\n' "$HERE"
+  printf 'subcmd=%s\n' "${SUBCMD:-none}"
   printf 'action=%s\n' "$ACTION"
   printf 'lock_held=%s\n' "$LOCK_HELD"
   printf 'command=%s\n' "$(print_launch "$PROFILE" "$SURFACE")"
@@ -309,8 +385,6 @@ if [ "$DRY" -eq 1 ]; then
 fi
 
 if [ "$HERE" -eq 1 ]; then
-  [ "$ATTACH_ONLY" -eq 0 ] || die "--here cannot be combined with --attach"
-  [ "$LOCK_HELD" -eq 0 ] || die "live TUI holds $RUNTIME_HOME; omit --here and attach, or close that pane first"
   cd "$WORKDIR"
   build_launch "$PROFILE" "$SURFACE"
   exec "${LAUNCH[@]}"
@@ -318,18 +392,17 @@ fi
 
 command -v tmux >/dev/null 2>&1 || die "tmux not found"
 
-if [ "$ACTION" = "attach-live-tui" ]; then
+if [ "$ACTION" = "attach" ]; then
+  if [ -n "$ATTACH_SESSION" ]; then
+    tmux_exists "$ATTACH_SESSION" || die "tmux session not running: $ATTACH_SESSION"
+    attach_or_switch "$ATTACH_SESSION"
+    exit $?
+  fi
   if [ -n "$LIVE_TARGET" ]; then
     attach_or_switch "$LIVE_TARGET"
     exit $?
   fi
-  tmux_exists "$SESSION" || die "live TUI lock is held but tmux session $SESSION is not running"
-  attach_or_switch "$SESSION"
-  exit $?
-fi
-
-if [ "$ACTION" = "attach" ]; then
-  tmux_exists "$SESSION" || die "tmux session not running: $SESSION"
+  tmux_exists "$SESSION" || die "tmux session not running: $SESSION (list: herm-tui-m $ALIAS sessions)"
   if window_exists "$SESSION" "$WINDOW"; then
     attach_or_switch "$TARGET"
   else
@@ -341,6 +414,7 @@ fi
 build_launch "$PROFILE" "$SURFACE"
 if ! tmux_exists "$SESSION"; then
   tmux new-session -d -s "$SESSION" -n "$WINDOW" -c "$WORKDIR" "${LAUNCH[@]}"
+  wait_child_claim
   log "started $PROFILE in tmux $TARGET ($SURFACE)"
   attach_or_switch "$TARGET"
   exit $?
@@ -350,15 +424,24 @@ if window_exists "$SESSION" "$WINDOW"; then
   cmd="$(pane_cmd "$TARGET")"
   if is_shell_cmd "$cmd"; then
     tmux respawn-pane -k -t "$TARGET" -c "$WORKDIR" "${LAUNCH[@]}"
+    wait_child_claim
     log "respawned idle $TARGET as $PROFILE ($SURFACE)"
-  else
-    log "attaching existing $TARGET (cmd=$cmd)"
+    attach_or_switch "$TARGET"
+    exit $?
   fi
+  # Window busy with a live TUI but no lock (stale lock): never attach or
+  # kill it. Mint a sibling seat and spawn a NEW TUI session there.
+  mint_sibling "$BASE_PROFILE"
+  build_launch "$PROFILE" "$SURFACE"
+  tmux new-session -d -s "$SESSION" -n "$WINDOW" -c "$WORKDIR" "${LAUNCH[@]}"
+  wait_child_claim
+  log "started $PROFILE in tmux $TARGET ($SURFACE)"
   attach_or_switch "$TARGET"
   exit $?
 fi
 
 tmux new-window -t "$SESSION" -n "$WINDOW" -c "$WORKDIR" "${LAUNCH[@]}"
+wait_child_claim
 log "started $PROFILE in tmux $TARGET ($SURFACE)"
 attach_or_switch "$TARGET"
 exit $?

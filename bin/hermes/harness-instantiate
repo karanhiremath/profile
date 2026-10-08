@@ -51,33 +51,42 @@ resolve_profile() { # -> absolute yaml path or empty
   return 1
 }
 
-profile_route() { # profile_route <resolved-path> -> plane|lane|reason
+profile_route() { # -> plane|lane|reason on success; error reason and nonzero otherwise
   local path="$1"
   PROFILE_PATH="$path" python3 - <<'PY'
 import os
 import sys
 
+def fail(reason):
+    sys.stdout.write(reason + "\n")
+    sys.exit(2)
+
 try:
     import yaml
 except ImportError:
-    yaml = None
+    fail("pyyaml-required")
 
 path = os.environ["PROFILE_PATH"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+except (yaml.YAMLError, ValueError):
+    fail("malformed-yaml")
+except (OSError, UnicodeError):
+    fail("profile-read-failed")
+if not isinstance(doc, dict):
+    fail("invalid-profile-document")
+
 plane = ""
 lane = ""
-if yaml is not None:
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except Exception:
-        doc = {}
-    if isinstance(doc, dict):
-        p = doc.get("plane")
-        l = doc.get("lane")
-        if isinstance(p, str) and p.strip() in {"personal", "work"}:
-            plane = p.strip()
-        if isinstance(l, str) and l.strip():
-            lane = l.strip()
+if "plane" in doc:
+    p = doc["plane"]
+    if not isinstance(p, str) or p not in {"personal", "work"}:
+        fail("invalid-plane")
+    plane = p
+l = doc.get("lane")
+if isinstance(l, str) and l.strip():
+    lane = l.strip()
 if plane:
     reason = "plane-from-profile"
 else:
@@ -88,6 +97,17 @@ else:
     reason = "plane-inferred-from-path"
 sys.stdout.write("%s|%s|%s\n" % (plane, lane, reason))
 PY
+}
+
+read_profile_route() { # validate before either classification or dispatch
+  local route rc
+  if route="$(profile_route "$2")"; then
+    IFS='|' read -r plane lane reason <<< "$route"
+  else
+    rc=$?
+    json_emit unknown "" none error "$1" "$route"
+    return "$rc"
+  fi
 }
 
 plane_prep() { # plane_prep <plane> <lane> <profile-name> <resolved-path>; rc 0 = handled
@@ -128,7 +148,7 @@ case "$cmd" in
   classify)
     [ "$#" -ge 1 ] || { printf 'classify needs a profile name\n' >&2; exit 2; }
     if path="$(resolve_profile "$1")"; then
-      IFS='|' read -r plane lane reason < <(profile_route "$path")
+      read_profile_route "$1" "$path" || exit $?
       json_emit "$plane" "$lane" none classified "$1" "$reason"
     else
       json_emit unknown "" none unclassified "$1" "profile-not-found"
@@ -142,7 +162,7 @@ case "$cmd" in
       json_emit unknown "" none fallback "$name" "profile-not-found"
       exit 1
     fi
-    IFS='|' read -r plane lane _reason < <(profile_route "$path")
+    read_profile_route "$name" "$path" || exit $?
     plane_prep "$plane" "$lane" "$name" "$path" || exit 1
     ;;
   *) printf 'unknown command: %s\n' "$cmd" >&2; exit 2 ;;
