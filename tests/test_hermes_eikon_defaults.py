@@ -5,14 +5,18 @@ import importlib.machinery
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-ha = importlib.machinery.SourceFileLoader(
-    "hermes_eikon_defaults", str(ROOT / "bin/hermes/hermes_agents.py"),
-).load_module()
+# hermes_agents adds its sibling directory for alias_seat; keep that import
+# path local so later unittest discovery resolves modules from tests/.
+with patch.object(sys, "path", sys.path.copy()):
+    ha = importlib.machinery.SourceFileLoader(
+        "hermes_eikon_defaults", str(ROOT / "bin/hermes/hermes_agents.py"),
+    ).load_module()
 
 
 class EikonDefaultTests(unittest.TestCase):
