@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -28,7 +29,15 @@ class TestZshStartup(unittest.TestCase):
         for name in ("interactive.zsh", "refresh-completions", "prompt.zsh"):
             shutil.copy2(ROOT / "bin/zsh" / name, self.repo / "bin/zsh" / name)
         shutil.copy2(ROOT / "zshrc.bootstrap", self.repo / "zshrc.bootstrap")
-        shutil.copy2(ROOT / "zsh_profile.sh", self.repo / "zsh_profile.sh")
+        self.prepare_completions()
+        profile = (ROOT / "zsh_profile.sh").read_text()
+        for prefix, directory in (
+            ("/opt/homebrew/share/zsh/site-functions", self.brew_completions),
+            ("/usr/local/share/zsh/site-functions", self.local_completions),
+        ):
+            self.assertEqual(profile.count(prefix), 1)
+            profile = profile.replace(prefix, shlex.quote(str(directory)))
+        (self.repo / "zsh_profile.sh").write_text(profile)
         (self.repo / "myprofile.sh").write_text(
             "(( TEST_PROFILE_LOADS += 1 ))\n"
         )
@@ -43,12 +52,23 @@ class TestZshStartup(unittest.TestCase):
         self.log = self.home / "calls"
         self.release = self.home / "release"
         self.started = self.home / "started"
+        # Allow only locale settings through: operator FPATH, ZDOTDIR,
+        # completion/cache variables and host integration overrides are not
+        # fixture inputs. Every subprocess (including benchmark and PTY) uses
+        # this same explicit FPATH and fresh cache/config/data roots.
         self.env = dict(
-            os.environ,
+            {key: os.environ[key] for key in ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
+             if key in os.environ},
             HOME=str(self.home),
+            ZDOTDIR=str(self.home),
+            FPATH=os.pathsep.join(map(str, self.function_dirs)),
             PROFILE_DIR=str(self.repo),
+            XDG_CONFIG_HOME=str(self.home / ".config"),
+            XDG_DATA_HOME=str(self.home / "data"),
             XDG_CACHE_HOME=str(self.home / "cache"),
+            TMPDIR=str(self.home),
             PATH=f"{self.bin}:/usr/bin:/bin",
+            TERM="dumb",
             TERM_PROGRAM="startup-test",
             BOOT=str(self.repo / "zshrc.bootstrap"),
             TEST_LOG=str(self.log),
@@ -67,6 +87,73 @@ fi
         self.script("brew", 'printf "brew\\n" >> "$TEST_LOG"\nexit 1\n')
         self.script("fzf", "exit 0\n")
         self.script("omp", 'printf "omp\\n" >> "$TEST_LOG"\nprintf "%s\\n" \'export TEST_COMPLETIONS=loaded\'\n')
+
+    def prepare_completions(self) -> None:
+        """Copy only installed stock autoload sources, never ambient fpath.
+
+        Search bounded standard install prefixes, preferring the selected zsh's
+        own prefix. Do not traverse site-functions or directory symlinks, and
+        do not copy file symlinks or compiled autoload/dump caches. All chmods
+        apply exclusively to newly created paths below the temporary HOME.
+        """
+        self.completion_root = self.home / "completions"
+        self.completion_root.mkdir(mode=0o700)
+        self.brew_completions = self.completion_root / "homebrew"
+        self.local_completions = self.completion_root / "usr-local"
+        for directory in (self.brew_completions, self.local_completions):
+            directory.mkdir(mode=0o700)
+
+        prefixes = dict.fromkeys((
+            Path(ZSH).resolve().parent.parent / "share/zsh",
+            Path("/usr/share/zsh"),
+            Path("/usr/local/share/zsh"),
+            Path("/opt/homebrew/share/zsh"),
+        ))
+        required = {"compaudit", "compinit", "colors", "promptinit", "add-zsh-hook"}
+        sources = []
+        for prefix in prefixes:
+            candidates = [prefix / "functions", *sorted(prefix.glob("[0-9]*/functions"))]
+            for candidate in candidates:
+                if not candidate.is_dir():
+                    continue
+                root = candidate.resolve()
+                if "site-functions" in root.parts:
+                    continue
+                files = []
+                for directory, subdirs, names in os.walk(root, followlinks=False):
+                    parent = Path(directory)
+                    subdirs[:] = sorted(
+                        name for name in subdirs
+                        if name != "site-functions" and not name.startswith(".")
+                        and ".zwc" not in name and not (parent / name).is_symlink()
+                    )
+                    for name in sorted(names):
+                        source = parent / name
+                        if (not name.startswith(".") and ".zwc" not in name
+                                and not source.is_symlink() and source.is_file()):
+                            files.append(source)
+                if required.issubset({source.name for source in files}):
+                    sources = files
+                    stock_root = root
+                    break
+            if sources:
+                break
+        self.assertTrue(sources, "installed stock zsh autoload functions not found")
+
+        stock = self.completion_root / "stock"
+        stock.mkdir(mode=0o700)
+        self.function_dirs = []
+        for source in sources:
+            target = stock / source.relative_to(stock_root)
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            target.chmod(0o600)
+            if target.parent not in self.function_dirs:
+                self.function_dirs.append(target.parent)
+        # mkdir(parents=True) uses the umask for intermediate directories.
+        # Normalize only our copies, not any installed function directory.
+        for directory, _, _ in os.walk(self.completion_root):
+            Path(directory).chmod(0o700)
 
     def script(self, name: str, body: str) -> Path:
         target = self.bin / name
@@ -107,6 +194,40 @@ done
 [[ -f "$TEST_RELEASE" ]]
 printf '%s\\n' 'export TEST_COMPLETIONS=loaded'
 ''')
+
+    def test_owned_completions_pass_real_audit_and_initialization(self) -> None:
+        self.seed_cache()
+        result = self.shell(
+            'autoload -Uz compaudit; '
+            'audit="$(compaudit)" || { print -ru2 -- "$audit"; exit 1; }; '
+            '[[ -z "$audit" ]] || exit 2; '
+            'source "$BOOT" </dev/null; '
+            '(( $+functions[compdef] )) || exit 3; '
+            'audit="$(compaudit)" || { print -ru2 -- "$audit"; exit 4; }; '
+            '[[ -z "$audit" ]] || exit 5; '
+            'autoload -Uz compinit; compinit </dev/null || exit 6; '
+            'compdef _fixture_canary fixture-canary || exit 7; '
+            '[[ "${_comps[fixture-canary]}" == _fixture_canary ]] || exit 8; '
+            'print -rl -- $fpath'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout.splitlines(), [
+            str(self.local_completions), str(self.brew_completions),
+            *map(str, self.function_dirs),
+        ])
+
+    def test_real_compaudit_rejects_group_writable_fixture_directory(self) -> None:
+        insecure = self.completion_root / "insecure"
+        insecure.mkdir(mode=0o700)
+        insecure.chmod(0o770)
+        self.env["TEST_INSECURE_COMPLETIONS"] = str(insecure)
+        result = self.shell(
+            'fpath=("$TEST_INSECURE_COMPLETIONS" $fpath); '
+            'autoload -Uz compaudit; compaudit'
+        )
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(insecure), result.stdout.splitlines())
 
     def test_warm_start_no_cli_generation_or_brew_and_no_duplicate_setup(self) -> None:
         self.seed_cache()
