@@ -91,6 +91,14 @@ usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 SEAT_PY="$SCRIPT_DIR/alias_seat.py"
+CLAIM_PROFILE=""
+CLAIM_TOKEN=""
+release_launch_claim() {
+  if [ -n "$CLAIM_PROFILE" ] && [ -n "$CLAIM_TOKEN" ]; then
+    "$PY" "$SEAT_PY" release-claim "$CLAIM_PROFILE" "$$" "$CLAIM_TOKEN"
+  fi
+}
+trap release_launch_claim EXIT
 
 export_pin() {
   local alias_name="$1"
@@ -108,8 +116,8 @@ alias_for_profile() {
   case "$profile" in
     chief-of-staff-work|chief-of-staff-work-*) printf '%s\n' cosw ;;
     chief-of-staff|chief-of-staff-*) printf '%s\n' cos ;;
-    personal-notes-steward) printf '%s\n' notes ;;
-    work-notes-steward|notes-steward-work) printf '%s\n' notesw ;;
+    personal-notes-steward|personal-notes-steward-*) printf '%s\n' notes ;;
+    work-notes-steward|work-notes-steward-*|notes-steward-work|notes-steward-work-*) printf '%s\n' notesw ;;
     *) printf '%s\n' "" ;;
   esac
 }
@@ -136,10 +144,12 @@ mint_sibling_seat() {
   MINT_PROFILE=""
   MINT_SESSION=""
   local _next _profile _session _instance _base
-  _next="$("$PY" "$SEAT_PY" next-seat "$1" 2>/dev/null)" || return 1
+  _next="$("$PY" "$SEAT_PY" next-seat "$1" "$$")" || return 1
   _profile="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("profile", ""))')"
   _session="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("session", ""))')"
   [ -n "$_profile" ] && [ -n "$_session" ] || return 1
+  CLAIM_PROFILE="$_profile"
+  CLAIM_TOKEN="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["claim_token"])')"
   _instance="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("instance", ""))')"
   [ -n "$_instance" ] || return 1
   _base="${_profile%-$_instance}"
@@ -152,15 +162,14 @@ mint_sibling_seat() {
 # runtime_home, runtime_profile, alias_name, seat_session (tmux session name).
 derive_runtime() {
   home="$(materialize "$profile")"
-  # Cos YAML / older install-tui can leave a theme name the running herm fork
-  # does not ship. Re-apply host nighttide built-ins + prefs before exec.
-  if [ -x "$SCRIPT_DIR/apply-nighttide-theme" ]; then
-    "$SCRIPT_DIR/apply-nighttide-theme" --quiet || true
-  fi
   runtime_profile="$(sed -n '1p' "$home/active_profile" 2>/dev/null || true)"
   runtime_home="$home"
   if [ -n "$runtime_profile" ] && [ "$runtime_profile" != "default" ] && [ -d "$home/profiles/$runtime_profile" ]; then
     runtime_home="$home/profiles/$runtime_profile"
+  fi
+  # Theme mutation must target the claimed seat, not an inherited busy home.
+  if [ -x "$SCRIPT_DIR/apply-nighttide-theme" ]; then
+    HERMES_HOME="$runtime_home" HERMES_PROFILE="$profile" "$SCRIPT_DIR/apply-nighttide-theme" --quiet || true
   fi
   alias_name="$(alias_for_profile "$profile")"
   if [ -n "$alias_name" ]; then
@@ -170,7 +179,7 @@ derive_runtime() {
   if type hermes_ensure_short_home >/dev/null 2>&1; then
     runtime_home="$(hermes_ensure_short_home "$profile" "$runtime_home")"
   fi
-  seat_session="$("$PY" "$SEAT_PY" resolve-profile "$profile" 2>/dev/null | sed -n 's/.*"session": *"\([^"]*\)".*/\1/p')"
+  seat_session="$("$PY" "$SEAT_PY" resolve-profile "$profile" 2>/dev/null | sed -n 's/.*"session": *"\([^"]*\)".*/\1/p' || true)"
   [ -n "$seat_session" ] || seat_session="${alias_name:-$profile}"
   echo "profile=$profile surface=$surface home=$home runtime_home=$runtime_home alias=${alias_name:-none} session=$seat_session"
 }
@@ -322,6 +331,29 @@ case "$cmd" in
     [ -n "$surface" ] || surface="$("$PY" "$PY_BACKEND" resolve "$profile" | sed -n 's/.*"surface": *"\([^"]*\)".*/\1/p')"
     [ -n "$surface" ] || surface="cli"
 
+    # Claim before ANY materialization or config/theme mutation. Mobile launches
+    # hand us a reserved seat even for their CLI fallback.
+    if [ "$surface" = "tui" ] || [ -n "${HERMES_SEAT_CLAIM_TOKEN:-}" ]; then
+      seat_session="$("$PY" "$SEAT_PY" resolve-profile "$profile" 2>/dev/null | sed -n 's/.*"session": *"\([^"]*\)".*/\1/p' || true)"
+      [ -n "$seat_session" ] || seat_session="$profile"
+      if [ -n "${HERMES_SEAT_CLAIM_TOKEN:-}" ]; then
+        [ "${HERMES_SEAT_CLAIM_PROFILE:-}" = "$profile" ] || die "claim profile mismatch"
+        CLAIM_TOKEN="$("$PY" "$SEAT_PY" claim "$profile" "$$" "$HERMES_SEAT_CLAIM_TOKEN")" \
+          || die "cannot transfer reserved seat $profile"
+        CLAIM_PROFILE="$profile"
+      elif { [ "$here" -eq 0 ] && [ -z "${TMUX:-}" ] \
+          && command -v tmux >/dev/null 2>&1 \
+          && tmux has-session -t "$seat_session" 2>/dev/null; } \
+          || ! CLAIM_TOKEN="$("$PY" "$SEAT_PY" claim "$profile" "$$")"; then
+        mint_sibling_seat "$profile" || die "$profile busy and no free sibling seat"
+        echo "spawn-always: $profile busy; minted sibling seat $MINT_PROFILE (session $MINT_SESSION)" >&2
+        profile="$MINT_PROFILE"
+      else
+        CLAIM_PROFILE="$profile"
+      fi
+      unset HERMES_SEAT_CLAIM_TOKEN HERMES_SEAT_CLAIM_PROFILE
+    fi
+
     derive_runtime
 
     if [ "$do_check" -eq 1 ]; then
@@ -329,38 +361,19 @@ case "$cmd" in
     fi
 
     export HERMES_HOME="$runtime_home"
-    if [ "$surface" = "tui" ]; then
-      # Spawn-always: never attach to or steal the client for an existing TUI.
-      # One pane per home, so a busy seat mints the next free sibling seat
-      # (own HERMES_HOME + tmux session) and spawns a NEW TUI there.
-      _busy="$("$PY" "$SEAT_PY" lock-pid "$profile" 2>/dev/null || true)"
-      _busy_reason=""
-      [ -n "${_busy:-}" ] && _busy_reason="home-held (pid $_busy)"
-      if [ -z "$_busy_reason" ] && [ "$here" -eq 0 ] && [ -z "${TMUX:-}" ] \
-         && command -v tmux >/dev/null 2>&1 \
-         && tmux has-session -t "$seat_session" 2>/dev/null; then
-        _busy_reason="session-exists ($seat_session)"
-      fi
-      if [ -n "$_busy_reason" ]; then
-        mint_sibling_seat "$profile" \
-          || die "$profile busy ($_busy_reason) and no free sibling seat"
-        echo "spawn-always: $profile busy ($_busy_reason); minted sibling seat $MINT_PROFILE (session $MINT_SESSION)" >&2
-        profile="$MINT_PROFILE"
-        derive_runtime
-        export HERMES_HOME="$runtime_home"
-      fi
-      # Final safety: one pane per home; a racing holder is fatal, never attach.
-      _held="$("$PY" "$SEAT_PY" lock-pid "$profile" 2>/dev/null || true)"
-      if [ -n "${_held:-}" ]; then
-        die "HERMES_HOME already has a live TUI (pid $_held). Attach explicitly: agents attach ${alias_name:-$profile}"
-      fi
-      if [ "$here" -eq 0 ] && [ -n "$alias_name" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-        build_cmd=("$0" up "$profile" --surface tui --here)
-        [ ${#passthrough[@]} -eq 0 ] || build_cmd+=(-- "${passthrough[@]}")
-        tmux new-session -d -s "${HERMES_ALIAS_SESSION:-$seat_session}" -n 0 "${build_cmd[@]}"
-        exec tmux attach-session -t "${HERMES_ALIAS_SESSION:-$seat_session}"
-      fi
-      printf '%s\n' "$$" > "$runtime_home/.herm-tui.lock"
+    if [ "$surface" = "tui" ] && [ "$here" -eq 0 ] && [ -n "$alias_name" ] \
+        && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+      # The child gets only this seat's capability. The parent retains its claim
+      # until the child adopts it; failed tmux creation releases only our owner.
+      build_cmd=(env "HERMES_SEAT_CLAIM_PROFILE=$CLAIM_PROFILE" "HERMES_SEAT_CLAIM_TOKEN=$CLAIM_TOKEN"
+        "$0" up "$profile" --surface tui --here)
+      [ ${#passthrough[@]} -eq 0 ] || build_cmd+=(-- "${passthrough[@]}")
+      tmux new-session -d -s "${HERMES_ALIAS_SESSION:-$seat_session}" -n 0 "${build_cmd[@]}"
+      "$PY" "$SEAT_PY" wait-transfer "$CLAIM_PROFILE" "$$" "$CLAIM_TOKEN"
+      exec tmux attach-session -t "${HERMES_ALIAS_SESSION:-$seat_session}"
+    fi
+    if [ -n "$CLAIM_TOKEN" ]; then
+      "$PY" "$SEAT_PY" activate-claim "$profile" "$$" "$CLAIM_TOKEN" "$runtime_home"
     fi
     # Cursor SDK reads process env, not only HERMES_HOME/.env. Export without echoing.
     if [ -f "$runtime_home/.env" ]; then
@@ -386,11 +399,20 @@ case "$cmd" in
     case "$surface" in
       cli)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"
+        if [ -n "$CLAIM_TOKEN" ]; then
+          "$PY" "$SEAT_PY" run-claim "$profile" "$$" "$CLAIM_TOKEN" "$runtime_home" \
+            hermes chat "${passthrough[@]+"${passthrough[@]}"}"
+          exit $?
+        fi
         exec hermes chat "${passthrough[@]+"${passthrough[@]}"}"
         ;;
       tui)
         herm_bin="$(resolve_herm)" || die "herm (TUI) not installed; run bin/hermes/install-tui"
-        exec "$herm_bin" "${passthrough[@]+"${passthrough[@]}"}"
+        # The helper gates exec on atomic PID ownership and cleans up only
+        # this generation after the real TUI PID exits, including failed exec.
+        "$PY" "$SEAT_PY" run-claim "$profile" "$$" "$CLAIM_TOKEN" "$runtime_home" \
+          "$herm_bin" "${passthrough[@]+"${passthrough[@]}"}"
+        exit $?
         ;;
       gateway)
         command -v hermes >/dev/null 2>&1 || die "hermes not on PATH"

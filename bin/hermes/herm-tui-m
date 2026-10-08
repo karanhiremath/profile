@@ -21,6 +21,17 @@ export PATH="$HOME/.local/bin:$HERMES_TOOLCHAIN_HOME/bun/bin:$PNPM_HOME/bin:$HER
 
 PY="${HERMES_PYTHON:-$HERMES_TOOLCHAIN_HOME/venv/bin/python}"
 [ -x "$PY" ] || PY="python3"
+CLAIM_PROFILE=""
+CLAIM_TOKEN=""
+release_launch_claim() {
+  if [ -n "$CLAIM_PROFILE" ] && [ -n "$CLAIM_TOKEN" ]; then
+    "$PY" "$SCRIPT_DIR/alias_seat.py" release-claim "$CLAIM_PROFILE" "$$" "$CLAIM_TOKEN"
+  fi
+}
+trap release_launch_claim EXIT
+wait_child_claim() {
+  "$PY" "$SCRIPT_DIR/alias_seat.py" wait-transfer "$CLAIM_PROFILE" "$$" "$CLAIM_TOKEN"
+}
 
 usage() {
   cat <<'EOF'
@@ -171,12 +182,22 @@ attach_or_switch() {
 # launch globals (PROFILE/SESSION/TARGET) at it.
 mint_sibling() {
   local _next _m_profile _m_session _m_instance _m_base _ensured
-  _next="$("$PY" "$SCRIPT_DIR/alias_seat.py" next-seat "$1" 2>/dev/null)" \
-    || die "no free sibling seat for $1 (home busy)"
+  release_launch_claim
+  CLAIM_PROFILE=""
+  CLAIM_TOKEN=""
+  if [ "$DRY" -eq 1 ]; then
+    _next="$("$PY" "$SCRIPT_DIR/alias_seat.py" next-seat "$1")" \
+      || die "no free sibling seat for $1 (home busy)"
+  else
+    _next="$("$PY" "$SCRIPT_DIR/alias_seat.py" next-seat "$1" "$$")" \
+      || die "no free sibling seat for $1 (home busy)"
+  fi
   _m_profile="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("profile", ""))')"
   _m_session="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("session", ""))')"
   [ -n "$_m_profile" ] && [ -n "$_m_session" ] || die "sibling seat mint failed for $1"
   if [ "$DRY" -eq 0 ]; then
+    CLAIM_PROFILE="$_m_profile"
+    CLAIM_TOKEN="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["claim_token"])')"
     _m_instance="$(printf '%s\n' "$_next" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("instance", ""))')"
     [ -n "$_m_instance" ] || die "sibling seat missing instance for $1"
     _m_base="${_m_profile%-$_m_instance}"
@@ -191,7 +212,11 @@ mint_sibling() {
 }
 
 build_launch() {
-  LAUNCH=("$SCRIPT_DIR/agents" up "$1" --surface "$2" --)
+  LAUNCH=()
+  if [ -n "$CLAIM_TOKEN" ]; then
+    LAUNCH=(env "HERMES_SEAT_CLAIM_PROFILE=$CLAIM_PROFILE" "HERMES_SEAT_CLAIM_TOKEN=$CLAIM_TOKEN")
+  fi
+  LAUNCH+=("$SCRIPT_DIR/agents" up "$1" --surface "$2" --here --)
   if [ "$2" = "cli" ]; then
     LAUNCH+=(--continue --cli)
   else
@@ -259,6 +284,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$ALIAS" ] || { usage >&2; exit 2; }
+if [ "$HERE" -eq 1 ] && { [ "$ATTACH_ONLY" -eq 1 ] || [ "$SUBCMD" = "attach" ]; }; then
+  die "--here cannot be combined with attach or --attach"
+fi
 
 if [ "$ALIAS" = "pm" ] || [ "$ALIAS" = "pl" ]; then
   [ -n "$PROJECT" ] || die "$ALIAS-m needs a registered project name"
@@ -304,6 +332,7 @@ if ! PROFILE="$(resolve_named_profile "$ALIAS")"; then
   esac
 fi
 
+BASE_PROFILE="$PROFILE"
 SESSION="$(session_for "$ALIAS")"
 WINDOW="m"
 TARGET="$SESSION:$WINDOW"
@@ -311,14 +340,11 @@ WORKDIR="$(workdir_for "$ALIAS")"
 RUNTIME_HOME=""
 LOCK_HELD=0
 LIVE_TARGET=""
-if [ "$DRY" -eq 1 ]; then
-  if probe_existing_lock "$PROFILE"; then
-    LOCK_HELD=1
-  fi
-else
-  RUNTIME_HOME="$(runtime_home_for "$PROFILE")"
-  if tui_lock_held "$PROFILE"; then
-    LOCK_HELD=1
+# Probing and explicit attach never materialize a home. Launch mutation is
+# delegated to agents only after the wrapper reserves the selected seat.
+if probe_existing_lock "$PROFILE"; then
+  LOCK_HELD=1
+  if [ "$DRY" -eq 0 ]; then
     LIVE_TARGET="$(live_tui_target "$PROFILE" "$SESSION")"
   fi
 fi
@@ -330,8 +356,16 @@ fi
 
 # Spawn-always: a busy home (live TUI holds the lock) never steals the
 # client. Mint the next free sibling seat and spawn a NEW TUI there.
-if [ "$ACTION" = "launch" ] && [ "$LOCK_HELD" -eq 1 ]; then
-  mint_sibling "$ALIAS"
+if [ "$ACTION" = "launch" ]; then
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    mint_sibling "$BASE_PROFILE"
+  elif [ "$DRY" -eq 0 ]; then
+    if CLAIM_TOKEN="$("$PY" "$SCRIPT_DIR/alias_seat.py" claim "$PROFILE" "$$")"; then
+      CLAIM_PROFILE="$PROFILE"
+    else
+      mint_sibling "$BASE_PROFILE"
+    fi
+  fi
 fi
 
 if [ "$DRY" -eq 1 ]; then
@@ -351,10 +385,6 @@ if [ "$DRY" -eq 1 ]; then
 fi
 
 if [ "$HERE" -eq 1 ]; then
-  [ "$ATTACH_ONLY" -eq 0 ] || die "--here cannot be combined with --attach"
-  if [ "$LOCK_HELD" -eq 1 ]; then
-    mint_sibling "$ALIAS"
-  fi
   cd "$WORKDIR"
   build_launch "$PROFILE" "$SURFACE"
   exec "${LAUNCH[@]}"
@@ -384,6 +414,7 @@ fi
 build_launch "$PROFILE" "$SURFACE"
 if ! tmux_exists "$SESSION"; then
   tmux new-session -d -s "$SESSION" -n "$WINDOW" -c "$WORKDIR" "${LAUNCH[@]}"
+  wait_child_claim
   log "started $PROFILE in tmux $TARGET ($SURFACE)"
   attach_or_switch "$TARGET"
   exit $?
@@ -393,21 +424,24 @@ if window_exists "$SESSION" "$WINDOW"; then
   cmd="$(pane_cmd "$TARGET")"
   if is_shell_cmd "$cmd"; then
     tmux respawn-pane -k -t "$TARGET" -c "$WORKDIR" "${LAUNCH[@]}"
+    wait_child_claim
     log "respawned idle $TARGET as $PROFILE ($SURFACE)"
     attach_or_switch "$TARGET"
     exit $?
   fi
   # Window busy with a live TUI but no lock (stale lock): never attach or
   # kill it. Mint a sibling seat and spawn a NEW TUI session there.
-  mint_sibling "$ALIAS"
+  mint_sibling "$BASE_PROFILE"
   build_launch "$PROFILE" "$SURFACE"
   tmux new-session -d -s "$SESSION" -n "$WINDOW" -c "$WORKDIR" "${LAUNCH[@]}"
+  wait_child_claim
   log "started $PROFILE in tmux $TARGET ($SURFACE)"
   attach_or_switch "$TARGET"
   exit $?
 fi
 
 tmux new-window -t "$SESSION" -n "$WINDOW" -c "$WORKDIR" "${LAUNCH[@]}"
+wait_child_claim
 log "started $PROFILE in tmux $TARGET ($SURFACE)"
 attach_or_switch "$TARGET"
 exit $?

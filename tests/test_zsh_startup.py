@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import pty
 import select
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -112,9 +114,13 @@ fi
         required = {"compaudit", "compinit", "colors", "promptinit", "add-zsh-hook"}
         sources = []
         for prefix in prefixes:
+            if prefix.is_symlink() or any(parent.is_symlink() for parent in prefix.parents):
+                continue
             candidates = [prefix / "functions", *sorted(prefix.glob("[0-9]*/functions"))]
             for candidate in candidates:
-                if not candidate.is_dir():
+                # Check before resolve(): resolving hides a stock-root symlink.
+                if (candidate.is_symlink() or candidate.parent.is_symlink()
+                        or not candidate.is_dir()):
                     continue
                 root = candidate.resolve()
                 if "site-functions" in root.parts:
@@ -217,10 +223,10 @@ printf '%s\\n' 'export TEST_COMPLETIONS=loaded'
             *map(str, self.function_dirs),
         ])
 
-    def test_real_compaudit_rejects_group_writable_fixture_directory(self) -> None:
+    def test_real_compaudit_rejects_world_writable_fixture_directory(self) -> None:
         insecure = self.completion_root / "insecure"
         insecure.mkdir(mode=0o700)
-        insecure.chmod(0o770)
+        insecure.chmod(0o777)
         self.env["TEST_INSECURE_COMPLETIONS"] = str(insecure)
         result = self.shell(
             'fpath=("$TEST_INSECURE_COMPLETIONS" $fpath); '
@@ -403,35 +409,58 @@ printf '%s\\n' '## topic...origin/topic'
             os.chdir(self.home)
             os.execve(ZSH, [ZSH, "-di"], env)
         frame = bytearray()
+        read_open = True
+        exited = False
+
+        def drain() -> None:
+            nonlocal read_open
+            if not read_open:
+                time.sleep(0.025)
+                return
+            readable, _, _ = select.select([fd], [], [], 0.1)
+            if readable:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    chunk = b""
+                if chunk:
+                    frame.extend(chunk)
+                else:
+                    read_open = False
+
         try:
             deadline = time.monotonic() + 8
             while b"pty-topic" not in frame and time.monotonic() < deadline:
-                readable, _, _ = select.select([fd], [], [], 0.1)
-                if readable:
-                    try:
-                        chunk = os.read(fd, 65536)
-                    except OSError:
-                        break
-                    if not chunk:
-                        break
-                    frame.extend(chunk)
+                drain()
+                if not read_open:
+                    break
+            # No Enter has been sent: the async branch must already be visible.
             self.assertIn(b"pty-topic", frame, frame.decode(errors="replace"))
         finally:
-            os.write(fd, b"exit\r")
-            # Drain the PTY while waiting: ZLE may be blocked on terminal output.
-            deadline = time.monotonic() + 10
-            exited = False
-            while time.monotonic() < deadline:
-                if os.waitpid(pid, os.WNOHANG)[0]:
-                    exited = True
-                    break
-                readable, _, _ = select.select([fd], [], [], 0.1)
-                if readable:
-                    try:
-                        frame.extend(os.read(fd, 65536))
-                    except OSError:
+            try:
+                try:
+                    os.write(fd, b"exit\r")
+                except OSError as error:
+                    if error.errno not in (errno.EIO, errno.EPIPE):
+                        raise
+                # EOF/EIO closes reading, not waiting. Keep polling/reaping even
+                # after Linux reports EIO while the child finishes exiting.
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if os.waitpid(pid, os.WNOHANG)[0]:
+                        exited = True
                         break
-            os.close(fd)
+                    drain()
+            finally:
+                os.close(fd)
+                if not exited:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    os.waitpid(pid, 0)
             self.assertTrue(exited, frame.decode(errors="replace"))
 
     def test_binary_upgrade_refreshes_cache(self) -> None:
