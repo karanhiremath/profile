@@ -1,0 +1,23 @@
+{
+  "skill_name": "eikon-build",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Build an Ares variant with a quieter idle animation and a distinct working pose. Keep my active Ares untouched and give me an editable local draft.",
+      "expected_output": "Brief/source inspection, new draft name, six-state media layout, existing packer or Studio, lint and animated preview evidence, no activation or publish.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Turn my PNG into a 48x24 monochrome eikon. chafa is missing on this machine. Don't install anything yet.",
+      "expected_output": "Identify missing rasterizer prerequisite, report blocked packing without installing dependencies, prepare approved media/draft plan only.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Prepare an animated eikon package from my six state loops. I might publish it later, but don't submit or activate it yet.",
+      "expected_output": "Pack and validate runtime and launch manifest, preserve source mappings and relative paths, preview all states in isolation, no registry-wide mutation or external publishing.",
+      "files": []
+    }
+  ]
+}

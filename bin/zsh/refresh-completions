@@ -1,0 +1,42 @@
+#!/usr/bin/env zsh
+# Generate omp completion definitions outside the interactive startup path.
+set -euo pipefail
+
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    print -r -- 'Usage: refresh-completions <cache-dir> <omp-binary>'
+    print -r -- 'Refresh stale completions atomically; retain the old cache on failure.'
+    exit 0
+fi
+if (( $# != 2 )); then
+    print -ru2 -- 'Usage: refresh-completions <cache-dir> <omp-binary>'
+    exit 2
+fi
+cache_dir="$1"
+omp_binary="$2"
+[[ -x "$omp_binary" ]] || exit 1
+umask 077
+mkdir -p "$cache_dir"
+zmodload zsh/system
+# The OS releases this lock even on crash. Do not remove the lock file: a
+# replacement inode would let concurrent workers lock different files.
+: >> "$cache_dir/.refresh.lock"
+zsystem flock -t 0 -f lock_fd "$cache_dir/.refresh.lock" || exit 0
+
+cache="$cache_dir/omp.zsh"
+zmodload zsh/datetime
+zmodload zsh/stat
+typeset -A cache_stat
+if zstat -H cache_stat "$cache" 2>/dev/null &&
+        (( EPOCHSECONDS - cache_stat[mtime] <= 86400 )) &&
+        [[ ! "$omp_binary" -nt "$cache" && ! "$0" -nt "$cache" ]]; then
+    print -r -- '{"refreshed":false}'
+    exit 0
+fi
+
+tmp="$(mktemp "$cache_dir/.omp.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+"$omp_binary" completions zsh > "$tmp"
+[[ -s "$tmp" ]]
+zsh -dfn "$tmp"
+mv -f "$tmp" "$cache"
+print -r -- '{"refreshed":true}'
