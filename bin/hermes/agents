@@ -169,7 +169,7 @@ derive_runtime() {
   fi
   # Theme mutation must target the claimed seat, not an inherited busy home.
   if [ -x "$SCRIPT_DIR/apply-nighttide-theme" ]; then
-    HERMES_HOME="$runtime_home" HERMES_PROFILE="$profile" "$SCRIPT_DIR/apply-nighttide-theme" --quiet || true
+    HERMES_HOME="$runtime_home" HERMES_PROFILE="$profile" "$SCRIPT_DIR/apply-nighttide-theme" --quiet --home "$home" --home "$runtime_home" || true
   fi
   alias_name="$(alias_for_profile "$profile")"
   if [ -n "$alias_name" ]; then

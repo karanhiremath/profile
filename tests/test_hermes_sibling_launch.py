@@ -72,15 +72,44 @@ else:
     else:
         raise SystemExit("unexpected backend command: " + cmd)
 ''')
+        self._executable("apply-nighttide-theme", '''
+import argparse, json, os, sys
+from pathlib import Path
+# Record actual argv, not the launcher's env-only targeting assumption.
+with Path(os.environ["TEST_THEME_LOG"]).open("a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+parser = argparse.ArgumentParser()
+parser.add_argument("--quiet", action="store_true")
+parser.add_argument("--home", action="append", required=True)
+args = parser.parse_args()
+root = Path(os.environ["HOME"]).resolve()
+data = Path(os.environ["HERMES_AGENTS_DATA_HOME"]).resolve()
+homes = list(dict.fromkeys(Path(raw).resolve() for raw in args.home))
+for home in homes:
+    assert root in home.parents, "theme target outside temporary fixture"
+    profile = home.relative_to(data).parts[0]
+    claim = json.loads((data / ".seat-claims" / (profile + ".json")).read_text())
+    assert claim["phase"] == "reserved"
+    os.kill(claim["pid"], 0)
+if os.environ.get("TEST_THEME_FAIL"):
+    raise SystemExit(8)
+for home in homes:
+    themes = home / "herm" / "themes"
+    themes.mkdir(parents=True, exist_ok=True)
+    (home / "herm" / "tui.json").write_text('{"theme": "fixture-nighttide"}\\n')
+    (themes / "fixture-nighttide.json").write_text("fixture theme\\n")
+''')
+        (self.bin / "apply-nighttide-theme").rename(self.scripts / "apply-nighttide-theme")
         self._executable("herm", '''
 import json, os, sys, time
 from pathlib import Path
 home = Path(os.environ["HERMES_HOME"])
 data = Path(os.environ["HERMES_AGENTS_DATA_HOME"])
-claim = json.loads((data / ".seat-claims" / (home.name + ".json")).read_text())
+seat = home.parent.parent if home.parent.name == "profiles" else home
+claim = json.loads((data / ".seat-claims" / (seat.name + ".json")).read_text())
 record = {"home": str(home), "args": sys.argv[1:], "claim": claim,
           "lock_pid": int((home / ".herm-tui.lock").read_text()), "tui_pid": os.getpid()}
-for target in (Path(os.environ["TEST_LAUNCH"]), home.parent / ("launch-" + home.name + ".json")):
+for target in (Path(os.environ["TEST_LAUNCH"]), data / ("launch-" + seat.name + ".json")):
     temporary = target.with_name(target.name + "." + str(os.getpid()))
     temporary.write_text(json.dumps(record))
     os.replace(temporary, target)
@@ -151,6 +180,7 @@ raise SystemExit(1)
             "TEST_TRANSFER": str(self.root / "transfer.json"),
             "TEST_REQUIRE_CLAIM": "1",
             "TEST_HERM": str(self.bin / "herm"),
+            "TEST_THEME_LOG": str(self.root / "theme.jsonl"),
         }
         self._profile("chief-of-staff-work")
         self._profile("chief-of-staff")
@@ -193,6 +223,70 @@ raise SystemExit(1)
                 self._hold(base)
                 self._assert_launch(self._run("agents", "up", base, "--here"), base + "-a1")
                 self.assertEqual((self.data / base / ".herm-tui.lock").read_text(), str(os.getpid()))
+
+    def test_theme_targets_only_claimed_root_and_runtime(self) -> None:
+        base = "chief-of-staff-work"
+        name = base + "-a1"
+        self._hold(base)
+        self._hold("chief-of-staff")
+        protected = []
+        for home in (self.data / base, self.data / "chief-of-staff", self.root / ".hermes"):
+            themes = home / "herm" / "themes"
+            themes.mkdir(parents=True)
+            for path in (home / "herm" / "tui.json", themes / "fixture-nighttide.json"):
+                path.write_bytes(b"untouched theme sentinel\n")
+                protected.append(path)
+        protected.extend(self.data / profile / filename
+                         for profile in (base, "chief-of-staff")
+                         for filename in ("config.yaml", ".herm-tui.lock"))
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in protected}
+        # An inherited busy home must not influence the helper's selection.
+        self.env["HERMES_HOME"] = str(self.data / base)
+        self.env["HERMES_PROFILE"] = base
+        home = self.data / name
+        home.mkdir()
+        log = self.root / "theme.jsonl"
+        for nested in (False, True):
+            runtime = home / "profiles" / "custom-runtime" if nested else home
+            runtime.mkdir(parents=True, exist_ok=True)
+            (home / "active_profile").write_text("custom-runtime\n" if nested else "default\n")
+            for script, args in (("agents", ("up", base, "--here")),
+                                 ("herm-tui-m", ("cosw", "--tui", "--here"))):
+                with self.subTest(nested=nested, script=script):
+                    log.unlink(missing_ok=True)
+                    for target in {home, runtime}:
+                        for path in (target / "herm" / "tui.json",
+                                     target / "herm" / "themes" / "fixture-nighttide.json"):
+                            path.unlink(missing_ok=True)
+                    result = self._run(script, *args)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    launched = json.loads((self.root / "launch.json").read_text())
+                    self.assertEqual(launched["home"], str(runtime))
+                    self.assertEqual(launched["claim"]["pid"], launched["tui_pid"])
+                    self.assertEqual(launched["lock_pid"], launched["tui_pid"])
+                    self.assertEqual([json.loads(line) for line in log.read_text().splitlines()],
+                                     [["--quiet", "--home", str(home), "--home", str(runtime)]])
+                    for target in {home, runtime}:
+                        self.assertEqual((target / "herm" / "tui.json").read_text(),
+                                         '{"theme": "fixture-nighttide"}\n')
+                        self.assertEqual((target / "herm" / "themes" / "fixture-nighttide.json").read_text(),
+                                         "fixture theme\n")
+                    self.assertEqual(before, {
+                        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in protected
+                    })
+                    self._assert_released(name)
+                    self.assertFalse((runtime / ".herm-tui.lock").exists())
+
+    def test_theme_helper_failure_is_nonfatal(self) -> None:
+        base = "chief-of-staff-work"
+        self._hold(base)
+        self.env["TEST_THEME_FAIL"] = "1"
+        self._assert_launch(self._run("agents", "up", base, "--here"), base + "-a1")
+        home = self.data / (base + "-a1")
+        self.assertEqual(json.loads((self.root / "theme.jsonl").read_text()),
+                         ["--quiet", "--home", str(home), "--home", str(home)])
+        self.assertFalse((home / "herm").exists())
+        self._assert_released(base + "-a1")
 
     def test_existing_sibling_profile_is_not_overwritten(self) -> None:
         self._hold("chief-of-staff-work")
@@ -249,12 +343,21 @@ raise SystemExit(1)
 
     def test_mobile_dry_run_does_not_create_profile_or_home(self) -> None:
         self._hold("chief-of-staff-work")
+        held = self.data / "chief-of-staff-work"
+        theme = held / "herm" / "tui.json"
+        theme.parent.mkdir()
+        theme.write_text("untouched dry-run theme\n")
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                  for path in (held / "config.yaml", held / ".herm-tui.lock", theme)}
         result = self._run("herm-tui-m", "cosw", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("profile=chief-of-staff-work-a1", result.stdout)
         self.assertFalse((self.profiles / "chief-of-staff-work-a1.yaml").exists())
         self.assertFalse((self.data / "chief-of-staff-work-a1").exists())
         self.assertFalse((self.data / ".seat-claims").exists())
+        self.assertFalse((self.root / "theme.jsonl").exists())
+        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns)
+                                  for path in before})
 
     def test_clone_failure_stops_before_launch(self) -> None:
         self._hold("chief-of-staff-work")
