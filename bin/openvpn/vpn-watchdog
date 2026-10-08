@@ -1,0 +1,184 @@
+#!/bin/bash
+#
+# vpn-watchdog — detect a hung full-tunnel OpenVPN and restore internet.
+#
+# Failure mode this guards against:
+#   OpenVPN with `redirect-gateway` installs split-default routes
+#   (0.0.0.0/1 + 128.0.0.0/1) pointing at its utun. If the tunnel transport
+#   dies while the interface stays UP, every internet-bound packet is
+#   black-holed into the dead utun (sendto: "No buffer space available").
+#   The box still answers on Tailscale/LAN, so it *looks* online but has no
+#   real internet.
+#
+# Detection (no false positives against a healthy VPN):
+#   - unbound ping to a public IP  -> follows the active default (VPN if hijacked)
+#   - ping bound to the physical NIC -> forced out the real uplink, bypasses VPN
+#   unbound FAIL + bound OK  => VPN is black-holing      -> restart OpenVPN
+#   unbound OK               => healthy (VPN or direct)  -> do nothing
+#   unbound FAIL + bound FAIL => real link/ISP outage    -> do nothing (no thrash)
+#
+# Action: graceful SIGTERM to openvpn so its --down script removes the routes,
+#   then (optionally) run OPENVPN_RECONNECT_CMD to bring the tunnel back.
+#
+# Designed to run every ~60s under launchd (macOS) or cron/systemd (Linux).
+
+set -euo pipefail
+
+# ----------------------------------------------------------------------------
+# Config (override via environment / launchd EnvironmentVariables)
+# ----------------------------------------------------------------------------
+PING_TARGET="${VPN_WATCHDOG_TARGET:-8.8.8.8}"      # public IP to probe (no DNS)
+FAIL_THRESHOLD="${VPN_WATCHDOG_FAIL_THRESHOLD:-2}" # consecutive bad checks before acting
+COOLDOWN_SECS="${VPN_WATCHDOG_COOLDOWN:-300}"      # min seconds between restarts
+STATE_DIR="${VPN_WATCHDOG_STATE_DIR:-/var/run/vpn-watchdog}"
+RECONNECT_CMD="${OPENVPN_RECONNECT_CMD:-}"         # optional: how to bring VPN back
+
+FAIL_FILE="${STATE_DIR}/consecutive_fails"
+LAST_RESTART_FILE="${STATE_DIR}/last_restart"
+
+OS="$(uname -s)"
+
+# ----------------------------------------------------------------------------
+usage() {
+    cat <<'EOF'
+vpn-watchdog — restore internet when a full-tunnel OpenVPN hangs.
+
+USAGE
+    vpn-watchdog [--once] [--check] [--help]
+
+OPTIONS
+    --check    Report health and the action that *would* be taken; change nothing.
+    --once     Run a single check/act cycle (default; the daemon calls this).
+    --help     Show this help.
+
+ENVIRONMENT
+    VPN_WATCHDOG_TARGET          Public IP to probe              (default 8.8.8.8)
+    VPN_WATCHDOG_FAIL_THRESHOLD  Bad checks before acting        (default 2)
+    VPN_WATCHDOG_COOLDOWN        Min seconds between restarts     (default 300)
+    VPN_WATCHDOG_STATE_DIR       State dir            (default /var/run/vpn-watchdog)
+    OPENVPN_RECONNECT_CMD        Command to re-establish the VPN after a restart
+                                 (optional; if unset, watchdog only restores the
+                                  underlay default route by stopping OpenVPN)
+
+EXIT CODES
+    0 healthy / acted   1 degraded, could not act   2 usage error
+EOF
+}
+
+log() { printf '%s vpn-watchdog: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
+
+# Genuine physical default route (gateway + iface), skipping any utun. Empty if none.
+phys_default() {
+    case "$OS" in
+        Darwin|Linux)
+            netstat -rn -f inet 2>/dev/null \
+                | awk '$1=="default" && $NF !~ /utun|tun|tap|wg/ {print $2, $NF; exit}'
+            ;;
+    esac
+}
+
+# Single ping to TARGET. arg1 = interface to bind to, or "" for the active default.
+ping_once() {
+    local iface="$1" rc=0
+    case "$OS" in
+        Darwin)
+            if [[ -n "$iface" ]]; then
+                ping -c1 -t3 -b "$iface" "$PING_TARGET" >/dev/null 2>&1 || rc=$?
+            else
+                ping -c1 -t3 "$PING_TARGET" >/dev/null 2>&1 || rc=$?
+            fi
+            ;;
+        Linux)
+            if [[ -n "$iface" ]]; then
+                ping -c1 -W3 -I "$iface" "$PING_TARGET" >/dev/null 2>&1 || rc=$?
+            else
+                ping -c1 -W3 "$PING_TARGET" >/dev/null 2>&1 || rc=$?
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+    return $rc
+}
+
+read_int()  { [[ -f "$1" ]] && tr -cd '0-9' <"$1" 2>/dev/null || true; }
+now()       { date +%s; }
+
+restart_openvpn() {
+    if ! pgrep -x openvpn >/dev/null 2>&1; then
+        log "no openvpn process found to restart (already down?)"
+    else
+        log "sending SIGTERM to openvpn (graceful, runs --down route cleanup)"
+        pkill -TERM -x openvpn || true
+        # Give the down-script a moment to tear down the hijack routes.
+        for _ in 1 2 3 4 5; do
+            pgrep -x openvpn >/dev/null 2>&1 || break
+            sleep 1
+        done
+    fi
+    if [[ -n "$RECONNECT_CMD" ]]; then
+        log "reconnecting via OPENVPN_RECONNECT_CMD"
+        bash -c "$RECONNECT_CMD" || log "reconnect command exited non-zero"
+    fi
+}
+
+# ----------------------------------------------------------------------------
+MODE="once"
+case "${1:-}" in
+    --help|-h) usage; exit 0 ;;
+    --check)   MODE="check" ;;
+    --once|"") MODE="once" ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+mkdir -p "$STATE_DIR"
+
+read -r PHYS_GW PHYS_IF <<<"$(phys_default)"
+if [[ -z "${PHYS_IF:-}" ]]; then
+    log "no physical default route found; nothing to protect — exiting"
+    exit 0
+fi
+
+if ping_once ""; then
+    # Active default reaches the internet — VPN healthy or running direct.
+    [[ -f "$FAIL_FILE" ]] && rm -f "$FAIL_FILE"
+    [[ "$MODE" == "check" ]] && log "OK: internet reachable via active default (iface info: phys=$PHYS_IF)"
+    exit 0
+fi
+
+# Active default is broken. Is the underlay (physical NIC) itself fine?
+if ! ping_once "$PHYS_IF"; then
+    log "DEGRADED: no internet via active default AND none via $PHYS_IF — real link/ISP outage, not VPN; not acting"
+    exit 1
+fi
+
+# Underlay works, active default does not => VPN is black-holing traffic.
+fails="$(read_int "$FAIL_FILE")"; fails="${fails:-0}"
+fails=$((fails + 1))
+printf '%s' "$fails" >"$FAIL_FILE"
+log "HIJACK DETECTED: internet OK via $PHYS_IF but not via active default (consecutive=$fails/$FAIL_THRESHOLD)"
+
+if [[ "$MODE" == "check" ]]; then
+    log "would restart OpenVPN once consecutive >= $FAIL_THRESHOLD and cooldown elapsed"
+    exit 1
+fi
+
+if (( fails < FAIL_THRESHOLD )); then
+    exit 1
+fi
+
+last="$(read_int "$LAST_RESTART_FILE")"; last="${last:-0}"
+if (( $(now) - last < COOLDOWN_SECS )); then
+    log "in cooldown ($((COOLDOWN_SECS - ($(now) - last)))s left) — not restarting"
+    exit 1
+fi
+
+restart_openvpn
+printf '%s' "$(now)" >"$LAST_RESTART_FILE"
+rm -f "$FAIL_FILE"
+
+if ping_once ""; then
+    log "RECOVERED: internet reachable via active default after OpenVPN restart"
+    exit 0
+fi
+log "post-restart: active default still down (VPN may be reconnecting); underlay via $PHYS_IF is up"
+exit 0
