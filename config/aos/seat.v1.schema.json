@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aos:seat.v1",
+  "title": "aos-seat.v1",
+  "description": "AOS seat manifest. Describes one agent seat: identity, plane routing, behavior tags, capability grants, tier ladder, prompt buffers, bus interfaces, surfaces, hosts, and toolsets. Seat fields may be embedded in a larger harness profile document; unknown top-level keys are therefore allowed (harness-owned fields), while tier entries are closed except for x_-prefixed extensions. The tiers array is an ordered ladder; launcher flags may select a rung, never redefine it.",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": {
+      "description": "Stable seat name (matches the harness profile name).",
+      "type": "string",
+      "minLength": 1
+    },
+    "node_type": {
+      "description": "Role of this node in the delegation graph.",
+      "type": "string",
+      "enum": ["seat", "worker"]
+    },
+    "behavior": {
+      "description": "Behavior tags carried by the seat manifest (e.g. orchestrate).",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "plane": {
+      "description": "Routing plane: personal or work.",
+      "type": "string",
+      "enum": ["personal", "work"]
+    },
+    "lane": {
+      "description": "Lane label within the plane (free-form, e.g. a project lane).",
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilities": {
+      "description": "Granted capabilities (e.g. read, job.enqueue, buffer.apply, review, escalate, graph.own).",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "tiers": {
+      "description": "Ordered model ladder. Each entry is one rung; order in the array is the ladder order.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["rung", "provider", "model"],
+        "additionalProperties": false,
+        "properties": {
+          "rung": {
+            "description": "Ladder rung: primary, fallback, or candidate.",
+            "type": "string",
+            "enum": ["primary", "fallback", "candidate"]
+          },
+          "provider": {
+            "description": "Provider/harness slug for this rung.",
+            "type": "string",
+            "minLength": 1
+          },
+          "model": {
+            "description": "Model slug for this rung.",
+            "type": "string",
+            "minLength": 1
+          },
+          "effort": {
+            "description": "Reasoning effort for this rung; null means harness default.",
+            "enum": ["low", "medium", "high", "xhigh", null]
+          }
+        },
+        "patternProperties": {
+          "^x_": { "description": "Reserved for extensions (e.g. x_harness)." }
+        }
+      }
+    },
+    "buffers": {
+      "description": "Prefill prompt buffers applied to this seat's prompts.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "interfaces": {
+      "description": "Bus interfaces used by the seat.",
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": { "description": "Reserved for extensions." }
+      },
+      "properties": {
+        "job": { "description": "Job bus interface/queue reference." },
+        "message": { "description": "Message bus interface reference." },
+        "socket": { "description": "Socket/control interface reference." }
+      }
+    },
+    "surfaces": {
+      "description": "Surfaces this seat is reachable on (e.g. tui, cli).",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "hosts": {
+      "description": "Hosts this seat may run on (tmux-connect registry names).",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "toolsets": {
+      "description": "Granted toolsets (e.g. terminal, file, file_read, web, todo, memory).",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}
