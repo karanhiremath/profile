@@ -81,8 +81,91 @@ need_root() {
   fi
 }
 
+validate_id() {
+  # IDs are single ASCII path components, never decoded or repaired.
+  case "${1:-}" in
+    ''|*[!A-Za-z0-9_-]*) die "invalid video id" ;;
+  esac
+}
+
+resolved_path() {
+  # Resolve an existing ancestor physically, including when the leaf is new.
+  # Do not collapse '..' before following configured directory symlinks.
+  local candidate="$1" suffix="" parent
+  [[ "$candidate" == /* ]] || candidate="${PWD}/${candidate}"
+  while [[ ! -e "$candidate" && ! -L "$candidate" && "$candidate" != / ]]; do
+    suffix="/${candidate:t}${suffix}"
+    candidate="${candidate:h}"
+  done
+  [[ ! -L "$candidate" || -e "$candidate" ]] || die "dangling symlink: $1"
+  if [[ -d "$candidate" ]]; then
+    candidate="$(builtin cd -P -- "$candidate" || exit 1; builtin pwd -P)" ||
+      die "cannot resolve directory: $1"
+  else
+    parent="$(builtin cd -P -- "${candidate:h}" || exit 1; builtin pwd -P)" ||
+      die "cannot resolve parent: $1"
+    candidate="${parent}/${candidate:t}"
+    candidate="${candidate:A}"
+  fi
+  if [[ "$candidate" == / ]]; then
+    print -r -- "/${suffix#/}"
+  else
+    print -r -- "${candidate}${suffix}"
+  fi
+}
+
+check_path() {
+  local root candidate
+  root="$(resolved_path "$1")"
+  candidate="$(resolved_path "$2")"
+  [[ "$root" == / || "$candidate" == "$root" || "$candidate" == "$root/"* ]] ||
+    die "path escapes configured root: $2"
+}
+
+check_tree() {
+  local root="$1" entry="$2" child
+  check_path "$root" "$entry"
+  # Refuse links even within the root: recursive copies must not follow links
+  # or reproduce links which would escape when placed in the other root.
+  [[ ! -L "$entry" ]] || die "symlink in item contents: ${entry}"
+  if [[ -d "$entry" ]]; then
+    for child in "$entry"/*(DN); do
+      check_tree "$root" "$child"
+    done
+  fi
+}
+
+check_items() {
+  local entry
+  check_path "$ROOT" "${ROOT}/items"
+  for entry in "${ROOT}/items"/*(DN); do
+    validate_id "${entry:t}"
+    check_tree "$ROOT" "$entry"
+  done
+}
+
+archive_id() {
+  local line="$1" provider="${1%% *}" id="${1#* }"
+  [[ "$line" == *' '* ]] || die "invalid archive line"
+  validate_id "$provider"
+  validate_id "$id"
+  print -r -- "$id"
+}
+
+validate_archive() {
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || die "empty archive line"
+    archive_id "$line" >/dev/null
+  done < "${ROOT}/archive.txt"
+}
+
 ensure_layout() {
   need_root
+  local name
+  for name in items archive.txt index.tsv tags.tsv; do
+    check_path "$ROOT" "${ROOT}/${name}"
+  done
   mkdir -p "${ROOT}/items"
   [[ -f "${ROOT}/archive.txt" ]] || : > "${ROOT}/archive.txt"
   if [[ ! -f "${ROOT}/index.tsv" ]] || [[ ! -s "${ROOT}/index.tsv" ]]; then
@@ -92,45 +175,54 @@ ensure_layout() {
 }
 
 extract_id() {
-  local raw="$1"
-  local id=""
+  local raw="$1" id="" rest host query part
+  [[ "$raw" != *[[:cntrl:]]* ]] || die "control character in video input"
   case "$raw" in
-    *youtube.com/watch*)
-      id="${raw#*v=}"
-      id="${id%%&*}"
-      id="${id%%\?*}"
+    http://*|https://*)
+      rest="${raw#*://}"
+      host="${rest%%/*}"
+      rest="${rest#*/}"
+      case "$host" in
+        youtube.com|www.youtube.com|m.youtube.com|music.youtube.com)
+          case "$rest" in
+            watch\?*)
+              query="${rest#*\?}"
+              query="${query%%\#*}"
+              for part in "${(@s:&:)query}"; do
+                if [[ "$part" == v=* ]]; then
+                  [[ -z "$id" ]] || die "duplicate video id"
+                  id="${part#v=}"
+                  validate_id "$id"
+                fi
+              done
+              ;;
+            shorts/*|embed/*)
+              id="${rest#*/}"
+              id="${id%%\?*}"
+              id="${id%%\#*}"
+              ;;
+            *) die "unsupported YouTube URL" ;;
+          esac
+          ;;
+        youtu.be|www.youtu.be)
+          id="${rest%%\?*}"
+          id="${id%%\#*}"
+          ;;
+        *) die "unsupported YouTube host" ;;
+      esac
       ;;
-    *youtu.be/*)
-      id="${raw##*youtu.be/}"
-      id="${id%%\?*}"
-      id="${id%%&*}"
-      id="${id%%/*}"
-      ;;
-    *youtube.com/shorts/*)
-      id="${raw##*shorts/}"
-      id="${id%%\?*}"
-      id="${id%%&*}"
-      id="${id%%/*}"
-      ;;
-    *youtube.com/embed/*)
-      id="${raw##*embed/}"
-      id="${id%%\?*}"
-      id="${id%%&*}"
-      id="${id%%/*}"
-      ;;
-    *)
-      id="$raw"
-      ;;
+    *) id="$raw" ;;
   esac
-  id="${id//$'\n'/}"
-  id="${id//$'\r'/}"
-  [[ -n $id ]] || die "could not extract a video id from: ${raw}"
+  validate_id "$id"
   print -r -- "$id"
 }
 
 info_json_for() {
   local id="$1"
+  validate_id "$id"
   local exact="${ROOT}/items/${id}/${id}.info.json"
+  check_tree "$ROOT" "${ROOT}/items/${id}"
+  check_path "$ROOT" "$exact"
   if [[ -f "$exact" ]]; then
     print -r -- "$exact"
     return 0
@@ -147,7 +239,7 @@ info_json_for() {
 tsv_row_from_info() {
   local info="$1" synced_at="$2" fallback_id="$3"
   if ! command -v python3 >/dev/null 2>&1; then
-    print -r -- "${synced_at}	${fallback_id}				"
+    print -r -- "${synced_at}"$'\t'"${fallback_id}"$'\t\t\t\t'
     return 0
   fi
   python3 -c '
@@ -174,7 +266,7 @@ url = clean(
     or (f"https://www.youtube.com/watch?v={vid}" if vid else "")
 )
 duration = data.get("duration")
-dur_s = "" if duration is None else str(duration)
+dur_s = clean(duration)
 sys.stdout.write("\t".join([ts, vid, title, channel, url, dur_s]) + "\n")
 ' "$info" "$synced_at" "$fallback_id"
 }
@@ -190,18 +282,14 @@ new_archive_lines() {
 
 index_new_ids() {
   local before="$1"
-  local synced_at id line vid info
+  local synced_at id line info
   synced_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  while IFS= read -r line; do
-    [[ -n $line ]] || continue
-    vid="${line#* }"
-    vid="${vid%% *}"
-    id="$vid"
-    [[ -n $id ]] || continue
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    id="$(archive_id "$line")"
     if info="$(info_json_for "$id")"; then
       tsv_row_from_info "$info" "$synced_at" "$id" >> "${ROOT}/index.tsv"
     else
-      print -r -- "${synced_at}	${id}			https://www.youtube.com/watch?v=${id}	" >> "${ROOT}/index.tsv"
+      print -r -- "${synced_at}"$'\t'"${id}"$'\t\t\t'"https://www.youtube.com/watch?v=${id}"$'\t' >> "${ROOT}/index.tsv"
     fi
   done < <(new_archive_lines "$before")
 }
@@ -228,6 +316,8 @@ cmd_sync() {
 
   need_ytdlp
   ensure_layout
+  validate_archive
+  check_items
 
   local before
   before="$(mktemp "${TMPDIR:-/tmp}/yt-history-archive.XXXXXX")"
@@ -238,6 +328,7 @@ cmd_sync() {
     --cookies-from-browser chrome
     --download-archive "${ROOT}/archive.txt"
     --force-write-archive
+    --match-filter 'id ~= "^[A-Za-z0-9_-]+\Z"'
     --break-on-existing
     --write-info-json
     --write-auto-subs
@@ -256,6 +347,8 @@ cmd_sync() {
 
   local rc=0
   yt-dlp "${ytdlp_args[@]}" -- :ythistory || rc=$?
+  validate_archive
+  check_items
   index_new_ids "$before"
   rm -f "$before"
   # yt-dlp uses 101 when a download cap / break condition is hit.
@@ -288,34 +381,33 @@ cmd_get() {
   done
   [[ -n $target ]] || die "get: id or url required"
 
-  need_ytdlp
-  ensure_layout
-
   local id url
   id="$(extract_id "$target")"
+  need_ytdlp
+  ensure_layout
+  check_tree "$ROOT" "${ROOT}/items/${id}"
   mkdir -p "${ROOT}/items/${id}"
-  if [[ $target == http* ]]; then
-    url="$target"
-  else
-    url="https://www.youtube.com/watch?v=${id}"
-  fi
+  url="https://www.youtube.com/watch?v=${id}"
 
   yt-dlp \
     --cookies-from-browser chrome \
     -f "bv*[height<=${height}]+ba/b[height<=${height}]/b" \
     --merge-output-format mp4 \
     --remux-video mp4 \
-    -o "${ROOT}/items/${id}/%(id)s.%(ext)s" \
+    -o "${ROOT}/items/${id}/${id}.%(ext)s" \
     -- "$url"
 }
 
 cmd_tag() {
   (( $# == 2 )) || die "usage: yt-history tag <id> <label>"
-  local id="$1" label="$2"
+  local id label="$2"
+  id="$(extract_id "$1")"
+  [[ -n "$label" && "$label" != *[[:cntrl:]]* ]] || die "invalid tag label"
   ensure_layout
+  check_tree "$ROOT" "${ROOT}/items/${id}"
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  print -r -- "${id}	${label}	${ts}" >> "${ROOT}/tags.tsv"
+  print -r -- "${id}"$'\t'"${label}"$'\t'"${ts}" >> "${ROOT}/tags.tsv"
 }
 
 cmd_promote() {
@@ -325,28 +417,44 @@ cmd_promote() {
     exit 3
   fi
 
+  local id
+  id="$(extract_id "$1")"
   need_root
-  local id="$1"
-  local src="${ROOT}/items/${id}"
+  local src="${ROOT}/items/${id}" dest="${KROP_ROOT}/items/${id}"
+  check_path "$ROOT" "${ROOT}/items"
+  check_tree "$ROOT" "$src"
   [[ -d "$src" ]] || die "no such item: ${id} (${src})"
-  if [[ ! -d "$DEFAULT_KROP_MOUNT" ]]; then
-    die "krop.ai Google Drive mount missing: ${DEFAULT_KROP_MOUNT}"
+  if [[ -z ${YT_HISTORY_KROP_ROOT:-} ]]; then
+    [[ -d "$DEFAULT_KROP_MOUNT" ]] ||
+      die "krop.ai Google Drive mount missing: ${DEFAULT_KROP_MOUNT}"
+    [[ -d "${DEFAULT_KROP_MOUNT}/My Drive" ]] ||
+      die "krop.ai Google Drive 'My Drive' missing"
+  elif [[ ! -d "$KROP_ROOT" && ! -d "${KROP_ROOT:h}" ]]; then
+    die "YT_HISTORY_KROP_ROOT parent missing: ${KROP_ROOT:h}"
   fi
-  mkdir -p "${KROP_ROOT}/items"
-  cp -R "$src" "${KROP_ROOT}/items/${id}"
-  print -r -- "promoted ${id} -> ${KROP_ROOT}/items/${id}"
+  check_path "$KROP_ROOT" "${KROP_ROOT}/items"
+  check_tree "$KROP_ROOT" "$dest"
+  [[ ! -e "$dest" || -d "$dest" ]] || die "destination is not a directory"
+  mkdir -p "$dest"
+  cp -R "${src}/." "${dest}/"
+  print -r -- "promoted ${id} -> ${dest}"
 }
 
 cmd_status() {
   need_root
+  local name
+  for name in items archive.txt index.tsv tags.tsv; do
+    check_path "$ROOT" "${ROOT}/${name}"
+  done
+  check_items
   local items=0 last="never"
   if [[ -d "${ROOT}/items" ]]; then
     local -a dirs
     dirs=("${ROOT}/items"/*(N/))
     items="${#dirs}"
   fi
-  print -r -- "root	${ROOT}"
-  print -r -- "items	${items}"
+  print -r -- "root"$'\t'"${ROOT}"
+  print -r -- "items"$'\t'"${items}"
   if [[ -f "${ROOT}/tags.tsv" ]]; then
     awk -F '\t' 'NF >= 2 { c[$2]++ } END { for (k in c) printf "tag\t%s\t%s\n", k, c[k] }' "${ROOT}/tags.tsv" | sort
   fi
@@ -356,8 +464,9 @@ cmd_status() {
   elif [[ -f "${ROOT}/archive.txt" ]] && [[ -s "${ROOT}/archive.txt" ]]; then
     last="$(date -u -r "${ROOT}/archive.txt" +%Y-%m-%dT%H:%M:%SZ)"
   fi
-  print -r -- "last_sync	${last}"
-  print -r -- "drive	${DEFAULT_ROOT}"
+  print -r -- "last_sync"$'\t'"${last}"
+  print -r -- "drive"$'\t'"${ROOT}"
+  print -r -- "krop_root"$'\t'"${KROP_ROOT}"
 }
 
 main() {

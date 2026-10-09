@@ -20,7 +20,6 @@ import {
 	formatHandoffPreparePrompt,
 	formatHandoffPrompt,
 	handoffPrepIsInFlight,
-	handoffSwitchPresentation,
 	handoffSwitchTarget,
 	shouldFallbackHandoffPrompt,
 	shouldInjectHandoffPrompt,
@@ -43,6 +42,7 @@ import {
 	type SnapshotEntry,
 } from "./lib/compact-snapshot.ts";
 import { createSiblingHandoffSession, spawnHandoffPrintTurn } from "./lib/handoff-sibling.ts";
+import { captureHandoffPrepWriter, replaceHandoffSession } from "./lib/handoff-replacement.ts";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -538,44 +538,22 @@ async function switchPreparedOrNew(
 		siblingIsCurrent,
 	});
 	let promptDelivered = !shouldInjectHandoffPrompt(prep);
+	const writeOwnerPrep = captureHandoffPrepWriter(ctx, path);
+	const onSwitched = (delivered: boolean) => writeOwnerPrep({
+		phase: "switched",
+		switched_at: new Date().toISOString(),
+		...(delivered ? { prompt_sent_at: new Date().toISOString() } : {}),
+	});
 	if (target === "switch-sibling" && prep?.child_session_file) {
-		try {
-			const result = await ctx.switchSession(prep.child_session_file, {
-				withSession: async (replacementCtx) => {
-					const presentation = handoffSwitchPresentation({
-						mode: steerMode,
-						hasUI: ctx.hasUI,
-						replacementHasUI: replacementCtx.hasUI,
-						prepared: true,
-						promptAlreadySent: promptDelivered,
-					});
-					if (presentation.replacement.notify) {
-						replacementCtx.ui.notify(`Handoff switch. Snapshot: ${path}`, "info");
-					}
-					if (presentation.replacement.setEditorText) {
-						replacementCtx.ui.setEditorText(prompt);
-						promptDelivered = true;
-					}
-					if (presentation.sendUserMessage) {
-						await replacementCtx.sendUserMessage(prompt, { deliverAs: presentation.sendDeliverAs });
-						promptDelivered = true;
-					}
-				},
-			});
-			persistOwnerPrep(ctx, {
-				...prep,
-				schema: "pi.handoff-prep.v1",
-				source_session_id: sourceSessionId(ctx),
-				snapshot_path: path,
-				phase: "switched",
-				switched_at: new Date().toISOString(),
-				prompt_sent_at: promptDelivered ? new Date().toISOString() : prep.prompt_sent_at,
-			});
-			return promptDelivered || !result.cancelled;
-		} catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(`Handoff switch failed: ${errorMessage(error)}`, "warning");
-		}
-		return promptDelivered;
+		await replaceHandoffSession(ctx, {
+			childFile: prep.child_session_file,
+			prompt,
+			snapshotPath: path,
+			promptAlreadySent: promptDelivered,
+			onSwitched,
+		});
+		// A cancelled replacement is handled too; do not inject an owner continuation.
+		return true;
 	}
 	if (target === "defer") {
 		if (shouldPushOwnerEditorOnDefer({ mode: steerMode, hasUI: ctx.hasUI, prep })) {
@@ -595,7 +573,7 @@ async function switchPreparedOrNew(
 	if (
 		!shouldOpenNewHandoffSession({
 			target,
-			siblingFileExists,
+			siblingFileExists: siblingExists,
 			childFile: prep?.child_session_file,
 			childJobId: prep?.child_job_id,
 			preparedAt: prep?.prepared_at,
@@ -616,56 +594,13 @@ async function switchPreparedOrNew(
 		if (ctx.hasUI) ctx.ui.notify("Handoff sibling exists; not creating a second session", "warning");
 		return promptDelivered;
 	}
-	try {
-		const result = await ctx.newSession({
-			withSession: async (replacementCtx) => {
-				const presentation = handoffSwitchPresentation({
-					mode: steerMode,
-					hasUI: ctx.hasUI,
-					replacementHasUI: replacementCtx.hasUI,
-					prepared: false,
-					promptAlreadySent: promptDelivered,
-				});
-				if (presentation.replacement.notify) {
-					replacementCtx.ui.notify(`Handoff-now. Snapshot: ${path}`, "info");
-				}
-				if (presentation.replacement.setEditorText) {
-					replacementCtx.ui.setEditorText(prompt);
-					promptDelivered = true;
-				}
-				if (presentation.sendUserMessage) {
-					await replacementCtx.sendUserMessage(prompt, { deliverAs: presentation.sendDeliverAs });
-					promptDelivered = true;
-				}
-			},
-		});
-		if (promptDelivered) {
-			persistOwnerPrep(ctx, {
-				...prep,
-				schema: "pi.handoff-prep.v1",
-				source_session_id: sourceSessionId(ctx),
-				snapshot_path: path,
-				phase: "switched",
-				switched_at: new Date().toISOString(),
-				prompt_sent_at: new Date().toISOString(),
-			});
-		}
-		return promptDelivered || !result.cancelled;
-	} catch (error) {
-		if (ctx.hasUI) ctx.ui.notify(`Handoff-now session failed: ${errorMessage(error)}`, "warning");
-		if (promptDelivered) {
-			persistOwnerPrep(ctx, {
-				...prep,
-				schema: "pi.handoff-prep.v1",
-				source_session_id: sourceSessionId(ctx),
-				snapshot_path: path,
-				phase: "switched",
-				switched_at: new Date().toISOString(),
-				prompt_sent_at: new Date().toISOString(),
-			});
-		}
-		return promptDelivered;
-	}
+	await replaceHandoffSession(ctx, {
+		prompt,
+		snapshotPath: path,
+		promptAlreadySent: promptDelivered,
+		onSwitched,
+	});
+	return true;
 }
 
 export default function (pi: ExtensionAPI) {

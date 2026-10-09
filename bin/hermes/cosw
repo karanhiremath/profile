@@ -68,6 +68,14 @@ Lane isolation:
 Other:
   --print-plan                         print resolved launch plan and exit
   --dispatch-doctor                    probe host-control only
+  sessions                             list running cosw-family tmux sessions (JSON)
+  attach [session]                     explicitly attach to a running cosw TUI pane
+
+Spawn-always: every cosw launch spawns a NEW tmux TUI session. When the
+singular seat is busy, the next free sibling seat (cosw-a1, cosw-a2, ...;
+own HERMES_HOME + session) is minted automatically. cosw never switches or
+attaches the current client to an existing session; use `cosw attach` or
+`cosw sessions` + explicit choice for that.
   --refresh-gh-auth                    restage sandbox GitHub auth
   -h, --help                           this help
 
@@ -471,6 +479,13 @@ emit_catalog_plan_fields() {
 
 print_cosw_plan() {
   local sandbox=0 pythonpath="" timeout_free=0 xai_auth=0 persona
+  # Seat JSON first (profile/session/home), then backend fields.
+  local seat_py="$SCRIPT_DIR/alias_seat.py"
+  local seat_bin="${HERMES_PYTHON:-${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}/venv/bin/python}"
+  [ -x "$seat_bin" ] || seat_bin="$(command -v python3 2>/dev/null || true)"
+  if [ -n "$seat_bin" ] && [ -f "$seat_py" ]; then
+    "$seat_bin" "$seat_py" resolve-profile "$COSW_PROFILE" 2>/dev/null || true
+  fi
   if [ "$COSW_FORCE_SANDBOX" = "1" ]; then
     sandbox=1
   fi
@@ -1030,6 +1045,22 @@ done
 strip_cosw_args "$@"
 apply_cosw_seat
 ensure_lane_profile
+
+# Explicit session surfaces; attaching is never implicit at launch.
+# `cosw sessions` lists running cosw-family tmux sessions (JSON).
+# `cosw attach [session]` attaches to a live cosw TUI pane on request only.
+if [ "${#COSW_ARGS[@]}" -gt 0 ]; then
+  _cosw_sub="${COSW_ARGS[0]}"
+  case "$_cosw_sub" in
+    sessions|attach)
+      if [ "${#COSW_ARGS[@]}" -gt 1 ]; then
+        exec "$SCRIPT_DIR/agents" "$_cosw_sub" "$COSW_PROFILE" "${COSW_ARGS[@]:1}"
+      fi
+      exec "$SCRIPT_DIR/agents" "$_cosw_sub" "$COSW_PROFILE"
+      ;;
+  esac
+  unset _cosw_sub
+fi
 
 if [ "${COSW_SANDBOX_STACK:-0}" = "1" ]; then
   work_devbox="$(work_devbox_cmd)" || die "work-devbox helper missing; keep $HOME/src/karan.hiremath/agentic/hermes/sandboxes/work-devbox"

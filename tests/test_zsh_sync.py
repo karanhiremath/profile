@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import tempfile
+import shutil
 import unittest
 from pathlib import Path
 
@@ -129,6 +130,7 @@ class TestZshSyncMerge(unittest.TestCase):
         merged = self.env.repo / "merge-queue/merged"
         self.assertEqual(len(list(merged.iterdir())), 1, "applied item moves to merged/")
 
+    @unittest.skipUnless(shutil.which("zsh"), "zsh not available; revert contract not exercisable")
     def test_merge_rejects_syntactically_broken_promote(self):
         frag = self.env.home / ".zshrc.d/40-broken.zsh"
         frag.write_text("export UNCLOSED='oops\n")

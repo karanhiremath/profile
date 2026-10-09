@@ -548,20 +548,6 @@ def _stage_cursor_key_slots(key: str) -> None:
     agent_env.chmod(0o600)
 
 
-def _stage_cursor_key_slots(key: str) -> None:
-    """Write the Cursor key to the slots Hermes / cursor-agent actually read."""
-    if not key:
-        return
-    _upsert_env(MAIN_HOME / ".env", {"CURSOR_API_KEY": key})
-    agent_env = Path.home() / ".cursor" / "agent.env"
-    agent_env.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_env_file(agent_env)
-    existing["CURSOR_API_KEY"] = key
-    lines = [f"{k}={v}" for k, v in existing.items() if v]
-    agent_env.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    agent_env.chmod(0o600)
-
-
 def load_profile(name: str) -> Dict[str, Any]:
     path = find_profile(name)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -751,6 +737,12 @@ def _render_config(profile: Dict[str, Any]) -> Dict[str, Any]:
         os.environ.get("HERMES_AGENT_LLM_THINKING", "").strip().lower()
         or str(llm.get("thinking") or llm.get("reasoning_effort") or "").strip().lower()
     )
+    plugins_enabled: List[str] = []
+    if tts_on or stt_on:
+        plugins_enabled.append("cartesia")
+    herm_prefs = (profile.get("herm") or {}).get("preferences") or {}
+    if isinstance(herm_prefs, dict) and herm_prefs and "eikon" not in plugins_enabled:
+        plugins_enabled.append("eikon")
     cfg: Dict[str, Any] = {
         "model": model_cfg,
         "toolsets": toolsets,
@@ -913,6 +905,37 @@ def _is_dreamer_profile(name: str, profile: Dict[str, Any]) -> bool:
     return "dreamer" in n or n.endswith("-dreamw") or role == "dreamer"
 
 
+def _eikon_preference(home: Path) -> Optional[str]:
+    """Read only the avatar selection; never copy sessions or other seat state."""
+    try:
+        data = json.loads((home / "herm" / "tui.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = data.get("eikon") if isinstance(data, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _inherited_eikon(name: str) -> Optional[str]:
+    """New sibling seats inherit the nearest parent's selected avatar."""
+    if alias_seat.seat_by_profile(name) is not None:
+        return None
+    parsed = alias_seat.parse_instance_profile(name)
+    if parsed is None:
+        return None
+    base = str(parsed[0]["profile"])
+    parent = name.rsplit("-", 1)[0]
+    while parent == base or parent.startswith(base + "-"):
+        root = _data_home() / parent
+        selected = _eikon_preference(alias_seat.runtime_home(parent, root))
+        selected = selected or _eikon_preference(root)
+        if selected:
+            return selected
+        if parent == base:
+            break
+        parent = parent.rsplit("-", 1)[0]
+    return None
+
+
 def _find_installed_eikon(name: str) -> Optional[Path]:
     """Locate an already-installed eikon package to copy into a new home."""
     homes = [
@@ -925,7 +948,8 @@ def _find_installed_eikon(name: str) -> Optional[Path]:
         # Bundled catalog copy shipped with herm-tui (sandbox / source checkout).
         Path.home() / "src" / "herm-tui" / "node_modules" / "eikon" / "eikons" / name,
     ]
-    agents = Path.home() / ".local/share/hermes-agents"
+    homes.append(Path.home() / "src" / "herm" / "node_modules" / "eikon" / "eikons" / name)
+    agents = _data_home()
     if agents.is_dir():
         try:
             children = list(agents.iterdir())
@@ -970,8 +994,16 @@ def _sync_eikon_into_homes(name: str, *homes: Path) -> None:
             continue
 
 
-def _merge_json_file(path: Path, updates: Dict[str, Any]) -> None:
-    """Merge top-level JSON preferences, preserving unrelated Herm TUI state."""
+def _force_config() -> bool:
+    return os.environ.get("HERMES_AGENT_FORCE_CONFIG", "").strip() in {"1", "true", "yes"}
+
+
+def _merge_json_file(path: Path, updates: Dict[str, Any], *, force: bool = False) -> None:
+    """Merge top-level JSON preferences, preserving unrelated Herm TUI state.
+
+    Theme pins (`nighttideDefault`), themes, and avatar selections survive YAML
+    rematerialize unless HERMES_AGENT_FORCE_CONFIG=1 or force=True.
+    """
     existing: Dict[str, Any] = {}
     if path.exists():
         try:
@@ -985,6 +1017,8 @@ def _merge_json_file(path: Path, updates: Dict[str, Any]) -> None:
     merged = dict(existing)
     for key, value in updates.items():
         if protect_theme and key in {"theme", "themeMode"}:
+            continue
+        if key == "eikon" and existing.get("eikon") and not force:
             continue
         merged[key] = value
     if protect_theme and pinned and not merged.get("theme"):
@@ -1114,28 +1148,6 @@ def _ensure_cartesia_plugin(home: Path) -> None:
         return
 
 
-def _ensure_cartesia_plugin(home: Path) -> None:
-    plugins = home / "plugins"
-    plugins.mkdir(exist_ok=True)
-    link = plugins / "cartesia"
-    try:
-        if link.is_symlink() and link.resolve() == PLUGIN_DIR.resolve():
-            return
-    except OSError:
-        pass
-    if link.is_symlink() or link.is_file():
-        try:
-            link.unlink()
-        except FileNotFoundError:
-            pass
-    if link.exists():
-        return
-    try:
-        link.symlink_to(PLUGIN_DIR)
-    except FileExistsError:
-        return
-
-
 def materialize(name: str) -> Path:
     profile = load_profile(name)
     uses_voice = voice_on(profile)
@@ -1151,6 +1163,9 @@ def materialize(name: str) -> Path:
     if not isinstance(herm_prefs, dict):
         herm_prefs = {}
     herm_prefs = dict(herm_prefs)
+    inherited_eikon = _inherited_eikon(name)
+    if inherited_eikon and not force_cfg:
+        herm_prefs.setdefault("eikon", inherited_eikon)
     if _is_pm_profile(name, profile):
         herm_prefs.setdefault("theme", "nighttide-work-pm")
         herm_prefs.setdefault("themeMode", "dark")
@@ -1294,7 +1309,7 @@ def materialize(name: str) -> Path:
     sync_runtime_home(runtime_home)
     (home / "active_profile").write_text(runtime_name + "\n", encoding="utf-8")
 
-    eikon_name = str(herm_prefs.get("eikon") or "").strip()
+    eikon_name = _eikon_preference(runtime_home) or _eikon_preference(home)
     if eikon_name:
         _sync_eikon_into_homes(eikon_name, home, runtime_home)
     # Pin owned fleet aliases so herm-tui cannot treat the isolated root

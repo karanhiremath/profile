@@ -7,7 +7,13 @@ alias relaod="reload"
 autoload -U colors && colors
 autoload -Uz promptinit && promptinit
 
-# initialize completio
+# Register standard completion paths before the single audited compinit run.
+# Keep the security audit: it costs tens of ms here, not the hundreds from CLIs.
+typeset -U fpath
+for _profile_completion_dir in /opt/homebrew/share/zsh/site-functions /usr/local/share/zsh/site-functions; do
+    [[ -d "$_profile_completion_dir" ]] && fpath=("$_profile_completion_dir" $fpath)
+done
+unset _profile_completion_dir
 autoload -Uz compinit
 compinit
 
@@ -17,10 +23,8 @@ if command -v fzf >/dev/null 2>&1; then
         source "${HOME}/.fzf.zsh"
     else
         fzf_zsh_dirs=()
-        if command -v brew >/dev/null 2>&1; then
-            fzf_brew_prefix="$(brew --prefix fzf 2>/dev/null || true)"
-            [[ -n "${fzf_brew_prefix}" ]] && fzf_zsh_dirs+=("${fzf_brew_prefix}/shell")
-        fi
+        # Standard package locations need no Homebrew process at startup.
+        [[ -n "${FZF_BASE:-}" ]] && fzf_zsh_dirs+=("${FZF_BASE}/shell")
         fzf_zsh_dirs+=(
             "${HOME}/.fzf/shell"
             "/usr/share/doc/fzf/examples"
@@ -34,64 +38,28 @@ if command -v fzf >/dev/null 2>&1; then
         for fzf_zsh_dir in "${fzf_zsh_dirs[@]}"; do
             [[ -r "${fzf_zsh_dir}/key-bindings.zsh" ]] && source "${fzf_zsh_dir}/key-bindings.zsh" && break
         done
-        unset fzf_brew_prefix fzf_zsh_dir fzf_zsh_dirs
+        unset fzf_zsh_dir fzf_zsh_dirs
     fi
 fi
 
-source "${PROFILE_DIR}/myprofile.sh"
-
-# Load version control information
-autoload -Uz vcs_info
-
-# Format the vcs_info_msg_0_ variable
-zstyle ':vcs_info:git:*' formats '%b'
-
-# Set up the prompt (with git branch name)
-setopt PROMPT_SUBST
-
-precmd() {
-    vcs_info
-    if [[ -n ${vcs_info_msg_0_} ]]; then
-        STATUS='$(command git status --porcelain 2> /dev/null | tail -n1)'
-        if [[ -n $STATUS ]]; then
-            PROMPT="%F{9}%D{%Y-%m-%d %H:%M:%S}%f %F{11}|%f %F{12}%n%f%F{9}@%m%f %F{11}|%f %F{9}%~%f $prompt_newline%F{9}(%f%F{9}${vcs_info_msg_0_}%f%F{9})%f %F{11}>%f %F{15}"
-        else
-            PROMPT="%F{9}%D{%Y-%m-%d %H:%M:%S}%f %F{11}|%f %F{12}%n%f%F{9}@%m%f %F{11}|%f %F{9}%~%f $prompt_newline%F{9}(%f%F{10}${vcs_info_msg_0_}%f%F{9})%f %F{11}>%f %F{15}"
-        fi
-    else
-        PROMPT="%F{9}%D{%Y-%m-%d %H:%M:%S}%f %F{11}|%f %F{12}%n%f%F{9}@%m%f %F{11}|%f %F{9}%~%f $prompt_newline %F{11}>%f %F{15}"
-    fi
-}
+# No synchronous VCS probe on the first prompt or subsequent redraws.
+source "${PROFILE_DIR}/bin/zsh/prompt.zsh"
 
 bindkey "^[[H" beginning-of-line
 bindkey "^[[F" end-of-line
 bindkey  "^[[3~"  delete-char
 
-source "${PROFILE_DIR}"/.iterm2_shell_integration.zsh
+if [[ "${TERM_PROGRAM:-}" == iTerm.app ]]; then
+    source "${PROFILE_DIR}"/.iterm2_shell_integration.zsh
+fi
 
 # Add stuff to path
 path=("$HOME/.local/bin" "$HOME/bin" $path)
 path+=("$HOME/.cargo/bin")
 export PATH
 
-# Activate mise after PATH setup so its shims (node, pnpm, neovim) take precedence.
-# On fresh macOS login shells, ~/.zprofile may source this file before Homebrew
-# shellenv has added /opt/homebrew/bin, so use the Homebrew path as a fallback.
-if command -v mise >/dev/null 2>&1; then
-    eval "$(mise activate zsh)"
-elif [ -x /opt/homebrew/bin/mise ]; then
-    eval "$(/opt/homebrew/bin/mise activate zsh)"
-fi
-
-# omp (oh-my-pi) completions from the live CLI metadata.
-if command -v omp >/dev/null 2>&1; then
-    eval "$(omp completions zsh)"
-fi
-
-# omp (oh-my-pi) completions from the live CLI metadata.
-if command -v omp >/dev/null 2>&1; then
-    eval "$(omp completions zsh)"
-fi
+# mise activation and cached CLI completions are loaded once by the bootstrap,
+# after host-local PATH changes. Completion generation runs in the background.
 
 # pnpm global bin: `pnpm add -g` installs CLIs here AND requires this dir on PATH
 # (otherwise pnpm errors "The configured global bin directory is not in PATH").
