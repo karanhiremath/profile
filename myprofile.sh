@@ -391,6 +391,12 @@ alias dreamw="$HOME/src/profile/bin/hermes/dreamw"
 alias pm="$HOME/src/profile/bin/hermes/pm"
 alias pl="$HOME/src/profile/bin/hermes/pl"
 
+# yt-history — Drive archive of YouTube watch history (metadata/transcripts).
+YTH_BIN="${YTH_BIN:-$HOME/src/profile/bin/yt-history/yt-history}"
+yth()  { "$YTH_BIN" "$@" }
+ythg() { "$YTH_BIN" get "$@" }
+ytht() { "$YTH_BIN" tag "$@" }
+
 _hermes_project_completions() {
     local -a projects
     projects=(${(f)"$($HOME/src/profile/bin/hermes/project_sessions.py names 2>/dev/null)"})
