@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import subprocess
 import sys
@@ -130,7 +131,9 @@ class StateOffloadTests(unittest.TestCase):
     def test_help_documents_operator_not_automatic_quiescence(self):
         result = self.cli("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = " ".join(result.stdout.split())
+        # Rejoin hyphenated words split across help lines before folding whitespace.
+        unwrapped = re.sub(r"(?<=\w)-[ \t]*\r?\n[ \t]*(?=\w)", "-", result.stdout)
+        text = " ".join(unwrapped.split())
         for phrase in ("remote/shared-host", "open file descriptors", "not automatic",
                        "No process is inspected, stopped or killed", "--writers-stopped"):
             self.assertIn(phrase, text)
