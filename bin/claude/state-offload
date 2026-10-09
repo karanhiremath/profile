@@ -1,152 +1,337 @@
-#!/bin/bash
-# Move Claude Code's hot-write state dirs off a shared NFS home onto host-local disk.
-#
-# On hosts where $HOME is NFS (mounted `hard`), Claude Code's single main thread
-# blocks in rpc_wait_bit_killable on transcript/file-history writes, freezing the
-# TUI for minutes. Config (settings, CLAUDE.md, skills, credentials) stays on NFS;
-# only per-session churn moves. Each host resolves the symlinks to its own local
-# disk, so session state becomes host-local (sessions/ pids already are).
+#!/usr/bin/env python3
+"""Offline Claude state cutover; only the configured roots are inspected."""
 
-set -euo pipefail
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import sys
+import uuid
 
-usage() {
-    cat <<'EOF'
-Usage: bin/claude/state-offload [status|migrate|ensure|revert] [--dry-run]
 
-  status   (default) show each managed dir: nfs | linked | dangling
-  migrate  copy each dir to local disk, park the original under
-           <claude_dir>/.nfs-offloaded/, replace it with a symlink. Safe with
-           live sessions: Claude appends by path, and a catch-up sync runs
-           after the swap.
-  ensure   on another host sharing the same $HOME: create missing link
-           targets, seeding from .nfs-offloaded/ when present. Cheap/no-op
-           when nothing is dangling.
-  revert   copy local state back to NFS and replace links with real dirs.
+DIRS = ("projects", "file-history", "session-env", "shell-snapshots", "sessions",
+        "debug", "paste-cache", "plans", "startup-perf", "cache", "backups")
+JOURNAL = ".state-offload-transaction.json"
+STAGE = ".state-offload-stage-"
+RETAINED = ".state-offload-retained-"
 
-Env:
-  CLAUDE_CONFIG_DIR   default ~/.claude
-  CLAUDE_STATE_ROOT   default /scratch/people/$USER/state/claude
-EOF
-}
 
-CMD="status"
-DRY_RUN=0
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        status|migrate|ensure|revert) CMD="$1"; shift ;;
-        --dry-run) DRY_RUN=1; shift ;;
-        -h|--help) usage; exit 0 ;;
-        *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
-    esac
-done
+class Refusal(RuntimeError):
+    pass
 
-CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-STATE_ROOT="${CLAUDE_STATE_ROOT:-/scratch/people/${USER:-$(id -un)}/state/claude}"
-ARCHIVE="${CLAUDE_DIR}/.nfs-offloaded"
 
-# Per-session churn only. Not config (settings, skills, agents, plugins, hooks),
-# not daemon/ (sockets) or jobs/ (cross-host job state).
-DIRS=(projects file-history session-env shell-snapshots sessions debug
-      paste-cache plans startup-perf cache backups)
+def exists(path):
+    # Includes dangling links: they must never be treated as free names.
+    return os.path.lexists(path)
 
-run() {
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-        echo "dry-run: $*" >&2
-    else
-        "$@"
-    fi
-}
 
-fs_type() { stat -f -c %T "$1" 2>/dev/null || echo unknown; }
+def kind(path):
+    if not exists(path):
+        return "absent"
+    mode = path.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        return "link"
+    if stat.S_ISDIR(mode):
+        return "dir"
+    return "other"
 
-require_local_root() {
-    local parent
-    parent="$(dirname "$STATE_ROOT")"
-    while [[ ! -d "$parent" ]]; do parent="$(dirname "$parent")"; done
-    if [[ ! -w "$parent" ]]; then
-        echo "ERROR: state root not writable: $STATE_ROOT" >&2
-        exit 1
-    fi
-    case "$(fs_type "$parent")" in
-        nfs|nfs4|cifs|smb2|fuseblk|unknown)
-            echo "ERROR: state root is not on local disk ($(fs_type "$parent")): $STATE_ROOT" >&2
-            exit 1 ;;
-    esac
-}
 
-state_of() {
-    local src="$CLAUDE_DIR/$1"
-    if [[ -L "$src" ]]; then
-        [[ -e "$src" ]] && echo linked || echo dangling
-    elif [[ -d "$src" ]]; then
-        echo nfs
-    else
-        echo absent
-    fi
-}
+def require(condition, message):
+    if not condition:
+        raise Refusal(message)
 
-cmd_status() {
-    printf '%-16s %-9s %s\n' DIR STATE TARGET
-    local d
-    for d in "${DIRS[@]}"; do
-        printf '%-16s %-9s %s\n' "$d" "$(state_of "$d")" \
-            "$(readlink "$CLAUDE_DIR/$d" 2>/dev/null || true)"
-    done
-}
 
-cmd_migrate() {
-    require_local_root
-    run mkdir -p "$STATE_ROOT" "$ARCHIVE"
-    local d src dst
-    for d in "${DIRS[@]}"; do
-        src="$CLAUDE_DIR/$d"
-        dst="$STATE_ROOT/$d"
-        case "$(state_of "$d")" in
-            linked|dangling) echo "skip $d: already a symlink" >&2; continue ;;
-            absent) run mkdir -p "$dst"; run ln -s "$dst" "$src"; continue ;;
-        esac
-        if [[ -e "$ARCHIVE/$d" ]]; then
-            echo "ERROR: $ARCHIVE/$d already exists; refusing to overwrite" >&2
-            exit 1
-        fi
-        echo "migrate $d -> $dst" >&2
-        run mkdir -p "$dst"
-        run rsync -a "$src/" "$dst/"
-        # Same-filesystem rename, then link: the gap is two syscalls.
-        run mv "$src" "$ARCHIVE/$d"
-        run ln -s "$dst" "$src"
-        # Catch writes that landed in the old dir between rsync and mv.
-        run rsync -a --update "$ARCHIVE/$d/" "$dst/"
-    done
-}
+def rename_new(source, destination):
+    require(not exists(destination), f"collision: {destination}")
+    # Cooperating invocations hold the shared config-root lock. All other
+    # writers must be stopped by the operator, including open descriptors.
+    os.rename(source, destination)
 
-cmd_ensure() {
-    local d src dst
-    for d in "${DIRS[@]}"; do
-        [[ "$(state_of "$d")" == dangling ]] || continue
-        require_local_root
-        src="$CLAUDE_DIR/$d"
-        dst="$(readlink "$src")"
-        echo "ensure $d -> $dst" >&2
-        run mkdir -p "$dst"
-        if [[ -d "$ARCHIVE/$d" ]]; then
-            run rsync -a "$ARCHIVE/$d/" "$dst/"
-        fi
-    done
-}
 
-cmd_revert() {
-    local d src dst
-    for d in "${DIRS[@]}"; do
-        [[ "$(state_of "$d")" == linked ]] || continue
-        src="$CLAUDE_DIR/$d"
-        dst="$(readlink "$src")"
-        echo "revert $d <- $dst" >&2
-        run mkdir -p "$src.revert-tmp"
-        run rsync -a "$dst/" "$src.revert-tmp/"
-        run rm "$src"
-        run mv "$src.revert-tmp" "$src"
-    done
-}
+class Offload:
+    def __init__(self, config, state):
+        self.config = Path(config).expanduser().resolve()
+        self.state = Path(state).expanduser().resolve()
+        require(self.config != self.state and self.config not in self.state.parents
+                and self.state not in self.config.parents,
+                "config and state roots must be disjoint")
+        require(kind(self.config) == "dir", "config root must already be a directory")
+        require(kind(self.state) in ("absent", "dir"), "invalid state root")
+        self.archive = self.config / ".nfs-offloaded"
+        self.journal = self.config / JOURNAL
 
-"cmd_${CMD//-/_}"
+    def paths(self, name):
+        return self.config / name, self.state / name, self.archive / name
+
+    def canonical_link(self, source, destination):
+        return kind(source) == "link" and os.readlink(source) == str(destination)
+
+    def validate(self):
+        require(kind(self.archive) in ("absent", "dir"), "foreign archive root")
+        for name in DIRS:
+            source, destination, archive = self.paths(name)
+            require(kind(source) in ("absent", "dir", "link"), f"invalid source: {source}")
+            if kind(source) == "link":
+                require(self.canonical_link(source, destination), f"foreign link: {source}")
+            require(kind(destination) in ("absent", "dir"),
+                    f"foreign destination or collision: {destination}")
+            require(kind(archive) in ("absent", "dir"), f"archive collision: {archive}")
+
+    def check_stages(self, allowed=None):
+        for root in (self.config, self.state):
+            if kind(root) == "dir":
+                for path in root.iterdir():
+                    if path.name.startswith(STAGE):
+                        require(path == allowed and kind(path) == "dir",
+                                f"unexpected staging collision: {path}")
+
+    @contextlib.contextmanager
+    def locked(self, root=None):
+        path = (self.config if root is None else root) / ".state-offload.lock"
+        require(not exists(path) or stat.S_ISREG(path.lstat().st_mode),
+                f"foreign lock: {path}")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            require(stat.S_ISREG(os.fstat(fd).st_mode), "lock must be a regular file")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise Refusal("another state-offload invocation holds the lock") from error
+            yield
+        finally:
+            # Keep the lock inode: removing it permits two different locks.
+            os.close(fd)
+
+    def record_paths(self, record):
+        root = self.config if record["op"] == "revert" else self.state
+        return (root / (STAGE + record["token"]),
+                root / (RETAINED + record["token"]),
+                self.config / (RETAINED + "link-" + record["token"]))
+
+    def read_record(self):
+        require(kind(self.journal) == "other" and self.journal.is_file(),
+                "ambiguous transaction journal")
+        try:
+            with self.journal.open() as handle:
+                record = json.loads(handle.read(16385))
+            require(set(record) == {"version", "config", "state", "op", "name",
+                                    "token", "had_source"}, "invalid transaction fields")
+            require(record["version"] == 1 and record["config"] == str(self.config)
+                    and record["state"] == str(self.state), "transaction roots differ")
+            require(record["op"] in ("migrate", "ensure", "revert")
+                    and record["name"] in DIRS and type(record["had_source"]) is bool,
+                    "invalid transaction operation")
+            require(isinstance(record["token"], str)
+                    and uuid.UUID(record["token"]).hex == record["token"],
+                    "invalid transaction token")
+            require(record["op"] == "migrate" or record["had_source"],
+                    "invalid original source flag")
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
+            raise Refusal("ambiguous transaction journal; manual inspection required") from error
+        return record
+
+    def retain_copy(self, candidates, retained):
+        present = [path for path in candidates if exists(path)]
+        require(len(present) + int(exists(retained)) <= 1,
+                "ambiguous staging/destination/retained copies")
+        for path in present + ([retained] if exists(retained) else []):
+            require(kind(path) == "dir", f"foreign recovery copy: {path}")
+        if present:
+            rename_new(present[0], retained)
+            print(f"retained failed copy: {retained}", file=sys.stderr)
+
+    def rollback(self, record):
+        source, destination, archive = self.paths(record["name"])
+        stage, retained, parked_link = self.record_paths(record)
+        self.check_stages(stage)
+        op = record["op"]
+        if op == "migrate":
+            require(not exists(parked_link), "unexpected parked link")
+            if record["had_source"]:
+                require((kind(source) == "dir" and not exists(archive)) or
+                        (kind(archive) == "dir" and
+                         (not exists(source) or self.canonical_link(source, destination))),
+                        "ambiguous original/archive; refusing recovery")
+            else:
+                require(not exists(archive) and
+                        (not exists(source) or self.canonical_link(source, destination)),
+                        "ambiguous originally absent source")
+            # Validate copies before changing the original's name.
+            self.retain_copy((stage, destination), retained)
+            if self.canonical_link(source, destination):
+                source.unlink()  # Only the link created by this transaction.
+            if record["had_source"] and exists(archive):
+                rename_new(archive, source)
+        elif op == "ensure":
+            require(not exists(parked_link) and self.canonical_link(source, destination),
+                    "ensure source changed; refusing recovery")
+            self.retain_copy((stage, destination), retained)
+        else:
+            require(kind(destination) == "dir", "original local state missing")
+            if exists(parked_link):
+                require(self.canonical_link(parked_link, destination), "foreign parked link")
+                require(kind(source) in ("absent", "dir"), "ambiguous revert source")
+                self.retain_copy((stage, source), retained)
+                rename_new(parked_link, source)
+            else:
+                require(self.canonical_link(source, destination),
+                        "original link missing; refusing recovery")
+                self.retain_copy((stage,), retained)
+        self.journal.unlink()
+        print(f"rolled back {op} {record['name']}; originals retained", file=sys.stderr)
+
+    def plan(self, command):
+        self.validate()
+        self.check_stages()
+        require(not exists(self.journal), "pending transaction requires acknowledged recovery")
+        actions = []
+        for name in DIRS:
+            source, destination, archive = self.paths(name)
+            source_kind = kind(source)
+            if command == "ensure" and source_kind != "link":
+                require(not exists(destination) and not exists(archive),
+                        f"unexpected destination/archive for unlinked {name}")
+            if command == "migrate" and source_kind != "link":
+                require(not exists(destination), f"destination collision: {destination}")
+                require(not exists(archive), f"archive collision: {archive}")
+                actions.append(("migrate", name, source_kind == "dir"))
+            elif source_kind == "link":
+                if command == "migrate":
+                    require(kind(destination) == "dir", f"dangling link: use ensure for {name}")
+                elif command == "ensure" and not exists(destination):
+                    require(kind(archive) == "dir", f"no archived seed for dangling {name}")
+                    actions.append(("ensure", name, True))
+                elif command == "revert":
+                    require(kind(destination) == "dir", f"cannot revert dangling {name}")
+                    actions.append(("revert", name, True))
+        return actions
+
+    def transact(self, op, name, had_source):
+        record = dict(version=1, config=str(self.config), state=str(self.state),
+                      op=op, name=name, token=uuid.uuid4().hex, had_source=had_source)
+        source, destination, archive = self.paths(name)
+        stage, retained, parked_link = self.record_paths(record)
+        require(all(not exists(path) for path in (stage, retained, parked_link)),
+                "transaction path collision")
+        # Immutable intent is flushed before any copy or rename. An incomplete
+        # journal is refused, never guessed at. This is process-interruption
+        # recovery, not a promise of durability across storage/power failures.
+        with self.journal.open("x") as handle:
+            json.dump(record, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            stage.mkdir(mode=0o700)
+            seed = destination if op == "revert" else archive if op == "ensure" else source
+            if had_source:
+                shutil.copytree(seed, stage, symlinks=True, dirs_exist_ok=True)
+            if op == "revert":
+                rename_new(source, parked_link)
+                rename_new(stage, source)
+                print(f"retained original link: {parked_link}", file=sys.stderr)
+            else:
+                rename_new(stage, destination)
+                if op == "migrate":
+                    if had_source:
+                        rename_new(source, archive)
+                    os.symlink(str(destination), source)
+            # Successful revert deliberately keeps both local originals and
+            # archived pre-migration state. A later migrate refuses collisions.
+            self.journal.unlink()
+        except Exception:
+            try:
+                self.rollback(record)
+            except Exception as error:
+                print(f"rollback incomplete: {error}; journal retained; rerun with acknowledgment",
+                      file=sys.stderr)
+            raise
+
+    def status(self):
+        for name in DIRS:
+            source, destination, _ = self.paths(name)
+            state = kind(source)
+            if state == "link":
+                state = ("linked" if kind(destination) == "dir" else "dangling") if \
+                    self.canonical_link(source, destination) else "foreign-link"
+            print(f"{name}: {state}")
+        if exists(self.journal):
+            print("pending transaction: acknowledged mutation will attempt rollback")
+
+    def run(self, command, acknowledged=False, dry_run=False):
+        if command == "status":
+            self.status()
+            return
+        require(acknowledged or dry_run,
+                "mutation requires --writers-stopped (all hosts and open descriptors)")
+        if dry_run:
+            for op, name, _ in self.plan(command):
+                print(f"dry-run: {op} {name}")
+            return  # No lock, mkdir, journal, copy, rename, or link.
+        with self.locked():
+            if exists(self.journal):
+                record = self.read_record()
+                require(kind(self.state) == "dir", "transaction state root missing")
+                with self.locked(self.state):
+                    self.validate()
+                    self.rollback(record)
+            actions = self.plan(command)  # Check all dirs before the first cutover.
+            if actions:
+                if command != "revert":
+                    self.state.mkdir(mode=0o700, parents=True, exist_ok=True)
+                # Also serialize distinct config roots using the same state root.
+                # Nonblocking locks avoid lock-order deadlocks. Recheck after
+                # acquiring the destination lock; another config may have acted.
+                with self.locked(self.state):
+                    actions = self.plan(command)
+                    if any(op == "migrate" and had for op, _, had in actions):
+                        self.archive.mkdir(mode=0o700, exist_ok=True)
+                    for op, name, had_source in actions:
+                        self.transact(op, name, had_source)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Offline cutover of Claude's managed state directories. "
+                    "migrate copies to fresh staging, archives originals, then links; "
+                    "ensure seeds missing canonical targets from archives; "
+                    "revert copies local state back while retaining originals.",
+        epilog="Before --writers-stopped, stop ALL relevant writers, including remote/"
+               "shared-host writers and writers holding open file descriptors, and keep "
+               "them stopped until completion/recovery. This is an operator acknowledgment, "
+               "not automatic all-host quiescence or live-session safety. No process is "
+               "inspected, stopped or killed. Select a host-local STATE_ROOT; filesystem "
+               "locality is not inferred. Persistent config/state-root advisory locks serialize "
+               "cooperating invocations only (shared filesystems must support flock). "
+               "Requires Python 3.8+ on POSIX. CLAUDE_CONFIG_DIR defaults to ~/.claude "
+               "and must already exist; CLAUDE_STATE_ROOT defaults to "
+               "/scratch/people/$USER/state/claude. Roots must be disjoint and links "
+               "must target the absolute canonical STATE_ROOT/<managed-dir>. "
+               "Interrupted cutovers roll back on an acknowledged rerun; ambiguous state "
+               "is refused. Originals and failed copies are retained, not merged/overwritten. "
+               "Revert retains local targets and archives; move them aside deliberately "
+               "before a later migrate. Dry-run is inert and cannot recover transactions.")
+    parser.add_argument("command", nargs="?", default="status",
+                        choices=("status", "migrate", "ensure", "revert"))
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--writers-stopped", action="store_true",
+                        help="acknowledge ALL writers on ALL hosts are stopped, including open FDs")
+    args = parser.parse_args(argv)
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config is None:
+        config = str(Path.home() / ".claude")
+    state = os.environ.get("CLAUDE_STATE_ROOT",
+                           f"/scratch/people/{os.environ.get('USER', 'unknown')}/state/claude")
+    try:
+        Offload(config, state).run(args.command, args.writers_stopped, args.dry_run)
+    except (OSError, Refusal) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

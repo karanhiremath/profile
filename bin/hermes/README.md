@@ -74,6 +74,12 @@ the same home closes the gateway pipe.
   (`chief-of-staff-NAME` / `chief-of-staff-work-NAME`, tmux `cos-NAME` /
   `cosw-NAME`) so parallel TUIs do not share a home or lock. Omitting
   `--lane` keeps the default single-pane seat.
+- Spawn-always: `cos` / `cosw` launch (`agents up`) NEVER attaches to or
+  switches the client toward an existing TUI. Every launch spawns a NEW tmux
+  TUI session; when the seat's home is busy, the next free sibling seat
+  (`cosw-a1`, `cosw-a2`, ...; own home + session) is minted automatically.
+- Attaching to a running TUI is explicit only: `cosw sessions` lists running
+  family sessions (JSON) and `cosw attach [session]` attaches on request.
 - `cosw` is a different home and session. Personal hosts must not create it.
 - `~/.hermes` (`factory` / `project-manager`) is never a Cos inbox or seat.
 - Launchers export `HERMES_ALIAS_PIN=1` and write `alias.seat.json` so herm-tui
@@ -120,6 +126,8 @@ cosw --cursor-grok          # host-native CoS-W (timeout-free cursor/grok-4.6:fa
 cosw --gpt-5.5              # legacy: host-native CoS-W on openai-codex/gpt-5.5
 cosw --xai-grok             # host-native CoS-W on xAI grok-4.6 (not Cursor SDK)
 cosw --lane o1              # isolated work sibling seat
+cosw sessions               # list running cosw-family tmux sessions (JSON)
+cosw attach [session]       # explicitly attach to a running cosw TUI pane
 cosw --host-tools           # Hermes TUI on the host; no container
 cosw sandbox status         # image / family / container / materialized backend
 cosw sandbox up             # start long-lived attachable CoS-W container

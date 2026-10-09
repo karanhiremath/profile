@@ -22,6 +22,22 @@ In-place `/compact` is fallback only. Auto-handoff is the default on every host.
 Apply: `bin/atop/harness-sync apply` (all host classes).
 Pull stack onto a peer: `harness-sync pull --all <host>` then `apply`.
 
+## Session replacement contract
+
+Capture owner IDs, aliases, paths, and presentation mode before switching.
+After `newSession` / `switchSession`, use only the fresh `withSession` context
+for UI and message delivery. Persist owner prep through the captured-data writer,
+not the replacement session's identity. Cancellation must not mark a switch;
+replacement errors must not fall back through a potentially stale owner context.
+
+Offline regression suite (no model, credentials, or live-session replacement):
+
+```bash
+node --experimental-vm-modules --test config/pi/extensions/lib/handoff-replacement.test.ts config/pi/extensions/lib/compact-snapshot.test.ts config/pi/extensions/lib/handoff-sibling.test.ts
+```
+
+After installing extension changes, `/reload` or restart Pi before using them.
+
 ## Cursor defect
 
 Cursor host compact does not fire pi `session_before_compact`. Without `~/.cursor/hooks.json` → `preCompact`/`stop`, a Cursor-bridged session dumps in place. The hook must be installed on every host.
