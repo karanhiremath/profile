@@ -9,6 +9,8 @@ Use this skill when context utilization reaches **60-75%** or when a workstream 
 
 Do not wait for the hard context limit. Do not default to `/compact`. Prepare a background handoff at ~60% and switch at ~75%.
 
+Never gate handoff on human confirmation, prompt edits, or Enter. Every replacement submits its continuation automatically. Read complete selected fields through snapshot `state_path` and indexed NDJSON pages; bounded previews are not authoritative. Do not paste transcript dumps.
+
 ## Trigger
 
 Start the handoff lane when any of these is true:

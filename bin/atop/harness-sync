@@ -5,10 +5,11 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: harness-sync [status|apply|pull [--all] [ssh-host]|diff-host <ssh-host>]
+Usage: harness-sync [status|apply|apply-handoff|pull [--all] [ssh-host]|diff-host <ssh-host>]
 
   status     host class, herm fork, missing packages/extensions/skills
   apply      link personal skills/extensions, merge packages, wrap herm
+  apply-handoff  install only the pointer-handoff stack; no settings/auth/session mutation
   pull       merge personal-safe toolkit from a peer host (any class)
              default: work → home-mac-mini; personal requires a host
              --all   full extensions/skills/agents from the peer (any class)
@@ -95,6 +96,27 @@ pull_file() {
   rsync -a "${host}:${remote}" "$dest"
 }
 
+apply_handoff() {
+  local source dest staged
+  mkdir -p "$PI_AGENT/extensions/lib" "$PI_AGENT/extensions/subagent"
+  for source in "$PROFILE_DIR/config/pi/extensions/handoff.ts" \
+    "$PROFILE_DIR/config/pi/extensions/compact-handoff.ts" \
+    "$PROFILE_DIR/config/pi/extensions/lib"/compact-snapshot*.ts \
+    "$PROFILE_DIR/config/pi/extensions/lib"/handoff-*.ts \
+    "$PROFILE_DIR/config/pi/extensions/lib/job-bus-project.ts" \
+    "$PROFILE_DIR/config/pi/extensions/subagent/pi-invocation.ts"; do
+    [ -f "$source" ] || continue
+    case "$source" in
+      */lib/*) dest="$PI_AGENT/extensions/lib/$(basename "$source")" ;;
+      */subagent/*) dest="$PI_AGENT/extensions/subagent/$(basename "$source")" ;;
+      *) dest="$PI_AGENT/extensions/$(basename "$source")" ;;
+    esac
+    staged="$(mktemp "${dest}.XXXXXX")"
+    cp -p "$source" "$staged"
+    mv -f "$staged" "$dest"
+  done
+}
+
 cmd="${1:-status}"
 case "$cmd" in
   -h|--help|help) usage; exit 0 ;;
@@ -102,6 +124,10 @@ esac
 
 CLASS="$(host_class)"
 case "$cmd" in
+  apply-handoff)
+    apply_handoff
+    printf '{"state":"installed","stack":"pi-handoff","reload_required":true}\n'
+    ;;
   status)
     printf 'host=%s\n' "$(hostname -s 2>/dev/null || uname -n)"
     printf 'class=%s\n' "$CLASS"
@@ -176,28 +202,8 @@ PY
           ln -fns "$ext" "$PI_AGENT/extensions/$(basename "$ext")"
         done
       fi
-      # Pointer-handoff stack: copy, do not symlink. Bun resolves relative
-      # imports from the real path; spawn needs ~/.pi/agent/extensions/subagent/*.
-      for name in handoff.ts compact-handoff.ts; do
-        if [ -f "$PROFILE_DIR/config/pi/extensions/$name" ]; then
-          rm -f "$PI_AGENT/extensions/$name"
-          cp -p "$PROFILE_DIR/config/pi/extensions/$name" "$PI_AGENT/extensions/$name"
-        fi
-      done
-      if [ -d "$PROFILE_DIR/config/pi/extensions/lib" ]; then
-        for f in "$PROFILE_DIR/config/pi/extensions/lib"/compact-snapshot*.ts \
-          "$PROFILE_DIR/config/pi/extensions/lib"/handoff-*.ts \
-          "$PROFILE_DIR/config/pi/extensions/lib"/job-bus-project.ts; do
-          [ -f "$f" ] || continue
-          rm -f "$PI_AGENT/extensions/lib/$(basename "$f")"
-          cp -p "$f" "$PI_AGENT/extensions/lib/$(basename "$f")"
-        done
-      fi
-      if [ -f "$PROFILE_DIR/config/pi/extensions/subagent/pi-invocation.ts" ]; then
-        rm -f "$PI_AGENT/extensions/subagent/pi-invocation.ts"
-        cp -p "$PROFILE_DIR/config/pi/extensions/subagent/pi-invocation.ts" \
-          "$PI_AGENT/extensions/subagent/pi-invocation.ts"
-      fi
+      # Copy atomically; Bun resolves symlink imports relative to their real path.
+      apply_handoff
     fi
     if [ -d "$PROFILE_DIR/config/cursor" ]; then
       mkdir -p "$HOME/.cursor/hooks"
