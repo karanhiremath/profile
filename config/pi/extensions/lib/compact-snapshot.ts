@@ -4,7 +4,8 @@
  * Durable state lives on disk. The live model only sees a short pointer.
  * Never serialize the transcript into grok-4.6:fast (or any conversation model).
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
@@ -34,6 +35,8 @@ export type CompactSnapshot = {
 	cwd?: string;
 	snapshot_path: string;
 	previous_snapshot?: string;
+	/** Manifest for complete, paginated selected continuation fields, not transcript history. */
+	state_path?: string;
 	objective: string;
 	last_user: string[];
 	last_assistant?: string;
@@ -315,10 +318,13 @@ export function writeHandoffPrepAliases(prep: HandoffPrepState, aliases: readonl
 	return path;
 }
 
+type FullHandoffState = Record<string, string | string[]>;
+const fullHandoffStates = new WeakMap<CompactSnapshot, FullHandoffState>();
+
 export function capText(text: string, maxChars: number): string {
 	const normalized = text.replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").trim();
 	if (normalized.length <= maxChars) return normalized;
-	return `${normalized.slice(0, Math.max(0, maxChars - 24)).trimEnd()}\n…[truncated]`;
+	return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
 export function uniqueCap(items: string[], maxItems: number, itemChars: number): string[] {
@@ -552,7 +558,8 @@ function isSkipUser(text: string): boolean {
 		SKIP_USER_RE.test(trimmed) ||
 		trimmed.includes("## Files to read first") ||
 		trimmed.includes("## Conversation History") ||
-		trimmed.includes("compact-snapshot")
+		trimmed.includes("compact-snapshot") ||
+		(trimmed.includes("snapshot:") && /Read this compact snapshot|background handoff warm-up|Align only/i.test(trimmed))
 	);
 }
 
@@ -664,6 +671,7 @@ export function buildSnapshot(input: {
 		const text = message.summary || textFromContent(message.content);
 		pathsFromContent(message.content, read, modified);
 		if (message.role === "user") {
+			if (isCompactMetaUser(text)) previousSnapshot = SNAPSHOT_PATH_RE.exec(text)?.[1] || previousSnapshot;
 			if (text && !isSkipUser(text) && !(isCompactMetaUser(text) && !isHarnessRedirect(text))) {
 				lastUser.push(text);
 			}
@@ -687,12 +695,12 @@ export function buildSnapshot(input: {
 		input.goal?.trim() || recentUsers.at(-1) || "Continue current work",
 		240,
 	);
-	const nextFromSummary = sectionLines(input.previousSummary || "", "Next Steps", NEXT_MAX);
+	const nextFromSummary = sectionLines(input.previousSummary || "", "Next Steps", Infinity);
 	const nextFromAssistant = lastAssistant
 		.split("\n")
 		.map((line) => line.trim())
-		.filter((line) => /^next:/i.test(line) || /^\s*-\s+/.test(line))
-		.slice(0, NEXT_MAX);
+		.filter((line) => /^(?:next:|[-*]\s+next\b)/i.test(line));
+	nextFromAssistant.push(...sectionLines(lastAssistant, "Next Steps", Infinity));
 	const next = uniqueCap(
 		[input.goal?.trim(), ...nextFromSummary, ...nextFromAssistant].filter((item): item is string => Boolean(item)),
 		NEXT_MAX,
@@ -731,7 +739,44 @@ export function buildSnapshot(input: {
 		do_not: DEFAULT_DO_NOT,
 	};
 	const priorPath = previousSnapshot && previousSnapshot !== snapshotPath ? previousSnapshot : undefined;
-	return applyPreviousSnapshot(built, priorPath ? readSnapshot(priorPath) : undefined);
+	const previous = priorPath ? readSnapshot(priorPath) : undefined;
+	const result = applyPreviousSnapshot(built, previous);
+	result.state_path = `${snapshotPath}.state.json`;
+	const inherited = !lastUser.length && !input.goal && previous ? readHandoffState(previous) : undefined;
+	fullHandoffStates.set(result, inherited || {
+		objective: input.goal?.trim() || lastUser.at(-1) || result.objective,
+		last_user: lastUser.slice(-LAST_USER_MAX), last_assistant: lastAssistant,
+		files_read: [...new Set(read)], files_modified: [...new Set(modified)],
+		next: [input.goal?.trim(), ...nextFromSummary, ...nextFromAssistant].filter((s): s is string => Boolean(s)),
+		blockers: sectionLines(input.previousSummary || lastAssistant, "Blocked", Infinity),
+		jobs: [...collectMatches(joined, UUID_RE), ...collectMatches(joined, SUBAGENT_RE), ...collectMatches(joined, CBUILD_RE)],
+		prs: collectMatches(joined, PR_RE),
+	});
+	return result;
+}
+
+/** Recover selected continuation state and verify its indexed, lossless encoding. */
+export function readHandoffState(snapshot: CompactSnapshot): FullHandoffState | undefined {
+	const inMemory = fullHandoffStates.get(snapshot);
+	if (inMemory) return inMemory;
+	if (!snapshot.state_path) return undefined;
+	const manifest = JSON.parse(readFileSync(snapshot.state_path, "utf8"));
+	if (manifest.schema !== "pi.handoff-state.v1") throw new Error("Unsupported handoff state schema");
+	const lines = readFileSync(manifest.data_path, "utf8").trimEnd().split("\n");
+	const state: FullHandoffState = {};
+	for (const [field, raw] of Object.entries(manifest.fields)) {
+		const index = raw as { first_line: number; lines: number; sha256: string };
+		const chunks = lines.slice(index.first_line - 1, index.first_line - 1 + index.lines).map((line) => JSON.parse(line));
+		let offset = 0;
+		for (const chunk of chunks) {
+			if (chunk.field !== field || chunk.offset !== offset) throw new Error(`Invalid handoff chunk: ${field}`);
+			offset += chunk.text.length;
+		}
+		const encoded = chunks.map((chunk) => chunk.text).join("");
+		if (createHash("sha256").update(encoded).digest("hex") !== index.sha256) throw new Error(`Handoff checksum mismatch: ${field}`);
+		state[field] = JSON.parse(encoded);
+	}
+	return state;
 }
 
 function shrinkSnapshot(snapshot: CompactSnapshot): CompactSnapshot {
@@ -743,9 +788,11 @@ function shrinkSnapshot(snapshot: CompactSnapshot): CompactSnapshot {
 		(item) => ({ ...item, files_modified: item.files_modified.slice(0, 8) }),
 		(item) => ({ ...item, jobs: item.jobs.slice(0, 3), prs: item.prs.slice(0, 2) }),
 		(item) => ({ ...item, last_user: [] }),
+		(item) => ({ ...item, files_read: [], files_modified: [], next: [], blockers: [], jobs: [], prs: [] }),
+		(item) => ({ ...item, do_not: [], objective: "Read objective from state_path" }),
 	];
 	for (const drop of dropOrder) {
-		if (Buffer.byteLength(JSON.stringify(current), "utf8") <= SNAPSHOT_MAX_BYTES) break;
+		if (Buffer.byteLength(JSON.stringify(current, null, 2) + "\n", "utf8") <= SNAPSHOT_MAX_BYTES) break;
 		current = drop(current);
 	}
 	return current;
@@ -756,10 +803,35 @@ export function snapshotJson(snapshot: CompactSnapshot): string {
 }
 
 export function writeSnapshot(snapshot: CompactSnapshot, extraPath?: string): string {
+	const fullState = fullHandoffStates.get(snapshot);
+	if (fullState) {
+		// NDJSON chunks keep every line small and allow read(offset, limit) without lost tails.
+		const statePath = `${snapshot.snapshot_path}.state.json`;
+		const dataPath = `${snapshot.snapshot_path}.state.ndjson`;
+		const records: string[] = [];
+		const fields: Record<string, { first_line: number; lines: number; bytes: number; sha256: string }> = {};
+		for (const [field, value] of Object.entries(fullState)) {
+			const encoded = JSON.stringify(value);
+			const first = records.length + 1;
+			for (let offset = 0; offset < encoded.length; offset += 1000) {
+				records.push(JSON.stringify({ field, offset, text: encoded.slice(offset, offset + 1000) }));
+			}
+			fields[field] = { first_line: first, lines: records.length - first + 1,
+				bytes: Buffer.byteLength(encoded), sha256: createHash("sha256").update(encoded).digest("hex") };
+		}
+		mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
+		writeFileSync(dataPath, `${records.join("\n")}\n`, { mode: 0o600 });
+		chmodSync(dataPath, 0o600);
+		writeFileSync(statePath, `${JSON.stringify({ schema: "pi.handoff-state.v1", data_path: dataPath,
+			previous_snapshot: snapshot.previous_snapshot, fields }, null, 2)}\n`, { mode: 0o600 });
+		chmodSync(statePath, 0o600);
+		snapshot.state_path = statePath;
+	}
 	const body = snapshotJson(snapshot);
 	const path = snapshot.snapshot_path;
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, body);
+	writeFileSync(path, body, { mode: 0o600 });
+	chmodSync(path, 0o600);
 	if (extraPath) {
 		mkdirSync(dirname(extraPath), { recursive: true });
 		writeFileSync(extraPath, body);
@@ -803,7 +875,20 @@ export function formatPointerSummary(snapshot: CompactSnapshot, maxChars?: numbe
 	lines.push(`action: ${CONTINUE_NOW}`);
 	lines.push(`gather: ${GATHER_SUBAGENT} execute next/objective; do not parent-read listed files`);
 	lines.push("rule: Read the snapshot. Do not restate, ask, or explain this compact. Execute next now.");
-	return capText(lines.join("\n"), maxChars ?? limits.pointerMaxChars);
+	if (snapshot.state_path) lines.splice(2, 0, `state: ${snapshot.state_path} (complete fields; paginated NDJSON)`);
+	return fitPointerLines(lines.filter((line) => !line.startsWith("snapshot:") && !line.startsWith("state:")), [
+		`snapshot: ${snapshot.snapshot_path}`,
+		"Read snapshot; follow state_path for full fields. Execute next now. Do not ask.",
+	], maxChars ?? limits.pointerMaxChars);
+}
+
+/** Omit optional whole lines; never slice paths, JSON, or execution instructions. */
+function fitPointerLines(optional: string[], required: string[], maxChars: number): string {
+	const selected = [...required];
+	for (const line of optional) {
+		if ([...selected, line].join("\n").length <= maxChars) selected.splice(selected.length - required.length, 0, line);
+	}
+	return selected.join("\n");
 }
 
 function kindPromptBody(kind: HandoffKind): string {
@@ -820,9 +905,8 @@ function kindPromptBody(kind: HandoffKind): string {
 		].join("\n");
 	}
 	return [
-		`Spawn worker wait=false to execute snapshot next/objective. Do not parent-read listed files.`,
-		"Parent executes next in this same turn. Do not wait for gather. Ignore planning-only wait-for-gather wrappers.",
-		"Prepare a background handoff at ~60% and switch at ~75%. Do not default to /compact. Do not ask whether to continue.",
+		"Worker wait=false; Parent executes next in this same turn. Do not wait for gather.",
+		"Handoff at 60/70/75%. Do not default to /compact.",
 	].join("\n");
 }
 
@@ -832,27 +916,24 @@ export function formatHandoffPrompt(
 	maxChars?: number,
 ): string {
 	const limits = resolveLimits({ kind: snapshot.kind, budgetPercent: snapshot.budget_percent, goal });
-	const task = capText(goal.trim() || snapshot.objective, 240);
-	const prompt = [
-		"Read this compact snapshot first. Do not restate it. Do not reload transcripts.",
-		"",
+	const required = [
+		"Read this compact snapshot first. Do not restate it.",
 		`snapshot: ${snapshot.snapshot_path}`,
 		`kind: ${snapshot.kind}`,
-		`budget: ${snapshot.budget_percent}% of context`,
-		`Goal: ${task}`,
-		"",
-		kindPromptBody(snapshot.kind),
-		"Execute Goal/next now. Do not ask. Do not explain this compact. A dump is not done.",
-	].join("\n");
-	return capText(prompt, maxChars ?? limits.promptMaxChars);
+		"Full fields: state_path; page data_path via first_line/lines.",
+		"Execute Goal/next now. Do not ask. Never wait for human input.",
+	];
+	return fitPointerLines([`budget: ${snapshot.budget_percent}% of context`,
+		`Goal: ${goal.trim() || snapshot.objective}`, kindPromptBody(snapshot.kind)], required,
+		maxChars ?? limits.promptMaxChars);
 }
 
 export function formatContinueWorkerTask(snapshot: CompactSnapshot): string {
 	const next = snapshot.next[0] || snapshot.objective;
-	return capText(
-		`Read snapshot ${snapshot.snapshot_path}. Execute: ${snapshot.objective}. Next: ${next}. Do not restate. Do not ask. Report blockers/deltas only.`,
-		500,
-	);
+	return fitPointerLines([`Next: ${next}`], [
+		`Read snapshot ${snapshot.snapshot_path}; follow state_path for full fields.`,
+		"Execute: objective/next now. Do not restate. Do not ask. Report blockers/deltas only.",
+	], 500);
 }
 
 export function shouldAutoContinue(input: {
@@ -873,13 +954,11 @@ export function continueInjectOptions(input: {
 }
 
 export function formatHandoffNowCommand(snapshot: CompactSnapshot): string {
-	const goal = capText(snapshot.next[0] || snapshot.objective, 200).replace(/\n+/g, " ");
-	return `/handoff-now --type ${snapshot.kind} --budget ${snapshot.budget_percent} ${goal}`;
+	return `/handoff-now --type ${snapshot.kind} --budget ${snapshot.budget_percent}`;
 }
 
 export function formatHandoffPrepareCommand(snapshot: CompactSnapshot): string {
-	const goal = capText(snapshot.next[0] || snapshot.objective, 200).replace(/\n+/g, " ");
-	return `/handoff-prepare --type ${snapshot.kind} --budget ${snapshot.budget_percent} ${goal}`;
+	return `/handoff-prepare --type ${snapshot.kind} --budget ${snapshot.budget_percent}`;
 }
 
 export function formatHandoffPreparePrompt(
@@ -888,20 +967,12 @@ export function formatHandoffPreparePrompt(
 	maxChars?: number,
 ): string {
 	const limits = resolveLimits({ kind: snapshot.kind, budgetPercent: snapshot.budget_percent, goal });
-	const task = capText(goal.trim() || snapshot.objective, 240);
-	const prompt = [
-		"Read this compact snapshot first. Do not restate it. Do not reload transcripts.",
-		"",
-		`snapshot: ${snapshot.snapshot_path}`,
-		`kind: ${snapshot.kind}`,
-		`budget: ${snapshot.budget_percent}% of context`,
-		`Goal: ${task}`,
-		"",
-		"This is a background handoff warm-up. Get up to speed with the snapshot.",
-		"Do not replace the owner session. Do not take over owner work. Do not ask.",
-		"Report ready when aligned. Wait for align/switch.",
-	].join("\n");
-	return capText(prompt, maxChars ?? limits.promptMaxChars);
+	return fitPointerLines([`Goal: ${goal.trim() || snapshot.objective}`], [
+		`snapshot: ${snapshot.snapshot_path}`, `kind: ${snapshot.kind}`,
+		"Read this compact snapshot first; follow state_path for full fields using paginated data_path.",
+		"This is a background handoff warm-up. Do not take over owner work. Do not ask.",
+		"Report ready. Automatic switch activates execution; do not wait for human input.",
+	], maxChars ?? limits.promptMaxChars);
 }
 
 export function formatHandoffAlignPrompt(
@@ -910,17 +981,11 @@ export function formatHandoffAlignPrompt(
 	maxChars?: number,
 ): string {
 	const limits = resolveLimits({ kind: snapshot.kind, budgetPercent: snapshot.budget_percent, goal });
-	const task = capText(goal.trim() || snapshot.objective, 240);
-	const prompt = [
-		"Snapshot refreshed. Align with the current owner session.",
-		"",
-		`snapshot: ${snapshot.snapshot_path}`,
-		`kind: ${snapshot.kind}`,
-		`Goal: ${task}`,
-		"",
-		"Stay ready for cutover. Do not take over until switch. Do not ask.",
-	].join("\n");
-	return capText(prompt, maxChars ?? limits.promptMaxChars);
+	return fitPointerLines([`Goal: ${goal.trim() || snapshot.objective}`], [
+		`snapshot: ${snapshot.snapshot_path}`, `kind: ${snapshot.kind}`,
+		"Read the updated snapshot and state_path; page data_path for complete fields.",
+		"Align only. Do not take over owner work. Do not ask. Automatic switch activates execution.",
+	], maxChars ?? limits.promptMaxChars);
 }
 
 export function readHandoffPrep(sessionId: string): HandoffPrepState | undefined {
@@ -1084,9 +1149,8 @@ export function handoffPrepInFlight(input: {
 		return false;
 	}
 	if (input.fileExists === true) return false;
-	if (input.childFile) return true;
-	if (input.childJobId) return true;
-	if (!input.preparedAt) return false;
+	// Missing files/job IDs are not evidence of a live prepare forever.
+	if (!input.preparedAt) return Boolean(input.childFile || input.childJobId);
 	const age = (input.now ?? Date.now()) - Date.parse(input.preparedAt);
 	const ttl = input.claimTtlMs ?? HANDOFF_PREP_CLAIM_TTL_MS;
 	return Number.isFinite(age) && age >= 0 && age < ttl;
@@ -1169,19 +1233,12 @@ export function shouldSpawnHandoffWarmup(actions: readonly HandoffLaneAction[]):
 export function shouldInjectHandoffPrompt(
 	prep?: Pick<HandoffPrepState, "prompt_sent_at" | "switched_at" | "successor_at" | "phase"> | null,
 ): boolean {
-	if (prep?.switched_at) return false;
+	if (prep?.switched_at && prep.prompt_sent_at) return false;
 	if (prep?.phase === "successor" && prep.successor_at) return false;
 	return true;
 }
 
-/**
- * Queue one `/handoff-now` when this stack cannot switchSession itself.
- * Event handlers never have switchSession (command-only; deadlock). Interactive
- * used to block the queue and wait forever — that is the 94% stuck-owner failure.
- * An owner-editor dump (`prompt_sent_at` without a switch) must not block the
- * event-path queue. Command ctx with switchSession stays editor-only and must
- * not re-queue itself.
- */
+/** Queue command-only replacement outside lifecycle handlers; UI never gates delivery. */
 export function shouldQueueHandoffNowAfterSwitch(input: {
 	promptDelivered?: boolean;
 	mode?: SessionSteerMode;
@@ -1189,11 +1246,10 @@ export function shouldQueueHandoffNowAfterSwitch(input: {
 }): boolean {
 	if (input.switchSessionAvailable === false) return true;
 	if (input.promptDelivered) return false;
-	if (input.mode === "interactive") return false;
 	return true;
 }
 
-/** /handoff-now owner fallback: one headless followUp until switch completes. Owner-editor dump is not a switch. */
+/** One autonomous followUp until switch completes; editor text is not delivery. */
 export function shouldFallbackHandoffPrompt(input: {
 	prep?: HandoffPrepClaim | null;
 	mode?: SessionSteerMode;
@@ -1212,21 +1268,20 @@ export function shouldFallbackHandoffPrompt(input: {
 /** Compact-triage injectContinue must not fire after the switch prompt already landed. */
 export function shouldInjectContinueAfterLane(input: {
 	handoffQueued?: boolean;
-	prep?: Pick<HandoffPrepState, "prompt_sent_at"> | null;
+	prep?: Pick<HandoffPrepState, "switched_at" | "successor_at" | "prompt_sent_at"> | null;
 }): boolean {
 	if (input.handoffQueued) return false;
-	return !input.prep?.prompt_sent_at;
+	return !input.prep?.switched_at && !input.prep?.successor_at;
 }
 
-/** Defer / /handoff-now fallback: one owner editor, and only if the pointer has not already landed. */
+/** Compatibility helper. Handoff never stages editor text as a progress dependency. */
 export function shouldPushOwnerEditorOnDefer(input: {
 	mode?: SessionSteerMode;
 	hasUI?: boolean;
 	prep?: Pick<HandoffPrepState, "prompt_sent_at"> | null;
 }): boolean {
-	if (input.mode !== "interactive") return false;
-	if (input.hasUI !== true) return false;
-	return !input.prep?.prompt_sent_at;
+	// Editor text is not delivery and must never become a handoff progress gate.
+	return false;
 }
 
 export const HANDOFF_PREP_CLAIM_TTL_MS = 5000;
@@ -1244,12 +1299,11 @@ export function shouldCreateHandoffSibling(input: {
 		return true;
 	}
 	if (input.fileExists === true) return false;
-	if (input.fileExists === false) return true;
-	if (input.childFile && input.fileExists !== false) return false;
-	if (!input.preparedAt) return true;
-	const age = (input.now ?? Date.now()) - Date.parse(input.preparedAt);
+	const age = (input.now ?? Date.now()) - Date.parse(input.preparedAt || "");
 	const ttl = input.claimTtlMs ?? HANDOFF_PREP_CLAIM_TTL_MS;
 	if (Number.isFinite(age) && age >= 0 && age < ttl) return false;
+	if (input.fileExists === false) return true;
+	if (input.childFile) return false;
 	return true;
 }
 
@@ -1370,7 +1424,7 @@ export function handoffSwitchAction(input: {
 	prepared?: boolean;
 }): HandoffSwitchKind {
 	if (!input.prepared) return "handoff-now-fallback";
-	return input.mode === "interactive" ? "push-interactive" : "switch-now";
+	return "switch-now";
 }
 
 export type HandoffSwitchPresentation = {
@@ -1382,7 +1436,7 @@ export type HandoffSwitchPresentation = {
 	replacement: { notify: boolean; setEditorText: boolean };
 };
 
-/** Live switch side-effects. Never confirm. Interactive: editor only. Headless: one followUp. */
+/** UI affects notifications only. Every replacement receives one execution turn. */
 export function handoffSwitchPresentation(input: {
 	mode: SessionSteerMode;
 	hasUI?: boolean;
@@ -1393,8 +1447,7 @@ export function handoffSwitchPresentation(input: {
 	const switchKind = handoffSwitchAction(input);
 	const ownerInteractive = input.mode === "interactive" && input.hasUI === true;
 	const replacementHasUI = input.replacementHasUI ?? input.hasUI;
-	const sendUserMessage = input.mode === "headless" && input.promptAlreadySent !== true;
-	const switchingIntoReplacement = input.prepared === true && replacementHasUI === true;
+	const sendUserMessage = input.promptAlreadySent !== true;
 	return {
 		switchKind,
 		confirm: false,
@@ -1402,12 +1455,11 @@ export function handoffSwitchPresentation(input: {
 		sendDeliverAs: "followUp",
 		owner: {
 			notify: ownerInteractive,
-			// One pointer: destination editor on switch; owner editor only when we stay here.
-			setEditorText: ownerInteractive && !switchingIntoReplacement,
+			setEditorText: false,
 		},
 		replacement: {
 			notify: replacementHasUI === true,
-			setEditorText: input.mode === "interactive" && replacementHasUI === true,
+			setEditorText: false,
 		},
 	};
 }

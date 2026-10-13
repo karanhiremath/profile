@@ -11,15 +11,16 @@ import * as snapshotLib from "./compact-snapshot.ts";
 import * as replacementLib from "./handoff-replacement.ts";
 
 // Execute the real extension code without loading runtime packages, credentials, or extensions.
-async function loadExtension(name: string) {
+async function loadExtension(name: string, overrides: Record<string, Record<string, unknown>> = {}) {
 	const path = fileURLToPath(new URL(`../${name}.ts`, import.meta.url));
 	const extra = name === "compact-handoff" ? "\nexport { switchToPrepared, trySilentHandoff };" : "";
 	const module = new SourceTextModule(stripTypeScriptTypes(readFileSync(path, "utf8") + extra));
 	await module.link(async (specifier) => {
 		let exports: Record<string, unknown>;
-		if (specifier === "./lib/compact-snapshot.ts") exports = { ...snapshotLib };
+		if (overrides[specifier]) exports = overrides[specifier];
+		else if (specifier === "./lib/compact-snapshot.ts") exports = { ...snapshotLib };
 		else if (specifier === "./lib/handoff-replacement.ts") exports = { ...replacementLib };
-		else if (specifier === "node:fs" || specifier === "node:path") exports = { ...await import(specifier) };
+		else if (specifier.startsWith("node:")) exports = { ...await import(specifier) };
 		else if (specifier === "@earendil-works/pi-coding-agent") exports = {
 			BorderedLoader: class {}, convertToLlm: () => [], serializeConversation: () => "",
 		};
@@ -41,7 +42,7 @@ async function loadExtension(name: string) {
 	return module.namespace;
 }
 
-function fixture(hasUI: boolean, failure?: "cancel" | "before" | "beforeCallback" | "delivery" | "after") {
+function fixture(hasUI: boolean, failure?: "cancel" | "before" | "beforeCallback" | "delivery" | "after", mode = hasUI ? "tui" : "json") {
 	const root = mkdtempSync(join(tmpdir(), "handoff-replacement-"));
 	const home = process.env.HOME;
 	process.env.HOME = root;
@@ -81,12 +82,15 @@ function fixture(hasUI: boolean, failure?: "cancel" | "before" | "beforeCallback
 		return { cancelled: false };
 	};
 	const ctx = guard({
-		hasUI, mode: hasUI ? "tui" : "json", cwd: root, model: {},
+		hasUI, mode, cwd: root, model: {},
 		getContextUsage: () => ({ contextWindow: 256000 }),
 		sessionManager: guard({
 			getSessionFile: () => ownerFile, getSessionId: () => "owner", getBranch: () => [],
 		}),
-		ui: guard({ notify: () => calls.push("owner.notify"), setEditorText: () => calls.push("owner.editor") }),
+		ui: guard({ notify: () => calls.push("owner.notify"),
+			setEditorText: () => { throw new Error("handoff must not wait for editor submission"); },
+			confirm: () => { throw new Error("handoff must not ask for confirmation"); },
+			editor: () => { throw new Error("handoff must not ask for prompt edits"); } }),
 		newSession: replace, switchSession: replace,
 	}) as unknown as ExtensionCommandContext;
 	const snapshot = {
@@ -96,6 +100,9 @@ function fixture(hasUI: boolean, failure?: "cancel" | "before" | "beforeCallback
 		kind: "implementation", budget_percent: 5,
 	} as snapshotLib.CompactSnapshot;
 	return { ctx, calls, ownerFile, childFile, snapshot,
+		seedPending() { snapshotLib.writeHandoffPrep({ schema: snapshotLib.HANDOFF_PREP_SCHEMA,
+			source_session_id: "owner", snapshot_path: snapshot.snapshot_path, phase: "prepared",
+			prepared_at: new Date(Date.now() - 6000).toISOString(), child_session_file: join(root, "missing.jsonl"), child_job_id: "old-job" }); },
 		seed() { snapshotLib.writeHandoffPrep({ schema: snapshotLib.HANDOFF_PREP_SCHEMA,
 			source_session_id: "owner", source_session_file: ownerFile, snapshot_path: snapshot.snapshot_path,
 			phase: "aligned", child_session_file: childFile, child_session_id: "child" }); },
@@ -116,7 +123,7 @@ for (const hasUI of [true, false]) {
 					sendUserMessage: () => { throw new Error("stale owner continuation"); } });
 				await commands.get("handoff-now")!.handler("Continue implementation", f.ctx);
 				assert.deepEqual(f.calls, hasUI
-					? [prepared ? "switch" : "new", "replacement.notify", "replacement.editor"]
+					? [prepared ? "switch" : "new", "replacement.notify", "replacement.message"]
 					: [prepared ? "switch" : "new", "replacement.message"]);
 				const prep = snapshotLib.readHandoffPrep("owner")!;
 				assert.equal(prep.phase, "switched");
@@ -187,3 +194,54 @@ for (const failure of ["cancel", "before", "beforeCallback", "delivery", "after"
 		} finally { f.cleanup(); }
 	});
 }
+
+for (const mode of ["tui", "rpc", "json", "print"]) {
+	for (const command of ["handoff", "handoff-now", "handoff-bg", "handoff-prepare", "handoff-align"]) {
+		test(`${command} in ${mode} needs zero human interactions`, async () => {
+			const f = fixture(mode === "tui" || mode === "rpc", undefined, mode);
+			try {
+				const extension = await loadExtension("handoff", { "./lib/handoff-sibling.ts": {
+					createSiblingHandoffSession: () => { f.calls.push("prepare"); return { sessionFile: f.childFile, sessionId: "child" }; },
+					spawnHandoffPrintTurn: () => { f.calls.push("warmup"); return { jobId: "warmup" }; },
+				} });
+				const commands = new Map<string, { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }>();
+				extension.default({ registerCommand: (name: string, command: never) => commands.set(name, command) });
+				await commands.get(command)!.handler("", f.ctx);
+				if (command === "handoff" || command === "handoff-now") {
+					assert.equal(f.calls.filter((call) => call === "replacement.message").length, 1);
+					assert.equal(f.calls.includes("replacement.editor"), false);
+				} else {
+					assert.equal(f.calls.includes("prepare"), true);
+					assert.equal(f.calls.includes("new") || f.calls.includes("switch"), false);
+				}
+			} finally { f.cleanup(); }
+		});
+	}
+}
+
+test("stale missing child/job claim automatically opens a replacement", async () => {
+	const f = fixture(true);
+	try {
+		f.seedPending();
+		const extension = await loadExtension("handoff");
+		const commands = new Map<string, { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }>();
+		extension.default({ registerCommand: (name: string, command: never) => commands.set(name, command) });
+		await commands.get("handoff-now")!.handler("Continue", f.ctx);
+		assert.deepEqual(f.calls, ["new", "replacement.notify", "replacement.message"]);
+	} finally { f.cleanup(); }
+});
+
+test("automatic event queues replacement without starting a competing successor", async () => {
+	const f = fixture(true);
+	try {
+		f.seed();
+		const eventCtx = { ...f.ctx, switchSession: undefined, newSession: undefined };
+		const messages: string[] = [];
+		const extension = await loadExtension("compact-handoff");
+		const handled = await extension.switchToPrepared({ sendUserMessage: (text: string) => messages.push(text) }, eventCtx, f.snapshot);
+		assert.equal(handled, true);
+		assert.equal(messages.length, 1);
+		assert.match(messages[0], /^\/handoff-now/);
+		assert.equal(f.calls.includes("owner.editor"), false);
+	} finally { f.cleanup(); }
+});

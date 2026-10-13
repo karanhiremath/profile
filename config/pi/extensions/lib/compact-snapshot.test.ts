@@ -303,7 +303,7 @@ test("preferHandoff cancels in-place compact even on willRetry", () => {
 		sessionId: "dump-not-done",
 	});
 	assert.match(formatHandoffNowCommand(snapshot), /^\/handoff-now --type implementation/);
-	assert.match(formatHandoffPrompt(snapshot, "ship the pointer"), /dump is not done/i);
+	assert.match(formatHandoffPrompt(snapshot, "ship the pointer"), /Never wait for human input/);
 });
 
 test("handoff lane prepares at 60, aligns near 70, switches at 75", () => {
@@ -391,7 +391,7 @@ test("sessionSteerMode and switch action follow headless vs interactive", () => 
 	assert.equal(sessionSteerMode({ hasUI: true, env: { PI_HANDOFF_STEER_MODE: "headless" } }), "headless");
 	assert.equal(sessionSteerMode({ hasUI: false, env: { PI_HANDOFF_STEER_MODE: "interactive" } }), "interactive");
 	assert.equal(handoffSwitchAction({ mode: "headless", prepared: true }), "switch-now");
-	assert.equal(handoffSwitchAction({ mode: "interactive", prepared: true }), "push-interactive");
+	assert.equal(handoffSwitchAction({ mode: "interactive", prepared: true }), "switch-now");
 	assert.equal(handoffSwitchAction({ mode: "headless", prepared: false }), "handoff-now-fallback");
 	assert.equal(afterCompactTriage(), "handoff-candidate");
 	assert.equal(afterCompactTriage({ preferHandoff: false }), "handoff-candidate");
@@ -418,7 +418,7 @@ test("75% switch traces differ for headless vs interactive and never confirm", a
 	assert.equal(headlessPlan.steerMode, "headless");
 	assert.equal(headlessPlan.switchKind, "switch-now");
 	assert.equal(interactivePlan.steerMode, "interactive");
-	assert.equal(interactivePlan.switchKind, "push-interactive");
+	assert.equal(interactivePlan.switchKind, "switch-now");
 
 	const headless = handoffSwitchPresentation({
 		mode: headlessPlan.steerMode,
@@ -439,8 +439,8 @@ test("75% switch traces differ for headless vs interactive and never confirm", a
 	assert.deepEqual(describeHandoffSwitchEffects(interactive), [
 		"owner.notify",
 		"replacement.notify",
-		"replacement.editor",
-		"kind.push-interactive",
+		"replacement.send.followUp",
+		"kind.switch-now",
 	]);
 	assert.equal(headless.confirm, false);
 	assert.equal(interactive.confirm, false);
@@ -492,11 +492,11 @@ test("75% switch traces differ for headless vs interactive and never confirm", a
 	assert.deepEqual(interactiveCalls, [
 		"owner.notify",
 		"replacement.notify",
-		"replacement.editor",
+		"replacement.send.followUp",
 	]);
 	assert.equal(editor, "");
 	assert.equal(interactive.owner.setEditorText, false);
-	assert.equal(interactive.replacement.setEditorText, true);
+	assert.equal(interactive.replacement.setEditorText, false);
 });
 
 test("print/json stay headless even when hasUI is true; TUI/RPC stay interactive", () => {
@@ -520,7 +520,7 @@ test("print/json stay headless even when hasUI is true; TUI/RPC stay interactive
 	);
 });
 
-test("mocked switchSession is silent in headless and pushes the editor in interactive", async () => {
+test("mocked switchSession auto-submits in headless and interactive", async () => {
 	async function driveSwitch(mode: "headless" | "interactive") {
 		const calls: string[] = [];
 		const hasUI = mode === "interactive";
@@ -571,7 +571,7 @@ test("mocked switchSession is silent in headless and pushes the editor in intera
 		"switchSession",
 		"owner.notify",
 		"replacement.notify",
-		"replacement.editor",
+		"replacement.followUp",
 	]);
 });
 
@@ -608,7 +608,7 @@ test("sibling file exists never falls through to newSession", () => {
 	assert.equal(alreadySent.sendUserMessage, false);
 	assert.equal(shouldQueueHandoffNowAfterSwitch({ promptDelivered: true, mode: "headless" }), false);
 	assert.equal(shouldQueueHandoffNowAfterSwitch({ promptDelivered: false, mode: "headless" }), true);
-	assert.equal(shouldQueueHandoffNowAfterSwitch({ promptDelivered: false, mode: "interactive" }), false);
+	assert.equal(shouldQueueHandoffNowAfterSwitch({ promptDelivered: false, mode: "interactive" }), true);
 	assert.equal(shouldQueueHandoffNowAfterSwitch({ promptDelivered: true, mode: "interactive" }), false);
 	assert.equal(
 		shouldQueueHandoffNowAfterSwitch({
@@ -624,7 +624,7 @@ test("sibling file exists never falls through to newSession", () => {
 			mode: "interactive",
 			switchSessionAvailable: true,
 		}),
-		false,
+		true,
 	);
 	assert.equal(
 		shouldQueueHandoffNowAfterSwitch({
@@ -651,11 +651,11 @@ test("sibling file exists never falls through to newSession", () => {
 		false,
 	);
 	assert.equal(shouldFallbackHandoffPrompt({ prep: {}, mode: "headless" }), true);
-	assert.equal(shouldFallbackHandoffPrompt({ prep: {}, mode: "interactive" }), false);
+	assert.equal(shouldFallbackHandoffPrompt({ prep: {}, mode: "interactive" }), true);
 	assert.equal(shouldInjectContinueAfterLane({ handoffQueued: true, prep: {} }), false);
-	assert.equal(shouldInjectContinueAfterLane({ handoffQueued: false, prep: { prompt_sent_at: "2026-08-31T23:49:13.715Z" } }), false);
+	assert.equal(shouldInjectContinueAfterLane({ handoffQueued: false, prep: { prompt_sent_at: "2026-08-31T23:49:13.715Z" } }), true);
 	assert.equal(shouldInjectContinueAfterLane({ handoffQueued: false, prep: {} }), true);
-	assert.equal(shouldPushOwnerEditorOnDefer({ mode: "interactive", hasUI: true, prep: {} }), true);
+	assert.equal(shouldPushOwnerEditorOnDefer({ mode: "interactive", hasUI: true, prep: {} }), false);
 	assert.equal(shouldPushOwnerEditorOnDefer({ mode: "interactive", hasUI: true, prep: { prompt_sent_at: "2026-08-31T23:49:13.715Z" } }), false);
 	assert.equal(shouldPushOwnerEditorOnDefer({ mode: "headless", hasUI: true, prep: {} }), false);
 	assert.equal(shouldPushOwnerEditorOnDefer({ mode: "interactive", hasUI: false, prep: {} }), false);
@@ -893,9 +893,9 @@ test("prepare/align prompts stay tiny and do not take over", () => {
 	const prepare = formatHandoffPreparePrompt(snapshot, "ship the pointer");
 	const align = formatHandoffAlignPrompt(snapshot, "ship the pointer");
 	assert.match(prepare, /background handoff warm-up/i);
-	assert.match(prepare, /Do not replace the owner session/);
-	assert.match(align, /Align with the current owner session/);
-	assert.match(align, /Do not take over until switch/);
+	assert.match(prepare, /Do not take over owner work/);
+	assert.match(align, /Align only/);
+	assert.match(align, /Do not take over owner work/);
 	assert.match(formatHandoffPrepareCommand(snapshot), /^\/handoff-prepare --type implementation/);
 	assert.ok(prepare.length <= HANDOFF_PROMPT_MAX_CHARS);
 });

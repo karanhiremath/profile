@@ -29,7 +29,6 @@ import {
 	shouldFallbackNewSession,
 	shouldInjectContinueAfterLane,
 	shouldInjectHandoffPrompt,
-	shouldPushOwnerEditorOnDefer,
 	shouldQueueHandoffNowAfterSwitch,
 	shouldSpawnHandoffWarmup,
 	preferHandoffAfterCompact,
@@ -520,7 +519,6 @@ async function switchToPrepared(
 			queueHandoffNow(pi, ctx, snapshot)
 		) {
 			persistPrep(ctx, snapshot, { phase: "queued", queued_at: new Date().toISOString(), mode: steerMode });
-			spawnSuccessorIfNeeded(ctx, snapshot, currentPrep(ctx));
 			return true;
 		}
 		spawnSuccessorIfNeeded(ctx, snapshot, currentPrep(ctx));
@@ -533,13 +531,7 @@ async function switchToPrepared(
 			queueHandoffNow(pi, ctx, snapshot)
 		) {
 			persistPrep(ctx, snapshot, { phase: "queued", queued_at: new Date().toISOString(), mode: steerMode });
-			spawnSuccessorIfNeeded(ctx, snapshot, currentPrep(ctx));
 			return true;
-		}
-		if (shouldPushOwnerEditorOnDefer({ mode: steerMode, hasUI: ctx.hasUI, prep })) {
-			ctx.ui.setEditorText(prompt);
-			promptDelivered = true;
-			persistPrep(ctx, snapshot, { prompt_sent_at: new Date().toISOString(), mode: steerMode });
 		}
 		if (ctx.hasUI) ctx.ui.notify("Handoff sibling ready; waiting for switchSession", "info");
 		spawnSuccessorIfNeeded(ctx, snapshot, currentPrep(ctx));
@@ -572,13 +564,10 @@ async function switchToPrepared(
 		queueHandoffNow(pi, ctx, snapshot)
 	) {
 		persistPrep(ctx, snapshot, { phase: "queued", queued_at: new Date().toISOString(), mode: steerMode });
-		spawnSuccessorIfNeeded(ctx, snapshot, currentPrep(ctx));
 		return true;
 	}
 	if (spawnSuccessorIfNeeded(ctx, snapshot, currentPrep(ctx))) return true;
-	if (steerMode !== "interactive") {
-		injectContinue(pi, ctx, snapshot, opts);
-	}
+	injectContinue(pi, ctx, snapshot, opts);
 	return false;
 }
 

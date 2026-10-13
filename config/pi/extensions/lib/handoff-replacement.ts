@@ -46,6 +46,7 @@ export async function replaceHandoffSession(
 		onSwitched: (promptDelivered: boolean) => void;
 	},
 ): Promise<boolean> {
+	const parentSession = ctx.sessionManager.getSessionFile();
 	const hasUI = ctx.hasUI;
 	const mode = sessionSteerMode({ hasUI, mode: ctx.mode });
 	let promptDelivered = options.promptAlreadySent;
@@ -62,10 +63,6 @@ export async function replaceHandoffSession(
 				if (presentation.replacement.notify) {
 					replacementCtx.ui.notify(`Handoff switch. Snapshot: ${options.snapshotPath}`, "info");
 				}
-				if (presentation.replacement.setEditorText) {
-					replacementCtx.ui.setEditorText(options.prompt);
-					promptDelivered = true;
-				}
 				if (presentation.sendUserMessage) {
 					await replacementCtx.sendUserMessage(options.prompt, { deliverAs: presentation.sendDeliverAs });
 					promptDelivered = true;
@@ -79,6 +76,6 @@ export async function replaceHandoffSession(
 	// Let failures reach the harness; never attempt an owner-context notification/fallback.
 	const result = options.childFile
 		? await ctx.switchSession(options.childFile, { withSession })
-		: await ctx.newSession({ withSession });
+		: await ctx.newSession({ parentSession, withSession });
 	return !result.cancelled;
 }

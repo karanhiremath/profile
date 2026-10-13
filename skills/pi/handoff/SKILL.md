@@ -15,8 +15,10 @@ This is the operator-facing handoff skill. The extension commands are the runtim
 2. Run the extension, do not reimplement it:
    - no switch yet → `/handoff-prepare --type <kind> --budget 5 <goal>`
    - user asked to switch / context ~75% → `/handoff-now --type <kind> --budget 5 <goal>`
-   - user asked for a reviewable prompt in TUI → `/handoff --type <kind> --budget 5 <goal>`
+   - `/handoff` is an automatic switch alias, not a review dialog. For inspection only, use `/snapshot`.
 3. Report snapshot + sibling/prep paths. A queued `/handoff-now` is not a finished switch.
+
+Handoff never requires confirmation, prompt editing, or Enter. TUI/RPC/headless replacements submit the execution prompt automatically. Snapshot previews are bounded; `state_path` indexes complete selected fields in paginated NDJSON (`data_path`, `first_line`, `lines`, SHA-256). Read relevant pages, not transcripts or `[truncated]` fragments.
 
 ## Lane
 
