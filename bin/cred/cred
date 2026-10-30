@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""cred — personal credential health + backend plane for agent hosts.
+
+Personal, self-contained toolkit (profile repo). It never names or invokes any
+work credential system. Work/other auth systems integrate by dropping an
+executable into the backends dir that speaks cred-backend.v1 (see
+docs/cred.md); cred routes to it only when the backend's declared domain
+matches this host's domain.
+
+Never prints credential values: identities are reduced to email domain,
+plan, and account-id suffix; tokens to presence, expiry, and alignment.
+
+Env:
+  CRED_CONFIG_DIR     default ~/.config/cred (host file + backends.d/)
+  CRED_STATE_DIR      default ~/.local/state/cred
+  CODEX_HOME, PI_CODING_AGENT_DIR, HERMES_HOME  honored via codex_grant_sync
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "hermes"))
+import codex_grant_sync as cgs  # noqa: E402
+
+BACKEND_SCHEMA = "cred-backend.v1"
+# Codex desktop/exec session env that must never leak into a host-global tmux
+# environment: every agent spawned from that server inherits a sandboxed,
+# network-disabled, CI-mode identity of some other session.
+LEAK_PREFIXES = ("CODEX_",)
+LEAK_ALLOW = {"CODEX_HOME"}
+
+
+def config_dir() -> Path:
+    return Path(os.environ.get("CRED_CONFIG_DIR", "~/.config/cred")).expanduser()
+
+
+def state_dir() -> Path:
+    return Path(os.environ.get("CRED_STATE_DIR", "~/.local/state/cred")).expanduser()
+
+
+def host_config() -> Dict[str, str]:
+    """~/.config/cred/host: key=value lines (domain=personal|work, work_email_domains=a,b)."""
+    out: Dict[str, str] = {}
+    path = config_dir() / "host"
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip()
+    return out
+
+
+def _csv(value: str) -> List[str]:
+    return [x.strip().lower() for x in value.split(",") if x.strip()]
+
+
+def check(name: str, status: str, detail: str, fix: str = "") -> Dict[str, str]:
+    row = {"check": name, "status": status, "detail": detail}
+    if fix:
+        row["fix"] = fix
+    return row
+
+
+def _run(cmd: List[str], timeout: float = 20, env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 124, "", str(exc))
+
+
+def _jwt_claims(token: str) -> Dict[str, Any]:
+    try:
+        seg = token.split(".")[1]
+        seg += "=" * (-len(seg) % 4)
+        return json.loads(base64.urlsafe_b64decode(seg))
+    except Exception:  # noqa: BLE001 - opaque or malformed token
+        return {}
+
+
+def _hours(seconds: float) -> str:
+    return f"{seconds / 3600:+.1f}h"
+
+
+# --- checks -----------------------------------------------------------------
+
+def check_host() -> List[Dict[str, str]]:
+    domain = host_config().get("domain", "")
+    if domain in ("personal", "work"):
+        return [check("host.domain", "ok", domain)]
+    return [check("host.domain", "warn", "unset", f"echo domain=personal > {config_dir() / 'host'}")]
+
+
+def codex_identity() -> Dict[str, str]:
+    payload = cgs._load_json(cgs.cli_auth_path()) or {}
+    tokens = payload.get("tokens") or {}
+    claims = _jwt_claims(str(tokens.get("id_token") or ""))
+    auth = claims.get("https://api.openai.com/auth") or {}
+    email = str(claims.get("email") or "")
+    return {
+        "auth_mode": str(payload.get("auth_mode") or ""),
+        "email_domain": email.rsplit("@", 1)[-1].lower() if "@" in email else "",
+        "plan": str(auth.get("chatgpt_plan_type") or ""),
+        "account_suffix": str(auth.get("chatgpt_account_id") or "")[-6:],
+    }
+
+
+def check_codex() -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    report = cgs.status_report()
+    present = [s for s in ("cli", "pi", "hermes") if report.get(f"{s}_present")]
+    if not present:
+        return [check("codex.grant", "warn", "no stores", "codex login")]
+    if report.get("refresh_aligned"):
+        rows.append(check("codex.grant", "ok", f"aligned stores={','.join(present)} newest={report.get('newest_source')}"))
+    else:
+        rows.append(check(
+            "codex.grant", "fail",
+            f"refresh tokens diverge across {','.join(present)}; non-newest stores will hit invalid_grant",
+            "cred sync codex",
+        ))
+    newest = cgs.newest_grant(cgs.collect_grants())
+    if newest:
+        exp = cgs.access_exp_unix(newest.access_token)
+        if exp and exp < time.time():
+            rows.append(check("codex.access", "fail", f"newest access expired {_hours(exp - time.time())}", "codex login"))
+        elif exp:
+            rows.append(check("codex.access", "ok", f"expires {_hours(exp - time.time())}"))
+
+    ident = codex_identity()
+    if ident["auth_mode"]:
+        detail = f"mode={ident['auth_mode']} domain={ident['email_domain'] or '?'} plan={ident['plan'] or '?'} acct=…{ident['account_suffix']}"
+        host = host_config()
+        work_domains = _csv(host.get("work_email_domains", ""))
+        boundary_breach = host.get("domain") == "personal" and ident["email_domain"] in work_domains
+        rows.append(check(
+            "codex.account", "fail" if boundary_breach else "ok", detail,
+            "work account on personal host: codex logout && codex login" if boundary_breach else "",
+        ))
+    return rows
+
+
+def codex_config_model() -> str:
+    raw = os.environ.get("CODEX_HOME", "").strip()
+    path = (Path(raw).expanduser() if raw else Path.home() / ".codex") / "config.toml"
+    if not path.is_file():
+        return ""
+    for line in path.read_text().splitlines():
+        if line.startswith("["):
+            break  # top-level keys only
+        m = re.match(r'\s*model\s*=\s*"([^"]+)"', line)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def probe_codex_model(model: str) -> Dict[str, str]:
+    """One tiny `codex exec` call; distinguishes auth failure from model entitlement."""
+    if not shutil.which("codex"):
+        return check(f"codex.model[{model}]", "skip", "codex not installed")
+    env = {k: v for k, v in os.environ.items() if not (k.startswith(LEAK_PREFIXES) and k not in LEAK_ALLOW)}
+    proc = _run(
+        ["codex", "exec", "--skip-git-repo-check", "-s", "read-only", "-m", model, "reply with exactly: ok"],
+        timeout=150, env=env,
+    )
+    text = proc.stdout + proc.stderr
+    name = f"codex.model[{model}]"
+    if "model_not_found" in text or "is not supported" in text:
+        return check(name, "fail", "not entitled for this account/plan", "pick an entitled model: cred probe codex -m <model>")
+    if re.search(r"401|invalid_grant|token_(expired|revoked)|refresh_token_reused", text):
+        return check(name, "fail", "auth rejected", "cred sync codex || codex login")
+    if proc.returncode == 0:
+        return check(name, "ok", "entitled")
+    return check(name, "warn", f"rc={proc.returncode}")
+
+
+def check_pi() -> List[Dict[str, str]]:
+    data = cgs._load_json(cgs.pi_auth_path())
+    if not data:
+        return [check("pi.auth", "skip", "no pi auth.json")]
+    rows = []
+    now = time.time()
+    for provider, cred in sorted(data.items()):
+        if not isinstance(cred, dict):
+            continue
+        kind = cred.get("type", "?")
+        exp = cred.get("expires")
+        if kind == "oauth" and isinstance(exp, (int, float)):
+            left = exp / 1000 - now
+            # pi refreshes oauth on use; an expired access with a refresh token is fine
+            # unless the refresh token itself was rotated away (codex: see codex.grant).
+            status = "ok" if left > 0 or cred.get("refresh") else "fail"
+            rows.append(check(f"pi.{provider}", status, f"oauth access {_hours(left)} refresh={'yes' if cred.get('refresh') else 'no'}"))
+        else:
+            rows.append(check(f"pi.{provider}", "ok", kind))
+    return rows
+
+
+def check_gh() -> List[Dict[str, str]]:
+    if not shutil.which("gh"):
+        return [check("gh", "skip", "gh not installed")]
+    proc = _run(["gh", "auth", "status", "--active"])
+    if proc.returncode == 0:
+        return [check("gh", "ok", "active account valid")]
+    return [check("gh", "fail", "active account token invalid", "gh auth login -h github.com  (or gh auth switch)")]
+
+
+def check_op() -> List[Dict[str, str]]:
+    if not shutil.which("op"):
+        return [check("op", "skip", "1Password CLI not installed")]
+    proc = _run(["op", "whoami"], timeout=10)
+    if proc.returncode == 0:
+        return [check("op", "ok", "signed in")]
+    # Expected over non-interactive ssh; desktop-app integration signs in on use.
+    return [check("op", "warn", "not signed in for this shell", "op signin (interactive, Touch ID)")]
+
+
+def check_ssh_agent() -> List[Dict[str, str]]:
+    if not os.environ.get("SSH_AUTH_SOCK"):
+        return [check("ssh-agent", "warn", "SSH_AUTH_SOCK unset in this shell")]
+    proc = _run(["ssh-add", "-l"], timeout=10)
+    if proc.returncode == 0:
+        return [check("ssh-agent", "ok", f"{len(proc.stdout.splitlines())} key(s)")]
+    if proc.returncode == 1:
+        return [check("ssh-agent", "warn", "agent reachable, no identities")]
+    return [check("ssh-agent", "warn", "agent unreachable")]
+
+
+def tmux_leaked_env() -> Optional[List[str]]:
+    if not shutil.which("tmux"):
+        return None
+    proc = _run(["tmux", "show-environment", "-g"], timeout=5)
+    if proc.returncode != 0:
+        return None
+    names = []
+    for line in proc.stdout.splitlines():
+        name = line.split("=", 1)[0].lstrip("-")
+        if name.startswith(LEAK_PREFIXES) and name not in LEAK_ALLOW:
+            names.append(name)
+    return names
+
+
+def check_env() -> List[Dict[str, str]]:
+    leaked = tmux_leaked_env()
+    if leaked is None:
+        return [check("tmux.env", "skip", "no tmux server")]
+    if leaked:
+        return [check(
+            "tmux.env", "fail",
+            f"{len(leaked)} agent-session vars in global tmux env (e.g. {','.join(sorted(leaked)[:3])}); every new pane inherits them",
+            "cred doctor --fix",
+        )]
+    return [check("tmux.env", "ok", "clean")]
+
+
+# --- backends ---------------------------------------------------------------
+
+def backends() -> List[Dict[str, Any]]:
+    """Discover cred-backend.v1 executables. A backend that fails describe is reported, never used."""
+    out = []
+    root = config_dir() / "backends.d"
+    if not root.is_dir():
+        return out
+    for path in sorted(root.iterdir()):
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            continue
+        proc = _run([str(path), "describe"], timeout=15)
+        try:
+            desc = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else {}
+        except (json.JSONDecodeError, IndexError):
+            desc = {}
+        ok = desc.get("schema") == BACKEND_SCHEMA and isinstance(desc.get("providers"), list)
+        out.append({
+            "path": str(path),
+            "name": desc.get("name") or path.name,
+            "domain": desc.get("domain", ""),
+            "providers": desc.get("providers") or [],
+            "valid": ok,
+        })
+    return out
+
+
+def eligible_backend(provider: str) -> Optional[Dict[str, Any]]:
+    domain = host_config().get("domain", "")
+    for b in backends():
+        if b["valid"] and provider in b["providers"] and b["domain"] and b["domain"] == domain:
+            return b
+    return None
+
+
+def check_backends() -> List[Dict[str, str]]:
+    rows = []
+    domain = host_config().get("domain", "")
+    for b in backends():
+        if not b["valid"]:
+            rows.append(check(f"backend.{b['name']}", "fail", f"describe did not return {BACKEND_SCHEMA}", f"fix or remove {b['path']}"))
+        elif b["domain"] != domain:
+            rows.append(check(f"backend.{b['name']}", "fail",
+                              f"domain={b['domain'] or '?'} on {domain or 'unset'} host; ignored for routing",
+                              f"remove {b['path']}"))
+        else:
+            rows.append(check(f"backend.{b['name']}", "ok", f"domain={b['domain']} providers={','.join(b['providers'])}"))
+    return rows
+
+
+# --- commands ---------------------------------------------------------------
+
+CHECKS = {
+    "host": check_host,
+    "codex": check_codex,
+    "pi": check_pi,
+    "gh": check_gh,
+    "op": check_op,
+    "ssh": check_ssh_agent,
+    "env": check_env,
+    "backends": check_backends,
+}
+
+
+def collect(only: Optional[List[str]]) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for key, fn in CHECKS.items():
+        if only and key not in only:
+            continue
+        try:
+            rows.extend(fn())
+        except Exception as exc:  # noqa: BLE001 - one broken check must not hide the rest
+            rows.append(check(key, "fail", f"check crashed: {type(exc).__name__}"))
+    return rows
+
+
+def render(rows: List[Dict[str, str]], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps({"schema": "cred-status.v1", "host": os.uname().nodename, "checks": rows}))
+        return
+    width = max((len(r["check"]) for r in rows), default=10)
+    for r in rows:
+        line = f"{r['status']:<5} {r['check']:<{width}}  {r['detail']}"
+        if r.get("fix") and r["status"] in ("fail", "warn"):
+            line += f"   -> {r['fix']}"
+        print(line)
+
+
+def exit_code(rows: List[Dict[str, str]]) -> int:
+    return 1 if any(r["status"] == "fail" for r in rows) else 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    rows = collect(args.only)
+    render(rows, args.json)
+    return exit_code(rows)
+
+
+def sync_codex() -> Dict[str, Any]:
+    return cgs.adopt_newest()
+
+
+def scrub_tmux_env() -> List[str]:
+    leaked = tmux_leaked_env() or []
+    for name in leaked:
+        _run(["tmux", "set-environment", "-gu", name], timeout=5)
+    return leaked
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    rows = collect(args.only)
+    if args.fix:
+        failed = {r["check"] for r in rows if r["status"] == "fail"}
+        if "codex.grant" in failed:
+            result = sync_codex()
+            print(f"fixed  codex.grant  adopt source={result.get('source')} wrote={','.join(result.get('wrote') or [])}", file=sys.stderr)
+        if "tmux.env" in failed:
+            print(f"fixed  tmux.env  unset {len(scrub_tmux_env())} vars", file=sys.stderr)
+        rows = collect(args.only)
+    if args.probe:
+        model = codex_config_model()
+        if model:
+            rows.append(probe_codex_model(model))
+    render(rows, args.json)
+    return exit_code(rows)
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    if args.provider not in ("codex", "openai-codex"):
+        print(f"cred: no sync for provider {args.provider}", file=sys.stderr)
+        return 2
+    result = sync_codex()
+    print(json.dumps({"schema": "cred-sync.v1", "provider": "openai-codex", **{k: result.get(k) for k in ("status", "source", "wrote", "stores", "refresh_aligned")}}))
+    return 0 if result.get("status") in ("ok", "empty") else 1
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    models = args.model or [codex_config_model()]
+    rows = [probe_codex_model(m) for m in models if m]
+    render(rows, args.json)
+    return exit_code(rows)
+
+
+def cmd_backends(args: argparse.Namespace) -> int:
+    found = backends()
+    if args.json:
+        print(json.dumps({"schema": "cred-backends.v1", "host_domain": host_config().get("domain", ""), "backends": found}))
+    else:
+        for b in found:
+            print(f"{b['name']:<16} domain={b['domain'] or '?':<9} valid={str(b['valid']).lower():<5} providers={','.join(b['providers'])}  {b['path']}")
+    return 0
+
+
+def cmd_materialize(args: argparse.Namespace) -> int:
+    """Route a provider grant to the eligible backend. Exit 3 = no backend claims it (caller falls back)."""
+    b = eligible_backend(args.provider)
+    if not b:
+        return 3
+    cmd = [b["path"], "materialize", "--provider", args.provider, "--targets", args.targets]
+    if args.apply:
+        cmd.append("--apply")
+    proc = _run(cmd, timeout=300)
+    sys.stderr.write(proc.stderr)
+    print(json.dumps({"schema": "cred-materialize.v1", "backend": b["name"], "provider": args.provider, "rc": proc.returncode}))
+    return 0 if proc.returncode == 0 else 1
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(prog="cred", description="Personal credential health + backend plane (never prints secrets).")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("status", help="report credential health")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--only", nargs="+", choices=list(CHECKS))
+    s.set_defaults(fn=cmd_status)
+
+    d = sub.add_parser("doctor", help="status + safe repairs")
+    d.add_argument("--fix", action="store_true", help="align codex grants, scrub leaked tmux env")
+    d.add_argument("--probe", action="store_true", help="one live codex call against the configured model")
+    d.add_argument("--json", action="store_true")
+    d.add_argument("--only", nargs="+", choices=list(CHECKS))
+    d.set_defaults(fn=cmd_doctor)
+
+    y = sub.add_parser("sync", help="single-writer grant alignment")
+    y.add_argument("provider", choices=["codex", "openai-codex"])
+    y.set_defaults(fn=cmd_sync)
+
+    r = sub.add_parser("probe", help="live entitlement probe")
+    r.add_argument("provider", choices=["codex"])
+    r.add_argument("-m", "--model", action="append")
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(fn=cmd_probe)
+
+    b = sub.add_parser("backends", help="list cred-backend.v1 backends")
+    b.add_argument("--json", action="store_true")
+    b.set_defaults(fn=cmd_backends)
+
+    m = sub.add_parser("materialize", help="route a grant to the host-domain backend (exit 3: none)")
+    m.add_argument("--provider", required=True)
+    m.add_argument("--targets", required=True)
+    m.add_argument("--apply", action="store_true")
+    m.set_defaults(fn=cmd_materialize)
+
+    args = p.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Install the personal credential plane: `cred` + `credential-sync` on PATH and
+# a host-domain file that gates which cred-backend.v1 backends may be routed.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: bin/cred/install [--domain personal|work]
+
+Links cred and credential-sync into ~/.local/bin and writes
+${CRED_CONFIG_DIR:-~/.config/cred}/host (domain=...) if it does not exist.
+Default domain: personal. An existing host file is never overwritten.
+USAGE
+}
+
+DOMAIN="personal"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --domain) DOMAIN="${2:?--domain needs a value}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+case "$DOMAIN" in personal|work) ;; *) echo "invalid domain: $DOMAIN" >&2; exit 2 ;; esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN="$HOME/.local/bin"
+CONF="${CRED_CONFIG_DIR:-$HOME/.config/cred}"
+mkdir -p "$BIN" "$CONF/backends.d"
+chmod 700 "$CONF"
+
+ln -sfn "$ROOT/bin/cred/cred" "$BIN/cred"
+ln -sfn "$ROOT/bin/credential-sync" "$BIN/credential-sync"
+
+if [ ! -f "$CONF/host" ]; then
+  printf 'domain=%s\n' "$DOMAIN" > "$CONF/host"
+fi
+
+echo "cred -> $(readlink "$BIN/cred")"
+echo "credential-sync -> $(readlink "$BIN/credential-sync")"
+echo "host: $(cat "$CONF/host" | tr '\n' ' ')"

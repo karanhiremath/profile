@@ -469,6 +469,11 @@ pi-skills:
     ./bin/atop/resolve-skill-conflicts
 
 # Install/upgrade Codex CLI via pnpm (node + pnpm from mise)
+cred domain="personal":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./bin/cred/install --domain "{{domain}}"
+
 codex:
     #!/usr/bin/env bash
     set -euo pipefail
