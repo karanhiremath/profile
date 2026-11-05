@@ -1,6 +1,6 @@
 ---
 name: aos
-description: Agent OS install — Hermes/pi/Codex/Cursor skill and toolset wiring, harness-sync, isolated HERMES_HOME skills links.
+description: Agent OS install, harness-sync, isolated skill links, and offline voice-conference routing for Ghostty and remote tmux targets.
 ---
 
 # aos
@@ -35,6 +35,17 @@ TUI Config writes `config.yaml`. `agents up` rematerializes from profile YAML
 unless `HERMES_AGENT_FORCE_CONFIG=1`. Theme pins use `nighttideDefault`.
 
 Live Cos/pi prompt coordination: `aos buf` / `atop vi <id>` (skill `atop-vi`). Never send-keys. Buffer catalog/get/apply is `aos-buf` (`just aos-buf`). Many Cos panes per home; each is its own Hermes session. Do not share a rendered TUI.
+
+## Voice conference (offline only)
+
+`aos voice doctor|targets|bind|join|dispatch|leave|renderer` is a fake-only
+contract spike. Read `bin/aos-voice/README.md` and `CONTRACT.md` in the profile
+checkout. `just aos-voice-test` validates it; `just aos-voice-demo` emits JSON.
+Bind exact domain/host/tmux server/session/window/pane/harness generation.
+Use only synthetic catalogs and requests. Simulated ACKs are not remote delivery.
+No managed-agent connection, microphone, SSH, live steering or libghostty renderer
+is implemented. Keep personal/work domains separate; never improvise send-keys.
+Live auth, audio, deployment and host activation require a separate approved plan.
 
 ## Filter + policy engine
 

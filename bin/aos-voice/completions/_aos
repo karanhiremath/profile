@@ -1,0 +1,24 @@
+#compdef aos aos-voice
+# Optional completion definitions; no live host/target discovery.
+_aos() {
+  local offset=1
+  if [[ "${words[1]:t}" == aos ]]; then
+    if (( CURRENT == 2 )); then
+      compadd status sync pull doctor buf policy voice atop hosts bus install help
+      return
+    fi
+    [[ "$words[2]" == voice ]] || return
+    offset=2
+  fi
+  if (( CURRENT == offset + 1 )); then
+    compadd status doctor targets bind connect join disconnect leave dispatch renderer
+    return
+  fi
+  case "${words[CURRENT-1]}" in
+    --domain) compadd personal work ;;
+    --catalog|--request) _files ;;
+    --generation|--target) return ;;
+    *) compadd -- --fake --dry-run --domain --target --generation --catalog --request --help ;;
+  esac
+}
+_aos "$@"

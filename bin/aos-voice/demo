@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Repeatable fake pipeline; no sockets, microphones, SSH, tmux, or provider calls.
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${1:-}" == "--help" ]]; then
+    echo 'Usage: demo [--help]. Emit one fake conference JSON payload.' >&2
+    exit 0
+fi
+if [[ "$#" -ne 0 ]]; then
+    echo 'demo: unexpected argument (use --help)' >&2
+    exit 2
+fi
+"$ROOT/aos-voice" targets --catalog "$ROOT/fixtures/catalog.json" \
+    | "$ROOT/aos-voice" bind --fake --domain personal --target remote-worker --generation 3 \
+    | "$ROOT/aos-voice" join --fake \
+    | "$ROOT/aos-voice" dispatch --fake --request "$ROOT/fixtures/request.json"

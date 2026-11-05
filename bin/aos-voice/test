@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${1:-}" == "--help" ]]; then
+    echo 'Usage: test [--help]. Run offline voice contracts and CLI regression tests.' >&2
+    exit 0
+fi
+if [[ "$#" -ne 0 ]]; then
+    echo 'test: unexpected argument (use --help)' >&2
+    exit 2
+fi
+exec uv run --offline --no-project --python 3.12 "$ROOT/tests/test_voice.py"

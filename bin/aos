@@ -5,7 +5,7 @@
 # policy engine, fleet TUI, host registry, and job-bus snapshot.
 # Tool-only: no project facts live in this script.
 #
-# Usage: aos [status|sync|pull|doctor|buf|policy|atop|hosts|bus|install|help] [args]
+# Usage: aos [status|sync|pull|doctor|buf|policy|voice|atop|hosts|bus|install|help] [args]
 set -euo pipefail
 
 PROFILE_DIR="${PROFILE_DIR:-$HOME/src/profile}"
@@ -21,6 +21,7 @@ Usage: aos <subcommand> [args]
   doctor          harness-sync status + hermes doctor (if present)
   buf [args]      aos-buf prompt-buffer primitive (catalog/get/apply)
   policy [args]   aos-policy engine (errors with a hint if not installed)
+  voice [args]    offline voice conference contracts (fake transport only)
   atop [args]     atop fleet TUI (never send-keys; steer via bus/atop vi)
   hosts           tmux-connect host registry list
   bus             job-bus snapshot: config summary + job counts + board check
@@ -114,6 +115,7 @@ case "${1:-help}" in
 	doctor) shift; cmd_doctor "$@" ;;
 	buf)    shift; exec aos-buf "$@" ;;
 	policy) shift; cmd_policy "$@" ;;
+	voice)  shift; exec "$PROFILE_DIR/bin/aos-voice/aos-voice" "$@" ;;
 	atop)   shift; exec atop "$@" ;;
 	hosts)  shift; exec "$PROFILE_DIR/bin/tmux/tmux-connect" --list ;;
 	bus)    shift; cmd_bus "$@" ;;

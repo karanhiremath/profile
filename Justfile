@@ -585,6 +585,14 @@ aos:
     export PROFILE_DIR="$(pwd)"
     ./bin/aos install
 
+# Offline-only voice conference regression suite; no host installation or audio.
+aos-voice-test:
+    ./bin/aos-voice/test
+
+# Fake multi-host voice conference pipeline (JSON only).
+aos-voice-demo:
+    ./bin/aos-voice/demo
+
 # Optional: install herdr. Not required for COSW/PM/PL/atop (it hogs CPU).
 herdr:
     #!/usr/bin/env bash

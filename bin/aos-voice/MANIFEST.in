@@ -1,0 +1,4 @@
+include README.md CONTRACT.md SOURCE-MAP.md .python-version uv.lock run.py aos-voice demo test
+recursive-include fixtures *.json
+recursive-include completions *
+recursive-include tests *.py *.bash

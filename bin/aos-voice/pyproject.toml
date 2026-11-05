@@ -1,0 +1,20 @@
+[project]
+name = "aos-voice"
+version = "0.1.0"
+description = "Offline AOS voice-conference contracts and fake transport"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+aos-voice = "aos_voice.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "RUF", "PLW1510"]

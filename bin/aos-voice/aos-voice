@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Source-checkout launcher; never install dependencies or download a runtime.
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec uv run --offline --no-project --python 3.12 "$ROOT/run.py" "$@"

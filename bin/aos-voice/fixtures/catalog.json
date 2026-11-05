@@ -1,0 +1,11 @@
+{
+  "schema": "aos.voice.catalog.v1",
+  "targets": [
+    {"id":"controller","domain":"personal","host":"demo-local","profile":"chief-of-staff","role":"cos","harness":"hermes","session":"cos-demo","generation":1,"parent":null,"capabilities":["status","observe","steer","draft"],"tmux":{"server":"default","session":"$1","window":"@1","pane":"%1"}},
+    {"id":"project-manager","domain":"personal","host":"demo-local","profile":"demo-pm","role":"pm","harness":"hermes","session":"pm-demo","generation":1,"parent":"controller","capabilities":["status","observe","steer","draft"],"tmux":{"server":"default","session":"$2","window":"@2","pane":"%2"}},
+    {"id":"project-lead","domain":"personal","host":"demo-remote","profile":"demo-pl","role":"pl","harness":"pi","session":"pl-demo","generation":2,"parent":"project-manager","capabilities":["status","observe","steer","draft"],"tmux":{"server":"toolbox","session":"$1","window":"@1","pane":"%1"}},
+    {"id":"remote-worker","domain":"personal","host":"demo-remote","profile":"demo-worker","role":"worker","harness":"pi","session":"worker-demo","generation":3,"parent":"project-lead","capabilities":["status","observe","steer","draft"],"tmux":{"server":"toolbox","session":"$1","window":"@1","pane":"%2"}},
+    {"id":"plain-shell","domain":"personal","host":"demo-remote","profile":"demo-shell","role":"terminal","harness":"none","session":"shell-demo","generation":1,"parent":"controller","capabilities":["status","observe"],"tmux":{"server":"other","session":"$1","window":"@1","pane":"%1"}},
+    {"id":"work-controller","domain":"work","host":"demo-work","profile":"chief-of-staff-work","role":"cos","harness":"hermes","session":"work-cos-demo","generation":1,"parent":null,"capabilities":["status","observe","steer","draft"],"tmux":{"server":"default","session":"$1","window":"@1","pane":"%1"}}
+  ]
+}
