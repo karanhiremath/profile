@@ -60,3 +60,11 @@ aos policy eval --surface catalog.tools --wrapper herm-tui --provider cursor
 exclusive) must never appear in CoT, MoA, or human-visible tokens.
 Adapters compile into Cursor / Claude / Codex / pi / Hermes permission
 sidecars.
+
+## Fleet SOP + aos CLI
+
+- AOS/AEAM fleet SOP (mandatory for workflow-toolkit work):
+  `~/src/karan.hiremath/agentic/memory/playbooks/aos-aeam-fleet-sop.md`.
+  AEAM job-bus standard + installer: `~/src/karan.hiremath/agentic/aeam/`.
+- `aos` CLI (install: `just aos`): `status` / `sync` / `pull` / `doctor` /
+  `buf` / `policy` / `atop` / `hosts` / `bus` / `install`.
