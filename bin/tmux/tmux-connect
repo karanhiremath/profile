@@ -15,6 +15,7 @@
 #   tmux-connect --sandbox <host> <box> --ls   # list tmux sessions in sandbox
 #   tmux-connect --list                 # list registered hosts
 #   tmux-connect --status               # check which hosts have active sessions
+#   tmux-connect <host> --agent --ls # cauth-managed destination-constrained signer
 #   tmux-connect --help                 # show help
 
 set -euo pipefail
@@ -177,7 +178,7 @@ remote_tmux_cmd() {
     local timeout="${TMUX_CONNECT_LS_TIMEOUT:-${TMUX_CONNECT_CONNECT_TIMEOUT:-5}}"
     while IFS= read -r target; do
         [[ -n "$target" ]] || continue
-        output=$(ssh -o ConnectTimeout="$timeout" -o BatchMode=yes "$target" "$remote_cmd" 2>/dev/null)
+        output=$(connect_ssh -o ConnectTimeout="$timeout" -o BatchMode=yes "$target" "$remote_cmd" 2>/dev/null)
         status=$?
         if [[ "$status" -eq 0 ]]; then
             printf '%s\n' "$output"
@@ -259,7 +260,7 @@ connect_remote() {
         if [[ "${#targets[@]}" -gt 1 ]]; then
             echo "Trying SSH target: $target" >&2
         fi
-        if ssh -o ConnectTimeout="${TMUX_CONNECT_CONNECT_TIMEOUT:-5}" -t "$target" "$remote_cmd"; then
+        if connect_ssh -o ConnectTimeout="${TMUX_CONNECT_CONNECT_TIMEOUT:-5}" -t "$target" "$remote_cmd"; then
             return 0
         else
             status=$?
@@ -375,6 +376,49 @@ cmd_picker() {
 
 # shellcheck source=tmux-connect-sandbox.inc
 . "$SCRIPT_DIR/tmux-connect-sandbox.inc"
+
+# Agent route delegates credential custody to cauth; no fallback to vault signing.
+connect_ssh() {
+    if [[ "${TMUX_CONNECT_AGENT_MODE:-0}" != 1 ]]; then
+        command ssh "$@"
+        return
+    fi
+    local timeout=5 target option tty=0 batch=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t) tty=1; shift ;;
+            -o)
+                [[ $# -ge 2 ]] || return 2
+                option="$2"; shift 2
+                case "$option" in
+                    ConnectTimeout=*) timeout="${option#*=}" ;;
+                    BatchMode=yes) batch=1 ;;
+                    *) echo 'tmux-connect: agent SSH option rejected' >&2; return 2 ;;
+                esac ;;
+            -*) echo 'tmux-connect: agent SSH option rejected' >&2; return 2 ;;
+            *) break ;;
+        esac
+    done
+    [[ $# -ge 1 && "$timeout" =~ ^[0-9]+$ ]] || return 2
+    target="$1"; shift
+    [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 2
+    local policy_root="${CAUTH_SSH_POLICY_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cauth/ssh-agent}"
+    local -a args=(exec --policy "$policy_root/$target.json" --host "$target" --connect-timeout "$timeout")
+    [[ "$tty" == 1 ]] && args+=(--tty)
+    [[ "$batch" == 1 ]] && args+=(--batch)
+    "${CAUTH_SSH_AGENT_BIN:-cauth-ssh-agent}" "${args[@]}" -- "$@"
+}
+
+# --agent can appear anywhere; preserve existing argument positions.
+agent_args=()
+for agent_arg in "$@"; do
+    if [[ "$agent_arg" == --agent ]]; then
+        export TMUX_CONNECT_AGENT_MODE=1
+    else
+        agent_args+=("$agent_arg")
+    fi
+done
+set -- "${agent_args[@]}"
 
 # --- Main ---
 

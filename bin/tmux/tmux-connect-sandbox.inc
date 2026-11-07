@@ -171,7 +171,7 @@ connect_sandbox_remote() {
         if [[ "${#targets[@]}" -gt 1 ]]; then
             echo "Trying SSH target: $target" >&2
         fi
-        if ssh -o ConnectTimeout="${TMUX_CONNECT_CONNECT_TIMEOUT:-5}" -t "$target" "$remote_cmd"; then
+        if connect_ssh -o ConnectTimeout="${TMUX_CONNECT_CONNECT_TIMEOUT:-5}" -t "$target" "$remote_cmd"; then
             return 0
         else
             status=$?
