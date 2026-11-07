@@ -74,7 +74,7 @@ Install everything with `just ai-toolkit`, or pick individual tools:
 |--------|-------------|
 | `just claude` | Claude Code |
 | `just pi` | pi coding agent + profile-managed theme |
-| `just pi-skills` | Link profile-managed Pi skills |
+| `just skills-audit` / `just skills-sync` | Audit / apply manifest-managed harness skills (`bin/skill-steward`) |
 | `just codex` | Codex CLI from Codex.app |
 | `just cmux` | cmux (Claude multiplexer) |
 | `just copilot` | GitHub Copilot CLI |

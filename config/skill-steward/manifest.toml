@@ -1,0 +1,183 @@
+# skill-steward manifest — personal/tool skills (no work content; work skills live in a
+# manifests.d overlay owned by the work repo). Every skill a harness loads is either
+# declared here as [[skill]] or listed under [external] (owned by another installer).
+#
+# Pinned sources: skills link into ~/.local/share/skill-steward/sources/<source>, a detached
+# worktree at `ref`, never into the primary checkout (its branch moves under you).
+# When a branch merges, repoint its skills at `profile` (origin/master) and drop the source.
+
+[harnesses]
+claude = "~/.claude/skills"
+codex  = "~/.codex/skills"
+pi     = "~/.pi/agent/skills"
+
+[sources.profile]
+repo = "~/src/profile"
+ref  = "origin/master"
+
+# unmerged: remove once kh/profile-mac-tooling-20260923 lands on master
+[sources.profile-mac-tooling]
+repo = "~/src/profile"
+ref  = "kh/profile-mac-tooling-20260923"
+
+# unmerged: PR #70
+[sources.profile-nvim-workbench]
+repo = "~/src/profile"
+ref  = "kh/nvim-prompt-workbench-20260912"
+
+# unmerged
+[sources.profile-job-bus]
+repo = "~/src/profile"
+ref  = "kh/job-bus-align-20260913"
+
+# unpinned: links straight into the checkout (audit reports pinned=false)
+[sources.hermes-agent]
+repo = "~/src/hermes-agent"
+
+[external]
+claude = [
+  "synced",                                   # claude.ai skill sync
+  "computer-use", "launch-with-aws", "resolve-dependencies", "signing-in-to-aws",
+  "google-agents-cli-adk-code", "google-agents-cli-deploy", "google-agents-cli-eval",
+  "google-agents-cli-observability", "google-agents-cli-publish",
+  "google-agents-cli-scaffold", "google-agents-cli-workflow",  # ~/.agents installer
+  "amazon-bedrock", "aws-auth", "aws-billing-and-cost-management", "aws-blocks", "aws-cdk", "aws-cloudformation", "aws-compute", "aws-containers", "aws-deployment", "aws-messaging-and-streaming", "aws-observability", "aws-sdk-js-v3-usage", "aws-sdk-python-usage", "aws-sdk-swift-usage", "aws-serverless",  # AWS MCP skill installer
+]
+codex = [".system"]  # codex built-ins
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/a-top"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/aop"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/aop-steer"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/aos"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/atop-vi"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/handoff"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/herdr-pane-management"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/infra-herm"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/infra-host"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/shared/attach"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/herm-tui-profiles"
+harnesses = ["pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/perplexity-web-research"
+harnesses = ["pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/session-compaction"
+harnesses = ["pi"]
+
+[[skill]]
+source = "profile-mac-tooling"
+path = "skills/pi/work-sprint-planning"
+harnesses = ["pi"]
+
+[[skill]]
+source = "profile-nvim-workbench"
+path = "skills/pi/nvim-prompt-workbench"
+harnesses = ["pi"]
+
+[[skill]]
+source = "profile-job-bus"
+path = "skills/pi/tty-eval"
+harnesses = ["pi"]
+
+[[skill]]
+source = "hermes-agent"
+path = "skills/autonomous-ai-agents"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+name = "autonomous-ai-agents-codex"
+source = "hermes-agent"
+path = "skills/autonomous-ai-agents/codex"
+harnesses = ["codex"]
+
+[[skill]]
+name = "autonomous-ai-agents-optional"
+source = "hermes-agent"
+path = "optional-skills/autonomous-ai-agents"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+name = "autonomous-ai-agents-antigravity-cli"
+source = "hermes-agent"
+path = "optional-skills/autonomous-ai-agents/antigravity-cli"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+name = "autonomous-ai-agents-blackbox"
+source = "hermes-agent"
+path = "optional-skills/autonomous-ai-agents/blackbox"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+name = "autonomous-ai-agents-grok"
+source = "hermes-agent"
+path = "optional-skills/autonomous-ai-agents/grok"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+name = "autonomous-ai-agents-honcho"
+source = "hermes-agent"
+path = "optional-skills/autonomous-ai-agents/honcho"
+harnesses = ["codex", "pi"]
+
+[[skill]]
+name = "autonomous-ai-agents-openhands"
+source = "hermes-agent"
+path = "optional-skills/autonomous-ai-agents/openhands"
+harnesses = ["codex", "pi"]
+
+# self: bootstrap from this branch until kh/skill-steward-20260928 lands, then use "profile"
+[sources.profile-skill-steward]
+repo = "~/src/profile"
+ref  = "kh/skill-steward-20260928"
+
+[[skill]]
+source = "profile-skill-steward"
+path = "skills/shared/skill-steward"
+harnesses = ["claude", "codex", "pi"]

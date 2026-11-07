@@ -277,15 +277,8 @@ pc:
     mkdir -p "$HOME/.local/bin"
     cp target/release/pc "$HOME/.local/bin/pc"
     echo "✓ Installed pc to ~/.local/bin/pc"
-    # Install profile-managed Pi skills.
-    if [ -d "$(pwd)/skills/pi" ]; then
-        mkdir -p "$HOME/.pi/agent/skills"
-        for skill in "$(pwd)"/skills/pi/*; do
-            [ -d "$skill" ] || continue
-            ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
-        done
-        echo "✓ Linked profile Pi skills"
-    fi
+    # Harness skills are manifest-managed (config/skill-steward/manifest.toml).
+    just skills-sync
     # Install Datadog MCP extension if DD env is set
     if [ -n "${DD_API_KEY:-}" ]; then
         mkdir -p "$HOME/.pi/agent/extensions"
@@ -399,15 +392,28 @@ pi:
     export APP_BIN="${PROFILE_DIR}/bin"
     ./bin/pi/install
 
-# Link profile-managed Pi skills into ~/.pi/agent/skills
-pi-skills:
+# Deprecated alias: harness skills are manifest-managed by skill-steward
+pi-skills: skills-sync
+
+# Link skill-steward's manifest into ~/.config (once per machine)
+skills-install:
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir -p "$HOME/.pi/agent/skills"
-    for skill in "$(pwd)"/skills/pi/*; do
-        [ -d "$skill" ] || continue
-        ln -fns "$skill" "$HOME/.pi/agent/skills/$(basename "$skill")"
-    done
+    mkdir -p "$HOME/.config/skill-steward/manifests.d"
+    # Bootstrap the pinned profile source, then link the manifest from it (never from this
+    # checkout, whose branch moves).
+    ./bin/skill-steward/skill-steward sync --apply --manifest "$(pwd)/config/skill-steward/manifest.toml" >/dev/null || true
+    pinned="${SKILL_STEWARD_STATE:-$HOME/.local/share/skill-steward}/sources/profile/config/skill-steward/manifest.toml"
+    test -f "$pinned" || { echo "skills-install: $pinned missing (is skill-steward on origin/master?)" >&2; exit 1; }
+    ln -fns "$pinned" "$HOME/.config/skill-steward/manifest.toml"
+
+# Read-only report of every harness skill entry (JSON)
+skills-audit:
+    ./bin/skill-steward/skill-steward audit
+
+# Make harness skill dirs match the manifest (links from pinned source worktrees)
+skills-sync *ARGS:
+    ./bin/skill-steward/skill-steward sync --apply {{ARGS}}
 
 # Link Codex.app CLI for shell/tmux use
 codex:

@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""skill-steward — manifest-driven skill loading for agent harnesses.
+
+One declared source of truth for which skills each harness (claude, codex, pi,
+...) loads, linked from pinned read-only source worktrees instead of mutable
+primary checkouts or hand copies.
+
+Usage:
+    skill-steward audit  [--manifest PATH ...]
+    skill-steward sync   [--manifest PATH ...] [--apply] [--prune] [--no-fetch]
+    skill-steward hook   [--manifest PATH ...]
+    skill-steward --help
+
+Commands:
+    audit   Read-only. Emits a JSON report of every harness entry and finding.
+            Exit 0 = clean, 1 = findings, 2 = usage/manifest error.
+    sync    Plans (default) or applies (--apply) the changes that make each
+            harness match the manifest: refresh pinned sources, link missing
+            skills, relink drifted links, drop dangling links. --prune also
+            quarantines undeclared entries (moved, never deleted).
+    hook    SessionStart-safe: no git, no writes. Silent when clean; one line
+            on stdout when there are findings.
+
+Manifests (TOML, layered in order; later files add/override):
+    $SKILL_STEWARD_MANIFESTS (colon-separated), else
+    ~/.config/skill-steward/manifest.toml + ~/.config/skill-steward/manifests.d/*.toml
+
+stdout is JSON only (hook: one line or nothing). Diagnostics go to stderr.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+STATE_DIR = Path(os.environ.get("SKILL_STEWARD_STATE", "~/.local/share/skill-steward")).expanduser()
+CONFIG_DIR = Path(os.environ.get("SKILL_STEWARD_CONFIG", "~/.config/skill-steward")).expanduser()
+DESCRIPTION_LIMIT = 1024
+
+
+def log(msg: str) -> None:
+    print(f"skill-steward: {msg}", file=sys.stderr)
+
+
+def expand(p: str) -> Path:
+    return Path(os.path.expandvars(p)).expanduser()
+
+
+# ---------------------------------------------------------------- manifest
+
+@dataclass
+class Source:
+    name: str
+    repo: Path
+    ref: str | None  # None => link straight into repo (unpinned)
+
+    @property
+    def root(self) -> Path:
+        return STATE_DIR / "sources" / self.name if self.ref else self.repo
+
+
+@dataclass
+class Skill:
+    name: str
+    source: str
+    path: str
+    harnesses: list[str]
+
+
+@dataclass
+class Manifest:
+    files: list[str] = field(default_factory=list)
+    harnesses: dict[str, Path] = field(default_factory=dict)
+    sources: dict[str, Source] = field(default_factory=dict)
+    skills: dict[tuple[str, str], Skill] = field(default_factory=dict)  # (harness, name)
+    # entries owned by another installer (claude.ai sync, plugin installs): never touched
+    external: dict[str, set[str]] = field(default_factory=dict)
+
+
+def manifest_paths(cli: list[str] | None) -> list[Path]:
+    if cli:
+        return [expand(p) for p in cli]
+    env = os.environ.get("SKILL_STEWARD_MANIFESTS")
+    if env:
+        return [expand(p) for p in env.split(":") if p]
+    paths = [CONFIG_DIR / "manifest.toml"]
+    paths += [Path(p) for p in sorted(glob.glob(str(CONFIG_DIR / "manifests.d" / "*.toml")))]
+    return [p for p in paths if p.exists()]
+
+
+def load_manifest(paths: list[Path]) -> Manifest:
+    if not paths:
+        raise SystemExit(_usage_error("no manifest found; pass --manifest or install one"))
+    m = Manifest()
+    for path in paths:
+        try:
+            data = tomllib.loads(path.read_text())
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            raise SystemExit(_usage_error(f"{path}: {e}"))
+        m.files.append(str(path))
+        for h, d in data.get("harnesses", {}).items():
+            m.harnesses[h] = expand(d)
+        for name, s in data.get("sources", {}).items():
+            m.sources[name] = Source(name, expand(s["repo"]), s.get("ref"))
+        for h, names in data.get("external", {}).items():
+            m.external.setdefault(h, set()).update(names)
+        for s in data.get("skill", []):
+            for h in s["harnesses"]:
+                name = s.get("name") or Path(s["path"]).name
+                m.skills[(h, name)] = Skill(name, s["source"], s["path"], s["harnesses"])
+    for (h, name), s in m.skills.items():
+        if h not in m.harnesses:
+            raise SystemExit(_usage_error(f"skill {name}: unknown harness {h!r}"))
+        if s.source not in m.sources:
+            raise SystemExit(_usage_error(f"skill {name}: unknown source {s.source!r}"))
+    return m
+
+
+def _usage_error(msg: str) -> int:
+    log(msg)
+    return 2
+
+
+# ---------------------------------------------------------------- inspection
+
+def read_frontmatter(skill_md: Path) -> dict[str, str] | None:
+    try:
+        lines = skill_md.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    if not lines or lines[0].strip() != "---":
+        return None
+    out: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return out
+        if ":" in line and not line.startswith((" ", "\t")):
+            k, v = line.split(":", 1)
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    return None
+
+
+def validate_skill_dir(d: Path) -> list[str]:
+    fm = read_frontmatter(d / "SKILL.md")
+    if fm is None:
+        return ["missing-or-invalid-SKILL.md"]
+    problems = []
+    if not fm.get("name"):
+        problems.append("frontmatter-missing-name")
+    if not fm.get("description"):
+        problems.append("frontmatter-missing-description")
+    elif len(fm["description"]) > DESCRIPTION_LIMIT:
+        problems.append(f"description-over-{DESCRIPTION_LIMIT}-chars")
+    return problems
+
+
+def desired_target(m: Manifest, s: Skill) -> Path:
+    return m.sources[s.source].root / s.path
+
+
+def git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
+def source_status(src: Source) -> dict:
+    st = {"source": src.name, "repo": str(src.repo), "ref": src.ref, "root": str(src.root)}
+    if not src.ref:
+        st["pinned"] = False
+        st["exists"] = src.repo.is_dir()
+        return st
+    st["pinned"] = True
+    st["exists"] = (src.root / ".git").exists()
+    if st["exists"]:
+        head = git("rev-parse", "HEAD", cwd=src.root).stdout.strip()
+        want = git("rev-parse", f"{src.ref}^{{commit}}", cwd=src.repo).stdout.strip()
+        st["head"], st["want"] = head, want or None
+        st["current"] = bool(want) and head == want
+        st["dirty"] = bool(git("status", "--porcelain", cwd=src.root).stdout.strip())
+    return st
+
+
+def audit(m: Manifest) -> dict:
+    entries, findings = [], []
+
+    def finding(kind: str, harness: str, name: str, **kw) -> None:
+        findings.append({"kind": kind, "harness": harness, "name": name, **kw})
+
+    sources = {n: source_status(s) for n, s in m.sources.items()}
+    for n, st in sources.items():
+        if not st["exists"]:
+            finding("source-missing", "-", n, root=st["root"])
+        elif st.get("dirty"):
+            finding("source-dirty", "-", n, root=st["root"])
+        elif st["pinned"] and not st.get("current"):
+            finding("source-stale", "-", n, head=st.get("head"), want=st.get("want"))
+
+    seen_names: dict[str, list[str]] = {}
+    for h, hdir in sorted(m.harnesses.items()):
+        declared = {name: s for (hh, name), s in m.skills.items() if hh == h}
+        present = sorted(os.listdir(hdir)) if hdir.is_dir() else []
+        ext = m.external.get(h, set())
+        desc_chars = 0
+        for name in present:
+            p = hdir / name
+            link = p.is_symlink()
+            e = {"harness": h, "name": name, "path": str(p), "link": link}
+            if link:
+                e["target"] = os.readlink(p)
+            if name in ext:
+                e["status"] = "external"
+            elif name in declared:
+                want = desired_target(m, declared[name])
+                if not link:
+                    e["status"] = "copy-shadowing-declared"
+                    finding("copy", h, name, want=str(want))
+                elif not p.exists():
+                    e["status"] = "broken"
+                    finding("broken-link", h, name, target=e["target"], want=str(want))
+                elif Path(os.path.realpath(p)) != Path(os.path.realpath(want)):
+                    e["status"] = "drift"
+                    finding("drift", h, name, target=e["target"], want=str(want))
+                else:
+                    e["status"] = "ok"
+            elif link and not p.exists():
+                e["status"] = "broken-unmanaged"
+                finding("broken-link", h, name, target=e["target"])
+            else:
+                e["status"] = "unmanaged"
+                finding("unmanaged", h, name, link=link)
+            if p.exists() and e["status"] != "external" and (p / "SKILL.md").exists():
+                problems = validate_skill_dir(p)
+                if problems:
+                    finding("invalid-skill", h, name, problems=problems)
+                fm = read_frontmatter(p / "SKILL.md") or {}
+                desc_chars += len(fm.get("description", ""))
+                seen_names.setdefault(f"{h}:{fm.get('name', name)}", []).append(name)
+            entries.append(e)
+        for name in sorted(set(declared) - set(present)):
+            want = desired_target(m, declared[name])
+            entries.append({"harness": h, "name": name, "status": "missing", "want": str(want)})
+            finding("missing", h, name, want=str(want), target_exists=want.is_dir())
+        entries.append({"harness": h, "summary": True, "loaded": len(present),
+                        "declared": len(declared), "description_chars": desc_chars})
+    for key, names in seen_names.items():
+        if len(names) > 1:
+            h, fm_name = key.split(":", 1)
+            finding("duplicate-name", h, fm_name, entries=names)
+    return {"manifests": m.files, "sources": list(sources.values()),
+            "entries": entries, "findings": findings}
+
+
+# ---------------------------------------------------------------- sync
+
+def refresh_source(src: Source, fetch: bool, apply: bool, actions: list) -> None:
+    if not src.ref:
+        return
+    if fetch and apply:
+        r = git("fetch", "--quiet", "origin", cwd=src.repo)
+        if r.returncode:
+            log(f"{src.name}: fetch failed (continuing with local refs): {r.stderr.strip()}")
+    root = src.root
+    if not (root / ".git").exists():
+        actions.append({"action": "create-source", "source": src.name, "root": str(root), "ref": src.ref})
+        if apply:
+            root.parent.mkdir(parents=True, exist_ok=True)
+            r = git("worktree", "add", "--detach", str(root), src.ref, cwd=src.repo)
+            if r.returncode:
+                raise SystemExit(_fail(f"{src.name}: worktree add failed: {r.stderr.strip()}"))
+        return
+    if git("status", "--porcelain", cwd=root).stdout.strip():
+        log(f"{src.name}: pinned worktree {root} is dirty; not moving it")
+        return
+    want = git("rev-parse", f"{src.ref}^{{commit}}", cwd=src.repo).stdout.strip()
+    head = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    if want and head != want:
+        actions.append({"action": "advance-source", "source": src.name, "from": head, "to": want})
+        if apply:
+            r = git("checkout", "--quiet", "--detach", want, cwd=root)
+            if r.returncode:
+                raise SystemExit(_fail(f"{src.name}: checkout failed: {r.stderr.strip()}"))
+
+
+def _fail(msg: str) -> int:
+    log(msg)
+    return 1
+
+
+def quarantine(p: Path, harness: str, stamp: str) -> Path:
+    dest = STATE_DIR / "quarantine" / stamp / harness / p.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(p), str(dest))
+    return dest
+
+
+def sync(m: Manifest, apply: bool, prune: bool, fetch: bool) -> dict:
+    actions: list[dict] = []
+    for src in m.sources.values():
+        refresh_source(src, fetch, apply, actions)
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    report = audit(m)
+    for f in report["findings"]:
+        h, name, kind = f["harness"], f["name"], f["kind"]
+        if h == "-":
+            continue
+        hdir = m.harnesses[h]
+        p = hdir / name
+        declared = m.skills.get((h, name))
+        if kind in ("missing", "broken-link", "drift", "copy") and declared:
+            want = desired_target(m, declared)
+            if not want.is_dir() and apply:
+                log(f"{h}/{name}: target {want} does not exist; skipping")
+                continue
+            act = {"action": "link", "harness": h, "name": name, "target": str(want)}
+            if kind == "copy":
+                act["quarantine_existing"] = True
+            actions.append(act)
+            if apply:
+                hdir.mkdir(parents=True, exist_ok=True)
+                if kind == "copy":
+                    act["quarantined_to"] = str(quarantine(p, h, stamp))
+                elif p.is_symlink():
+                    p.unlink()
+                p.symlink_to(want)
+        elif kind == "broken-link" and not declared:
+            # dangling and undeclared: the target is already gone, removing the link loses nothing
+            actions.append({"action": "remove-dangling-link", "harness": h, "name": name,
+                            "target": f.get("target")})
+            if apply:
+                p.unlink()
+        elif kind == "unmanaged" and prune:
+            act = {"action": "quarantine", "harness": h, "name": name}
+            actions.append(act)
+            if apply:
+                act["quarantined_to"] = str(quarantine(p, h, stamp))
+    after = audit(m) if apply else None
+    return {"applied": apply, "prune": prune, "actions": actions,
+            "remaining_findings": after["findings"] if after else None}
+
+
+# ---------------------------------------------------------------- cli
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="skill-steward", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", choices=["audit", "sync", "hook"])
+    ap.add_argument("--manifest", action="append", help="manifest TOML (repeatable; overrides defaults)")
+    ap.add_argument("--apply", action="store_true", help="sync: make changes (default is plan only)")
+    ap.add_argument("--prune", action="store_true", help="sync: quarantine undeclared entries")
+    ap.add_argument("--no-fetch", action="store_true", help="sync: skip git fetch of sources")
+    a = ap.parse_args(argv)
+
+    try:
+        m = load_manifest(manifest_paths(a.manifest))
+    except SystemExit as e:
+        if a.command == "hook":
+            return 0  # never break session start
+        return int(e.code or 2)
+
+    if a.command == "audit":
+        r = audit(m)
+        json.dump(r, sys.stdout, indent=2)
+        print()
+        return 1 if r["findings"] else 0
+    if a.command == "hook":
+        try:
+            fs = audit(m)["findings"]
+        except Exception as e:  # noqa: BLE001 — hook must not fail session start
+            log(f"hook error: {e}")
+            return 0
+        if fs:
+            kinds: dict[str, int] = {}
+            for f in fs:
+                kinds[f["kind"]] = kinds.get(f["kind"], 0) + 1
+            summary = ", ".join(f"{v} {k}" for k, v in sorted(kinds.items()))
+            print(f"skill-steward: {len(fs)} findings ({summary}); run `skill-steward sync` to plan fixes")
+        return 0
+    r = sync(m, a.apply, a.prune, not a.no_fetch)
+    json.dump(r, sys.stdout, indent=2)
+    print()
+    return 1 if (a.apply and r["remaining_findings"]) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
