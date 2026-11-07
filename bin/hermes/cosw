@@ -25,8 +25,9 @@ usage() {
 Launch the work Chief of Staff (chief-of-staff-work).
 
 Default: host-native local terminal (not the Docker sandbox). Default seat is
-openai-codex/gpt-6.1-sol (optimal for now). --grok keeps the cursor
-grok-4.6:fast seat on the timeout-free Cursor SDK worktree (no 180s bomb).
+openai-codex/gpt-6.1-sol (optimal for now). --grok runs the cursor
+grok-4.7 (non-fast) seat on the timeout-free Cursor SDK worktree.
+--anthropic runs claude-sonnet-5-5 on the metered API key (credential-sync).
 
 Usage:
   cosw [options] [-- agents-or-herm-args]
@@ -46,7 +47,8 @@ Seats:
   --codex, --gpt-6.1-sol               start on openai-codex/gpt-6.1-sol (default)
   --gpt-5.5                            legacy: openai-codex/gpt-5.5
   --together, --glm                    together/zai-org/GLM-5.3-Flash
-  --grok, --cursor-grok                Cursor grok-4.6:fast + timeout-free PYTHONPATH
+  --grok, --cursor-grok                Cursor grok-4.7 (non-fast) + timeout-free PYTHONPATH
+  --anthropic, --claude                anthropic/claude-sonnet-5-5 (API key)
   --xai-grok, --grok-xai               xAI grok-4.6 (not the Cursor SDK)
   --seat provider/model                explicit seat
 
@@ -159,8 +161,13 @@ parse_seat_value() {
     together/zai-org/GLM-5.3-Flash|together|together-glm|glm)
       set_seat together-glm
       ;;
-    cursor/grok-4.6:fast|cursor-grok|grok-4.6:fast)
+    cursor/grok-4.7*|cursor/grok-4.6:fast|cursor-grok|grok-4.7*|grok-4.6:fast)
       set_seat cursor-grok
+      case "$value" in *grok-4.7*) COSW_MODEL="${value#cursor/}" ;; esac
+      ;;
+    anthropic/*|anthropic|claude)
+      set_seat anthropic
+      case "$value" in anthropic/*) COSW_ANTHROPIC_MODEL="${value#*/}" ;; esac
       ;;
     xai/grok-4.6|xai-oauth/grok-4.6|xai-grok|grok-xai)
       set_seat xai-grok
@@ -174,7 +181,7 @@ parse_seat_value() {
       COSW_MODEL="${value#*/}"
       ;;
     *)
-      die "unknown --seat $value (try openai-codex/gpt-6.1-sol, cursor/grok-4.6:fast, xai/grok-4.6)"
+      die "unknown --seat $value (try openai-codex/gpt-6.1-sol, cursor/grok-4.7, anthropic/claude-sonnet-5-5, xai/grok-4.6)"
       ;;
   esac
 }
@@ -252,6 +259,9 @@ strip_cosw_args() {
         ;;
       --grok|--cursor-grok)
         set_seat cursor-grok
+        ;;
+      --anthropic|--claude)
+        set_seat anthropic
         ;;
       --xai-grok|--grok-xai)
         set_seat xai-grok
@@ -376,8 +386,14 @@ apply_cosw_seat() {
       ;;
     cursor-grok)
       COSW_PROVIDER="${COSW_PROVIDER:-cursor}"
-      COSW_MODEL="${COSW_MODEL:-grok-4.6:fast}"
+      COSW_MODEL="${COSW_MODEL:-grok-4.7}"
       COSW_CURSOR_SDK=1
+      COSW_SEAT_OVERRIDE=1
+      ;;
+    anthropic)
+      COSW_PROVIDER=anthropic
+      COSW_MODEL="${COSW_ANTHROPIC_MODEL:-claude-sonnet-5-5}"
+      COSW_CURSOR_SDK=0
       COSW_SEAT_OVERRIDE=1
       ;;
     together-glm)
@@ -1060,7 +1076,7 @@ else
 fi
 
 if [ "$COSW_SEAT" = "xai-grok" ] && ! xai_auth_available; then
-  die "xAI grok seat needs XAI_API_KEY or hermes auth add xai-oauth (openai-codex/gpt-6.1-sol is --codex; Cursor grok-4.6:fast is --cursor-grok)"
+  die "xAI grok seat needs XAI_API_KEY or hermes auth add xai-oauth (openai-codex/gpt-6.1-sol is --codex; Cursor grok-4.7 is --cursor-grok)"
 fi
 
 if [ "$COSW_CURSOR_SDK" = "1" ] && [ "$COSW_FORCE_SANDBOX" != "1" ]; then

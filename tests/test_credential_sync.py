@@ -61,13 +61,38 @@ class CredentialSyncTests(unittest.TestCase):
     def test_unregistered_provider_is_structured_noop(self) -> None:
         # Genericity guarantee: providers without registry entries must never
         # break a launcher and must never guess an implementation.
-        p = run_shim("--provider", "anthropic", "--seat", "s1")
+        p = run_shim("--provider", "mistral", "--seat", "s1")
         self.assertEqual(p.returncode, 0)
         body = payload(p)
         self.assertEqual(body["status"], "noop")
         self.assertEqual(body["reason"], "provider-not-registered")
-        self.assertEqual(body["provider"], "anthropic")
+        self.assertEqual(body["provider"], "mistral")
         self.assertEqual(body["seat"], "s1")
+
+    def test_anthropic_key_fans_out_to_every_hermes_home(self) -> None:
+        secret = "sk-ant-test-" + "x" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            pi = home / ".pi" / "agent"
+            pi.mkdir(parents=True)
+            (pi / "auth.json").write_text(json.dumps({"anthropic": {"type": "api_key", "key": secret}}))
+            seat = home / "data" / "chief-of-staff-work" / "profiles" / "chief-of-staff-work"
+            for h in (home / ".hermes", home / ".hermes" / "profiles" / "hwork", seat):
+                h.mkdir(parents=True)
+                (h / "config.yaml").write_text("model: {}\n")
+            (seat / ".env").write_text("CURSOR_API_KEY=keep\nANTHROPIC_API_KEY=stale\n")
+            env = {"HOME": tmp, "PI_CODING_AGENT_DIR": str(pi),
+                   "HERMES_AGENTS_DATA_HOME": str(home / "data")}
+            p = run_shim("--provider", "anthropic", "--seat", "cosw", env_extra=env)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            body = payload(p)
+            self.assertEqual((body["status"], body["path"]), ("ok", "legacy"))
+            self.assertNotIn(secret, p.stdout + p.stderr)
+            for h in (home / ".hermes", home / ".hermes" / "profiles" / "hwork", seat):
+                lines = (h / ".env").read_text().splitlines()
+                self.assertEqual(lines.count(f"ANTHROPIC_API_KEY={secret}"), 1)
+                self.assertEqual(oct((h / ".env").stat().st_mode & 0o777), "0o600")
+            self.assertIn("CURSOR_API_KEY=keep", (seat / ".env").read_text())
 
     def test_usage_error_empty_stdout(self) -> None:
         p = run_shim("--bogus")
