@@ -37,6 +37,7 @@ Usage: aos <subcommand> [args]
   atop [args]     atop fleet TUI (never send-keys; steer via bus/atop vi)
   hosts           tmux-connect host registry list
   bus             job-bus snapshot: config summary + job counts + board check
+  job run [args]  publish job-bus lifecycle for a non-interactive command
   install         self-install: symlink ~/.local/bin/aos -> this script
   help            this help
 
@@ -461,6 +462,7 @@ case "${1:-help}" in
 	atop)   shift; exec atop "$@" ;;
 	hosts)  shift; exec "$PROFILE_DIR/bin/tmux/tmux-connect" --list ;;
 	bus)    shift; cmd_bus "$@" ;;
+	job)    shift; exec python3 "$AOS_ROOT/bin/aos-job/run.py" "$@" ;;
 	install) shift; cmd_install "$@" ;;
 	-h|--help|help|"") usage ;;
 	*) echo "aos: unknown subcommand '$1' (try: aos help)" >&2; exit 2 ;;
