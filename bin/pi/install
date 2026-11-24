@@ -53,22 +53,9 @@ install_or_update_pi() {
     pnpm add -g --ignore-scripts "${package_name}"
 }
 
-# Copy *.ts from src dir to dst dir, skipping entries that are symlinks or
-# already byte-identical (harness-sync owns the symlinked ones).
-sync_ext_files() {
-    local src_dir="$1" dst_dir="$2" f dst
-    for f in "${src_dir}"/*.ts "${src_dir}"/*.mjs; do
-        [ -f "$f" ] || continue
-        dst="${dst_dir}/$(basename "$f")"
-        if [ -L "$dst" ]; then
-            continue
-        fi
-        if [ -f "$dst" ] && cmp -s "$f" "$dst"; then
-            continue
-        fi
-        cp "$f" "$dst"
-    done
-}
+# sync_ext_files: per-file extension copy that keeps profile-owned files
+# (the handoff stack) ahead of a machine-local overlay.
+. "${SCRIPT_DIR}/ext-sync.sh"
 
 configure_pi_agent() {
     local pi_agent_dir theme_dir extensions_dir bin_dir settings_file theme_src theme_dst agents_src settings_src extensions_src trust_file profile_selector default_profile_file
@@ -135,18 +122,19 @@ configure_pi_agent() {
     fi
     # harness-sync may have symlinked extensions into place; `cp` onto a
     # symlink that resolves to its own source exits 1 ("identical"), so copy
-    # per-file and leave symlinks/identical files alone.
+    # per-file and leave symlinks/identical files alone. An overlay copy of a
+    # file harness-sync installs from the profile is ignored with a warning.
     if [ -d "$extensions_src" ] && compgen -G "${extensions_src}/*.ts" >/dev/null; then
         sync_ext_files "$extensions_src" "$extensions_dir"
     fi
     if [ -d "$extensions_src/lib" ] && compgen -G "${extensions_src}/lib/*.ts" >/dev/null; then
         mkdir -p "$extensions_dir/lib"
-        sync_ext_files "$extensions_src/lib" "$extensions_dir/lib"
+        sync_ext_files "$extensions_src/lib" "$extensions_dir/lib" "lib/"
     fi
     # handoff-spawn.ts needs ../subagent/{jobs.ts,pi-invocation.ts,job-runner.mjs}.
     if [ -d "$extensions_src/subagent" ]; then
         mkdir -p "$extensions_dir/subagent"
-        sync_ext_files "$extensions_src/subagent" "$extensions_dir/subagent"
+        sync_ext_files "$extensions_src/subagent" "$extensions_dir/subagent" "subagent/"
     fi
 
     if [ "$profile_selector" = "personal" ]; then
