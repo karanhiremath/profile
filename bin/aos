@@ -39,6 +39,7 @@ Usage: aos <subcommand> [args]
   bus             job-bus snapshot: config summary + job counts + board check
   job run [args]  publish job-bus lifecycle for a non-interactive command
   builds [args]   read a watcher event journal
+  validate-on-ready [args]  drain a candidate-ready inbox into Forge validation
   chain [args]    wait for a specific build to succeed, claim, then run
   install         self-install: symlink ~/.local/bin/aos -> this script
   help            this help
@@ -466,6 +467,7 @@ case "${1:-help}" in
 	bus)    shift; cmd_bus "$@" ;;
 	job)    shift; exec python3 "$AOS_ROOT/bin/aos-job/run.py" "$@" ;;
 	builds|chain) exec python3 "$AOS_ROOT/bin/aos-job/builds.py" "$@" ;;
+	validate-on-ready) shift; exec python3 "$AOS_ROOT/bin/aos-job/validate_ready.py" "$@" ;;
 	install) shift; cmd_install "$@" ;;
 	-h|--help|help|"") usage ;;
 	*) echo "aos: unknown subcommand '$1' (try: aos help)" >&2; exit 2 ;;
