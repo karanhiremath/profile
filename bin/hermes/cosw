@@ -1034,7 +1034,7 @@ ensure_dispatch_bootstrap() {
       "") ;;
       *)
         log "restarting stale COSW host manager from a different profile checkout"
-        "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
+        "$py" "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
         for _ in 1 2 3 4 5 6 7 8 9 10; do
           [ ! -e "$state/pid" ] && break
           sleep 0.1
@@ -1042,7 +1042,7 @@ ensure_dispatch_bootstrap() {
         ;;
     esac
   fi
-  if ! "$SCRIPT_DIR/cosw-host-control" start \
+  if ! "$py" "$SCRIPT_DIR/cosw-host-control" start \
       --state-dir "$state" --socket-dir "$runtime" --sandbox-id "$COSW_PROFILE" >/dev/null; then
     die "COSW host manager failed to start; inspect $state/broker.log"
   fi
@@ -1051,12 +1051,12 @@ ensure_dispatch_bootstrap() {
   if [ ! -S "$runtime/manager.sock" ] || ! "$bin/cosw-hostctl" bootstrap \
       --socket "$runtime/manager.sock" --timeout 10 >/dev/null 2>&1; then
     log "restarting stale COSW host manager after dispatch protocol upgrade"
-    "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
+    "$py" "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do
       [ ! -e "$state/pid" ] && break
       sleep 0.1
     done
-    "$SCRIPT_DIR/cosw-host-control" start \
+    "$py" "$SCRIPT_DIR/cosw-host-control" start \
       --state-dir "$state" --socket-dir "$runtime" --sandbox-id "$COSW_PROFILE" >/dev/null || \
       die "COSW host manager failed to restart; inspect $state/broker.log"
   fi
