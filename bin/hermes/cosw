@@ -1395,4 +1395,4 @@ if [ "${HERMES_CODEX_GRANT_ISOLATE:-0}" != "1" ]; then
   fi
   unset _cred_sync
 fi
-exec "$SCRIPT_DIR/agents" up "$COSW_PROFILE" "${COSW_ARGS[@]}"
+exec "$SCRIPT_DIR/agents" up "$COSW_PROFILE" ${COSW_ARGS[@]+"${COSW_ARGS[@]}"}
