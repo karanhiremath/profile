@@ -4,16 +4,50 @@ set -euo pipefail
 # claude-usage — Token usage tracker and cost estimator for Claude Code
 # Parses ~/.claude session logs and stats to show spend, trends, and optimization tips.
 
-CLAUDE_DIR="${HOME}/.claude"
+# Config dir resolution: honor CLAUDE_CONFIG_DIR (the same env var Claude
+# Code itself reads, set globally in ~/.zshenv) instead of hardcoding
+# ~/.claude, which is stale for any profile that redirects config elsewhere
+# (e.g. ~/.claude-personal). CLAUDE_USAGE_CONFIG_DIRS (colon-separated) lets
+# one invocation aggregate several config roots at once, for setups with
+# more than one active profile (e.g. per-lane CLAUDE_CONFIG_DIR roots).
+if [[ -n "${CLAUDE_USAGE_CONFIG_DIRS:-}" ]]; then
+    IFS=':' read -r -a CLAUDE_DIRS <<< "${CLAUDE_USAGE_CONFIG_DIRS}"
+elif [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+    CLAUDE_DIRS=("${CLAUDE_CONFIG_DIR}")
+else
+    CLAUDE_DIRS=("${HOME}/.claude")
+fi
+CLAUDE_DIR="${CLAUDE_DIRS[0]}"
 STATS_FILE="${CLAUDE_DIR}/stats-cache.json"
-PROJECTS_DIR="${CLAUDE_DIR}/projects"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTEL_DIR="${SCRIPT_DIR}/otel"
 OTEL_DATA_DIR="${HOME}/.local/share/claude-usage/otel"
 
-# Pricing is defined in the Python blocks below (per 1M tokens, USD).
-# Opus:  input=$15, output=$75, cache_read=$1.50, cache_write=$18.75
-# Sonnet: input=$3, output=$15, cache_read=$0.30, cache_write=$3.75
+# Single pricing source of truth (per 1M tokens, USD), keyed by exact model
+# id as it appears in session JSONL. Cache write is the 5-minute-TTL rate
+# (1.25x input); cache read is 0.1x input (0.025x on Fable-tier models).
+# An id not in this table is reported as unknown, never silently priced
+# with a default — keep this table current at
+# https://claude.com/pricing.
+PRICING_PY=$(cat <<'PY_PRICING'
+PRICING = {
+    'claude-opus-5':    {'input': 5.00,  'output': 25.00, 'cache_read': 0.50, 'cache_write': 6.25},
+    'claude-sonnet-5':  {'input': 2.00,  'output': 10.00, 'cache_read': 0.20, 'cache_write': 2.50},
+    'claude-haiku-4-5': {'input': 1.00,  'output': 5.00,  'cache_read': 0.10, 'cache_write': 1.25},
+    'claude-fable-5-1': {'input': 10.00, 'output': 50.00, 'cache_read': 0.25, 'cache_write': 12.50},
+    'claude-fable-5':   {'input': 10.00, 'output': 50.00, 'cache_read': 0.25, 'cache_write': 12.50},
+}
+
+def tier(model):
+    return model if model in PRICING else 'unknown'
+
+def cost(t, i, o, cr, cw):
+    if t not in PRICING:
+        return 0.0
+    p = PRICING[t]
+    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+PY_PRICING
+)
 
 usage() {
     cat <<EOF
@@ -122,16 +156,29 @@ parse_sessions() {
     local cutoff_date
     cutoff_date=$(date -v-${days}d +%Y-%m-%d 2>/dev/null || date -d "$days days ago" +%Y-%m-%d 2>/dev/null)
 
-    local find_path="$PROJECTS_DIR"
-    if [[ -n "$project_filter" ]]; then
-        find_path=$(find "$PROJECTS_DIR" -maxdepth 1 -type d -name "*${project_filter}*" | head -1)
-        if [[ -z "$find_path" ]]; then
-            echo "No project matching '$project_filter'" >&2
-            exit 1
+    local find_paths=()
+    local dir projects_dir match
+    for dir in "${CLAUDE_DIRS[@]}"; do
+        projects_dir="${dir}/projects"
+        [[ -d "$projects_dir" ]] || continue
+        if [[ -n "$project_filter" ]]; then
+            match=$(find "$projects_dir" -maxdepth 1 -type d -name "*${project_filter}*" | head -1)
+            [[ -n "$match" ]] && find_paths+=("$match")
+        else
+            find_paths+=("$projects_dir")
         fi
+    done
+
+    if [[ -n "$project_filter" && ${#find_paths[@]} -eq 0 ]]; then
+        echo "No project matching '$project_filter'" >&2
+        exit 1
     fi
 
-    find "$find_path" -name "*.jsonl" -print0 2>/dev/null | xargs -0 python3 -c "
+    if [[ ${#find_paths[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    find "${find_paths[@]}" -name "*.jsonl" -print0 2>/dev/null | xargs -0 python3 -c "
 import json, sys, os
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -209,18 +256,7 @@ cmd_summary() {
 import json, sys
 from collections import defaultdict
 
-PRICES = {
-    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
-    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
-}
-
-def tier(model):
-    if 'opus' in model: return 'opus'
-    return 'sonnet'
-
-def cost(t, i, o, cr, cw):
-    p = PRICES[t]
-    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+${PRICING_PY}
 
 totals = defaultdict(lambda: {'input':0,'output':0,'cache_read':0,'cache_write':0,'cost':0,'msgs':0})
 daily = defaultdict(float)
@@ -255,12 +291,13 @@ print(f'  Total sessions:        {len(sessions):>10}')
 print(f'  Total API messages:    {total_msgs:>10}')
 print()
 
-for t in ['opus', 'sonnet']:
-    if t not in totals or totals[t]['msgs'] == 0:
-        continue
+for t in sorted((k for k in totals if totals[k]['msgs'] > 0), key=lambda k: (k == 'unknown', -totals[k]['cost'])):
     v = totals[t]
     print(f'  {t.upper()}:')
-    print(f'    Cost:        \${v[\"cost\"]:>10.2f}  ({v[\"cost\"]/max(total_cost,0.01)*100:.0f}% of total)')
+    if t == 'unknown':
+        print(f'    Cost:        unknown  (model id not in pricing table -- see bin/claude-usage/claude-usage)')
+    else:
+        print(f'    Cost:        \${v[\"cost\"]:>10.2f}  ({v[\"cost\"]/max(total_cost,0.01)*100:.0f}% of total)')
     print(f'    Input:       {v[\"input\"]:>10,} tokens')
     print(f'    Output:      {v[\"output\"]:>10,} tokens')
     print(f'    Cache read:  {v[\"cache_read\"]:>10,} tokens')
@@ -302,17 +339,7 @@ cmd_daily() {
 import json, sys
 from collections import defaultdict
 
-PRICES = {
-    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
-    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
-}
-
-def tier(m):
-    return 'opus' if 'opus' in m else 'sonnet'
-
-def cost(t, i, o, cr, cw):
-    p = PRICES[t]
-    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+${PRICING_PY}
 
 daily = defaultdict(lambda: {'cost':0,'input':0,'output':0,'cache_read':0,'cache_write':0,'msgs':0,'sessions':set()})
 
@@ -372,17 +399,7 @@ cmd_sessions() {
 import json, sys
 from collections import defaultdict
 
-PRICES = {
-    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
-    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
-}
-
-def tier(m):
-    return 'opus' if 'opus' in m else 'sonnet'
-
-def cost(t, i, o, cr, cw):
-    p = PRICES[t]
-    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+${PRICING_PY}
 
 sessions = defaultdict(lambda: {'cost':0,'msgs':0,'output':0,'model':'','project':'','first_ts':'','last_ts':'','cache_read':0,'total_input':0})
 
@@ -430,17 +447,7 @@ cmd_projects() {
 import json, sys
 from collections import defaultdict
 
-PRICES = {
-    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
-    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
-}
-
-def tier(m):
-    return 'opus' if 'opus' in m else 'sonnet'
-
-def cost(t, i, o, cr, cw):
-    p = PRICES[t]
-    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+${PRICING_PY}
 
 projects = defaultdict(lambda: {'cost':0,'msgs':0,'sessions':set(),'output':0,'cache_read':0,'total_input':0,'models':set()})
 
@@ -487,17 +494,7 @@ cmd_today() {
     parse_sessions 1 "$PROJECT_FILTER" | python3 -c "
 import json, sys, datetime
 
-PRICES = {
-    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
-    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
-}
-
-def tier(m):
-    return 'opus' if 'opus' in m else 'sonnet'
-
-def cost(t, i, o, cr, cw):
-    p = PRICES[t]
-    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+${PRICING_PY}
 
 today = datetime.date.today().isoformat()
 total_cost = 0
@@ -550,19 +547,9 @@ import json, sys
 from collections import defaultdict
 import datetime
 
-PRICES = {
-    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
-    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
-}
+${PRICING_PY}
 
-def tier(m):
-    return 'opus' if 'opus' in m else 'sonnet'
-
-def cost(t, i, o, cr, cw):
-    p = PRICES[t]
-    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
-
-daily = defaultdict(lambda: {'cost':0,'output':0,'cache_read':0,'cache_write':0,'input':0,'msgs':0})
+daily = defaultdict(lambda: {'cost':0,'output':0,'cache_read':0,'cache_write':0,'input':0,'msgs':0,'output_cost':0})
 hourly = defaultdict(float)
 model_cost = defaultdict(float)
 weekday = defaultdict(lambda: {'cost':0,'days':set()})
@@ -578,6 +565,7 @@ for line in sys.stdin:
     day['cache_write'] += d['cache_write']
     day['input'] += d['input']
     day['msgs'] += 1
+    day['output_cost'] += 0 if t == 'unknown' else PRICING[t]['output'] * d['output'] / 1_000_000
     model_cost[t] += c
 
     # Hour of day
@@ -631,14 +619,14 @@ else:
     print(f'  ✅ Good cache utilization')
 print()
 
-# Output token ratio (this is where cost really lives for opus)
+# Output token ratio (this is often where cost concentrates on higher-tier models)
 total_output = sum(daily[d]['output'] for d in dates)
 total_cost = sum(costs)
-output_cost_share = sum(daily[d]['output'] * 75 / 1_000_000 for d in dates) / max(total_cost, 0.01) * 100
+output_cost_share = sum(daily[d]['output_cost'] for d in dates) / max(total_cost, 0.01) * 100
 print(f'  OUTPUT TOKENS')
 print(f'  Output tokens are {output_cost_share:.0f}% of your total cost')
 if output_cost_share > 60:
-    print(f'  💡 Output dominates cost — use sonnet for exploration, opus for final implementation')
+    print(f'  💡 Output dominates cost — use a cheaper model for exploration, save the capable one for final implementation')
 print()
 
 # Busiest hours
@@ -677,17 +665,7 @@ from collections import defaultdict
 
 budget = $budget
 
-PRICES = {
-    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
-    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
-}
-
-def tier(m):
-    return 'opus' if 'opus' in m else 'sonnet'
-
-def cost(t, i, o, cr, cw):
-    p = PRICES[t]
-    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+${PRICING_PY}
 
 today = datetime.date.today()
 month_start = today.replace(day=1)
@@ -767,20 +745,10 @@ cmd_optimize() {
 import json, sys
 from collections import defaultdict
 
-PRICES = {
-    'opus':   {'input': 15.00, 'output': 75.00, 'cache_read': 1.50, 'cache_write': 18.75},
-    'sonnet': {'input': 3.00,  'output': 15.00, 'cache_read': 0.30, 'cache_write': 3.75},
-}
-
-def tier(m):
-    return 'opus' if 'opus' in m else 'sonnet'
-
-def cost(t, i, o, cr, cw):
-    p = PRICES[t]
-    return (i*p['input'] + o*p['output'] + cr*p['cache_read'] + cw*p['cache_write']) / 1_000_000
+${PRICING_PY}
 
 # Gather stats
-total = {'input':0, 'output':0, 'cache_read':0, 'cache_write':0, 'msgs':0}
+total = {'input':0, 'output':0, 'cache_read':0, 'cache_write':0, 'msgs':0, 'output_cost':0}
 by_model = defaultdict(lambda: {'cost':0, 'msgs':0, 'output':0})
 sessions = defaultdict(lambda: {'cost':0, 'msgs':0, 'output':0, 'cache_read':0, 'total_input':0})
 short_sessions = 0
@@ -794,6 +762,7 @@ for line in sys.stdin:
     total['cache_read'] += d['cache_read']
     total['cache_write'] += d['cache_write']
     total['msgs'] += 1
+    total['output_cost'] += 0 if t == 'unknown' else PRICING[t]['output'] * d['output'] / 1_000_000
     by_model[t]['cost'] += c
     by_model[t]['msgs'] += 1
     by_model[t]['output'] += d['output']
@@ -807,19 +776,32 @@ for line in sys.stdin:
 total_cost = sum(v['cost'] for v in by_model.values())
 recs = []
 
-# 1. Model mix
-opus_cost = by_model.get('opus', {}).get('cost', 0)
-opus_share = opus_cost / max(total_cost, 0.01) * 100
-if opus_share > 80:
-    sonnet_equiv = opus_cost * (15/75)  # rough output-dominated estimate
-    savings = opus_cost - sonnet_equiv
+if by_model.get('unknown', {}).get('msgs', 0) > 0:
     recs.append({
-        'priority': '🔴 HIGH',
-        'title': 'Switch exploration/research to Sonnet',
-        'detail': f'Opus is {opus_share:.0f}% of spend (\${opus_cost:.2f}). Using Sonnet for exploration could save ~\${savings:.2f}.',
-        'action': 'Use --model sonnet for code review, exploration, and Q&A. Reserve Opus for complex implementation.',
-        'savings': savings,
+        'priority': '⚪ NOTE',
+        'title': 'Unpriced model id(s) seen',
+        'detail': f'{by_model[\"unknown\"][\"msgs\"]} messages used a model id not in the pricing table; their cost is excluded from every total above.',
+        'action': 'Add the model id to PRICING in bin/claude-usage/claude-usage if it is a real current-generation model.',
+        'savings': 0,
     })
+
+# 1. Model mix -- flag when one priced model dominates spend
+priced_models = {k: v for k, v in by_model.items() if k != 'unknown' and v['cost'] > 0}
+if priced_models:
+    top_model, top_stats = max(priced_models.items(), key=lambda kv: kv[1]['cost'])
+    top_share = top_stats['cost'] / max(total_cost, 0.01) * 100
+    if top_share > 80 and len(PRICING) > 1:
+        cheapest_output = min(p['output'] for k, p in PRICING.items())
+        top_output_price = PRICING[top_model]['output']
+        savings = top_stats['cost'] * (1 - cheapest_output / top_output_price) if top_output_price else 0
+        if savings > 0:
+            recs.append({
+                'priority': '🔴 HIGH',
+                'title': f'Switch exploration/research off {top_model}',
+                'detail': f'{top_model} is {top_share:.0f}% of spend (\${top_stats[\"cost\"]:.2f}). Using a cheaper model for exploration could save ~\${savings:.2f}.',
+                'action': 'Use --model sonnet (or haiku) for code review, exploration, and Q&A. Reserve the most capable model for complex implementation.',
+                'savings': savings,
+            })
 
 # 2. Cache efficiency
 cache_total = total['cache_read'] + total['cache_write'] + total['input']
@@ -847,8 +829,7 @@ if short_sessions > len(sessions) * 0.3:
     })
 
 # 4. Output token dominance
-output_cost = total['output'] * 75 / 1_000_000  # opus pricing
-output_share = output_cost / max(total_cost, 0.01) * 100
+output_share = total['output_cost'] / max(total_cost, 0.01) * 100
 if output_share > 50:
     recs.append({
         'priority': '🟡 MEDIUM',
@@ -1083,7 +1064,7 @@ cmd_otel_status() {
     fi
 
     # Emitter state
-    local state_file="${HOME}/.claude/.otel-emitter-state.json"
+    local state_file="${CLAUDE_DIR}/.otel-emitter-state.json"
     if [[ -f "$state_file" ]]; then
         local file_count
         file_count=$(python3 -c "import json; d=json.load(open('$state_file')); print(len(d.get('last_processed',{})))" 2>/dev/null || echo "?")
