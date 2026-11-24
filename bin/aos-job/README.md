@@ -11,4 +11,21 @@ Records go in the selected coordinator’s session inbox (`--inbox` overrides it
 
 `TERM`/`INT` are forwarded to the child process group; a normal command exit is preserved, a signal exit is `128 + signal`. Hard kills and host loss cannot emit a terminal event. Treat stale heartbeats as ambiguous; verify the actual worker before retrying.
 
-Uninstalled smoke test: `python3 bin/aos-job/test_run.py`.
+Uninstalled smoke tests: `python3 -m unittest discover -s bin/aos-job`.
+
+## Auth watcher integration
+
+The watcher sends a bounded JSON event on stdin to `aos job auth-event
+--target-sid SID` (or `--global-only` before a coordinator is known). The
+publisher accepts only fixed event kinds and metadata fields; operator commands
+are rendered from fixed templates, not accepted from the caller. Event IDs are
+stable across publisher retries.
+
+Urgent `auth.needs-login` and `auth.failed` are terminal-status pointers in the
+selected inbox, eligible for model injection on the coordinator's next existing
+job-bus poll if auto-steer is enabled. `global:cauth` is an opt-in dashboard lane
+and its records are always nonterminal. No live harness changes are required.
+
+`aos atop auth-status --cauth /path/to/cauth` provides a read-only status view
+for an atop widget; `--json` emits the same per-session state, expiry, last
+probe and check time as structured rows.

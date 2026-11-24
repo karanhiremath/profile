@@ -35,6 +35,8 @@ Usage: aos <subcommand> [args]
   policy [args]   aos-policy engine (errors with a hint if not installed)
   seat [args]     seat manifest ops: seat check <manifest.yaml|-> (seat.v1)
   atop [args]     atop fleet TUI (never send-keys; steer via bus/atop vi)
+  atop auth-status [--json] [--cauth PATH]
+                  read-only fleet auth widget hook
   hosts           tmux-connect host registry list
   bus             job-bus snapshot: config summary + job counts + board check
   job run [args]  publish job-bus lifecycle for a non-interactive command
@@ -459,7 +461,12 @@ case "${1:-help}" in
 	doctor) shift; cmd_doctor "$@" ;;
 	buf)    shift; exec aos-buf "$@" ;;
 	policy) shift; cmd_policy "$@" ;;
-	atop)   shift; exec atop "$@" ;;
+	atop)
+		shift
+		if [[ ${1:-} == auth-status ]]; then
+			exec python3 "$AOS_ROOT/bin/aos-job/run.py" "$@"
+		fi
+		exec atop "$@" ;;
 	hosts)  shift; exec "$PROFILE_DIR/bin/tmux/tmux-connect" --list ;;
 	bus)    shift; cmd_bus "$@" ;;
 	job)    shift; exec python3 "$AOS_ROOT/bin/aos-job/run.py" "$@" ;;

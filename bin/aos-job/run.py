@@ -24,6 +24,10 @@ def publish(path, record):
 
 
 def main():
+    if sys.argv[1:2] in (["auth-event"], ["auth-status"]):
+        from auth import event, status
+
+        return (event if sys.argv[1] == "auth-event" else status)(sys.argv[2:])
     parser = argparse.ArgumentParser(prog="aos job run")
     parser.add_argument("--target-sid", default=os.getenv("PI_JOB_BUS_TARGET_SID") or os.getenv("PI_SESSION_ID"))
     parser.add_argument("--inbox", type=Path, help="override the selected coordinator's inbox path")
