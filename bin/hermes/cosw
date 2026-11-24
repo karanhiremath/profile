@@ -18,7 +18,7 @@ fi
 . "$SCRIPT_DIR/llm-flags.sh"
 
 # Hermes toolchain python (has PyYAML); bare python3 may not on fresh hosts.
-COSW_PY="${HERMES_PYTHON:-${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}/venv/bin/python}"
+COSW_PY="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}/venv/bin/python"
 [ -x "$COSW_PY" ] || COSW_PY="$(command -v python3)"
 log() { printf 'cosw: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
