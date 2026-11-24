@@ -45,21 +45,26 @@ _hermes_fork_candidate() {
   do
     [ -n "$candidate" ] || continue
     file="$candidate/agent/cursor_sdk_client.py"
-    if [ -f "$file" ] && grep -q '_operator_run_timeout_seconds' "$file"; then
-      printf '%s\n' "$candidate"
-      return 0
+    if [ -f "$file" ]; then
+      # bash/zsh's optimized file read is builtin: no grep process at startup.
+      case "$(< "$file")" in
+        *'_operator_run_timeout_seconds'*)
+          _hermes_overlay="$candidate"
+          return 0
+          ;;
+      esac
     fi
   done
   return 1
 }
 
-if overlay="$(_hermes_fork_candidate)"; then
+if _hermes_fork_candidate; then
   case ":${PYTHONPATH:-}:" in
-    *":${overlay}:"*) ;;
-    *) export PYTHONPATH="${overlay}${PYTHONPATH:+:$PYTHONPATH}" ;;
+    *":${_hermes_overlay}:"*) ;;
+    *) export PYTHONPATH="${_hermes_overlay}${PYTHONPATH:+:$PYTHONPATH}" ;;
   esac
-  export HERMES_AGENT_FORK_ROOT="$overlay"
-  export HERMES_AGENT_ROOT="$overlay"
+  export HERMES_AGENT_FORK_ROOT="$_hermes_overlay"
+  export HERMES_AGENT_ROOT="$_hermes_overlay"
   unset HERMES_CURSOR_SDK_RUN_TIMEOUT || true
 fi
 if [ -z "${HERMES_PYTHON:-}" ]; then
@@ -69,4 +74,5 @@ if [ -z "${HERMES_PYTHON:-}" ]; then
   fi
   unset _hermes_py
 fi
+unset _hermes_overlay
 unset -f _hermes_fork_candidate

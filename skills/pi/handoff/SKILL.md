@@ -2,7 +2,7 @@
 name: handoff
 description: "Pointer-snapshot session handoff. Use when the user types /handoff or /skill:handoff, context is 60-75%, or work must continue in a successor session. Prefer /handoff-bg then /handoff-now over /compact."
 user-invocable: true
-argument-hint: "[--type implementation|monitoring|planning] [--budget 5] [goal]"
+argument-hint: "[--type implementation|monitoring|planning] [--budget 5] [--brief|--pointer] [goal]"
 ---
 
 # /handoff
@@ -16,6 +16,7 @@ This is the operator-facing handoff skill. The extension commands are the runtim
    - no switch yet → `/handoff-prepare --type <kind> --budget 5 <goal>`
    - user asked to switch / context ~75% → `/handoff-now --type <kind> --budget 5 <goal>`
    - user asked for a reviewable prompt in TUI → `/handoff --type <kind> --budget 5 <goal>`
+   - user wants the model to write the full prompt → add `--brief` (falls back to the pointer if generation fails)
 3. Report snapshot + sibling/prep paths. A queued `/handoff-now` is not a finished switch.
 
 ## Lane

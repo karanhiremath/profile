@@ -18,15 +18,34 @@ Usage:
     alias_seat.py write-seat <profile> <alias>
     alias_seat.py pin-env <alias-or-profile>
     alias_seat.py homes <profile>
+    alias_seat.py next-seat <alias-or-profile> [owner-pid]
+    alias_seat.py claim <profile> <owner-pid> [transfer-token]
+    alias_seat.py activate-claim <profile> <owner-pid> <token> <runtime-home>
+    alias_seat.py release-claim <profile> <owner-pid> <token>
+    alias_seat.py wait-transfer <profile> <owner-pid> <token>
+    alias_seat.py run-claim <profile> <owner-pid> <token> <runtime-home> <command...>
+    alias_seat.py sessions <alias-or-profile>
+
+Spawn-always contract (enforced by agents/cosw launchers):
+launchers NEVER attach to or switch a client toward an existing TUI. A busy
+seat mints the next free sibling seat (`a1`, `a2`, ...) with its own
+HERMES_HOME and tmux session via `next-seat`. Attaching is explicit only
+(`agents attach` / `cosw attach`) and listing is `agents sessions`.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import json
 import os
+import secrets
 import re
+import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -106,6 +125,15 @@ _SEATS: Tuple[Dict[str, Any], ...] = (
 def data_home() -> Path:
     if override := os.environ.get("HERMES_AGENTS_DATA_HOME"):
         return Path(override).expanduser()
+    # Match hermes_agents._data_home and the fork-env shim, including shared hosts.
+    for key in ("AGENT_SHARED_HOME", "HERMES_SHARED_PEOPLE_HOME"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw and Path(raw).expanduser().is_dir():
+            return Path(raw).expanduser() / "hermes-agents"
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    shared = Path("/shared/people") / user
+    if user and shared.is_dir():
+        return shared / "hermes-agents"
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "hermes-agents"
 
@@ -120,7 +148,13 @@ def isolated_root(profile: str) -> Path:
 
 def runtime_home(profile: str, root: Optional[Path] = None) -> Path:
     home = root or isolated_root(profile)
-    nested = home / "profiles" / profile
+    try:
+        active = (home / "active_profile").read_text(encoding="utf-8").splitlines()[0].strip()
+    except (OSError, IndexError):
+        active = profile
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", active) or active == "default":
+        active = profile
+    nested = home / "profiles" / active
     if nested.is_dir():
         return nested
     return home
@@ -160,6 +194,9 @@ def read_lock_pid(path: Path) -> Optional[int]:
 
 
 def lock_pid(profile: str) -> Optional[int]:
+    claim = _read_claim(profile)
+    if claim and _pid_alive(claim["pid"]):
+        return claim["pid"]
     for path in lock_paths(profile):
         pid = read_lock_pid(path)
         if pid is not None:
@@ -167,24 +204,214 @@ def lock_pid(profile: str) -> Optional[int]:
     return None
 
 
+def _claim_path(profile: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", profile):
+        raise SystemExit(f"ERROR: invalid seat profile: {profile}")
+    return data_home() / ".seat-claims" / f"{profile}.json"
+
+
+@contextmanager
+def _claim_guard(profile: str):
+    # Never unlink this mutex: all generations must lock the same inode.
+    path = _claim_path(profile).with_suffix(".guard")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        yield
+
+
+def _read_claim(profile: str) -> Optional[Dict[str, Any]]:
+    try:
+        claim = json.loads(_claim_path(profile).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if (not isinstance(claim, dict) or not isinstance(claim.get("pid"), int)
+            or not isinstance(claim.get("token"), str)):
+        raise SystemExit(f"ERROR: malformed owner claim for {profile}")
+    return claim
+
+
+def _atomic_text(path: Path, text: str) -> None:
+    temporary = path.with_name(path.name + f".{os.getpid()}.{secrets.token_hex(8)}")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(text)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _save_claim(profile: str, claim: Dict[str, Any]) -> None:
+    _atomic_text(_claim_path(profile), json.dumps(claim) + "\n")
+
+
+def claim_seat(profile: str, pid: int, token: str = "") -> Optional[str]:
+    """Reserve before cloning/materialization; a token transfers a reservation only.
+
+    The unguessable capability is passed explicitly in the tmux command, not
+    adopted from a PID/ancestry guess or tmux's server-global environment.
+    """
+    if not _pid_alive(pid):
+        raise SystemExit("ERROR: claim needs a live owner PID")
+    with _claim_guard(profile):
+        previous = _read_claim(profile)
+        if token:
+            if (not previous or previous["token"] != token
+                    or previous.get("phase") != "reserved"):
+                raise SystemExit(f"ERROR: invalid claim transfer for {profile}")
+            # A reservation has no published PID lock; do not adopt a foreign TUI.
+            if any(read_lock_pid(path) is not None for path in lock_paths(profile)):
+                raise SystemExit(f"ERROR: live TUI blocks claim transfer for {profile}")
+        else:
+            if previous and _pid_alive(previous["pid"]):
+                return None
+            if any(read_lock_pid(path) is not None for path in lock_paths(profile)):
+                return None
+            token = secrets.token_hex(32)
+        _save_claim(profile, {"pid": pid, "token": token, "phase": "reserved"})
+        return token
+
+
+def activate_claim(profile: str, pid: int, token: str, home: Path) -> None:
+    with _claim_guard(profile):
+        claim = _read_claim(profile)
+        if not claim or (claim["pid"], claim["token"]) != (pid, token):
+            raise SystemExit(f"ERROR: owner claim lost for {profile}")
+        root = isolated_root(profile).resolve()
+        if home.resolve() != root and root not in home.resolve().parents:
+            raise SystemExit(f"ERROR: runtime home is outside claimed seat: {home}")
+        if any(read_lock_pid(path) not in (None, pid) for path in lock_paths(profile)):
+            raise SystemExit(f"ERROR: live TUI blocks launch for {profile}")
+        path = home / LOCK_FILENAME
+        # Record cleanup authority before publishing the compatibility lock.
+        claim.update(phase="active", lock=str(path))
+        _save_claim(profile, claim)
+        _atomic_text(path, f"{pid}\n")
+
+
+def release_claim(profile: str, pid: int, token: str) -> None:
+    with _claim_guard(profile):
+        claim = _read_claim(profile)
+        if not claim or (claim["pid"], claim["token"]) != (pid, token):
+            return
+        if claim.get("lock"):
+            path = Path(claim["lock"])
+            try:
+                owned_pids = (pid, claim.get("previous_pid", pid))
+                if path.read_text(encoding="utf-8") in tuple(f"{owner}\n" for owner in owned_pids):
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+        _claim_path(profile).unlink()
+
+
+def run_claim(profile: str, pid: int, token: str, home: Path, argv: List[str]) -> int:
+    """Exec the TUI with its own PID lock; supervise owner-checked exit cleanup.
+
+    The child waits on a pipe until ownership and the plain compatibility PID
+    lock are published. Unlike shell `exec`, the waiter survives failed execs
+    and nonzero TUI exits without leaving its claim behind.
+    """
+    if not argv:
+        raise SystemExit("ERROR: run-claim needs a command")
+    read_fd, write_fd = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(write_fd)
+        ready = os.read(read_fd, 1)
+        os.close(read_fd)
+        if ready != b"1":
+            os._exit(126)
+        try:
+            os.execvpe(argv[0], argv, os.environ)
+        except OSError as error:
+            print(f"ERROR: cannot launch {argv[0]}: {error}", file=sys.stderr, flush=True)
+            os._exit(127)
+    os.close(read_fd)
+    handlers = {}
+
+    def forward(signum, _frame):
+        try:
+            os.kill(child, signum)
+        except ProcessLookupError:
+            pass
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            handlers[signum] = signal.signal(signum, forward)
+        with _claim_guard(profile):
+            claim = _read_claim(profile)
+            if (not claim or (claim["pid"], claim["token"]) != (pid, token)
+                    or claim.get("phase") != "active"
+                    or Path(claim["lock"]).resolve() != (home / LOCK_FILENAME).resolve()):
+                raise SystemExit(f"ERROR: owner claim lost before exec for {profile}")
+            path = home / LOCK_FILENAME
+            if path.read_text(encoding="utf-8") != f"{pid}\n":
+                raise SystemExit(f"ERROR: PID lock changed before exec for {profile}")
+            # If publishing the child's PID fails, cleanup still recognizes
+            # the compatibility lock belonging to this generation's launcher.
+            claim.update(pid=child, previous_pid=pid)
+            _save_claim(profile, claim)
+            _atomic_text(path, f"{child}\n")
+        os.write(write_fd, b"1")
+        os.close(write_fd)
+        write_fd = -1
+        _, status = os.waitpid(child, 0)
+        child_status = os.waitstatus_to_exitcode(status)
+        return child_status if child_status >= 0 else 128 - child_status
+    finally:
+        if write_fd != -1:
+            os.close(write_fd)
+            # Failed preparation: the gated child exits without running argv.
+            os.waitpid(child, 0)
+        release_claim(profile, child, token)
+        for signum, handler in handlers.items():
+            signal.signal(signum, handler)
+
+
+def wait_transfer(profile: str, pid: int, token: str) -> bool:
+    """Keep the parent reservation alive until a detached tmux child adopts it."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        claim = _read_claim(profile)
+        # A short-lived child can already have finished and cleaned up.
+        if claim is None:
+            return True
+        if claim["token"] != token:
+            return False
+        if claim["pid"] != pid:
+            return _pid_alive(claim["pid"])
+        time.sleep(0.025)
+    return False
+
+
 def write_lock(profile: str, pid: int) -> Path:
-    path = runtime_home(profile) / LOCK_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{pid}\n", encoding="utf-8")
-    return path
+    with _claim_guard(profile):
+        held = lock_pid(profile)
+        if held not in (None, pid):
+            raise SystemExit(f"ERROR: seat {profile} already owned by {held}")
+        path = runtime_home(profile) / LOCK_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_text(path, f"{pid}\n")
+        return path
 
 
 def clear_stale_locks(profile: str) -> List[str]:
     cleared: List[str] = []
-    for path in lock_paths(profile):
-        if not path.exists():
-            continue
-        if read_lock_pid(path) is None:
+    with _claim_guard(profile):
+        claim = _read_claim(profile)
+        if claim and _pid_alive(claim["pid"]):
+            return cleared
+        for path in lock_paths(profile):
             try:
-                path.unlink()
-                cleared.append(str(path))
-            except OSError:
+                before = path.stat(), path.read_bytes()
+                if read_lock_pid(path) is None and before == (path.stat(), path.read_bytes()):
+                    path.unlink()
+                    cleared.append(str(path))
+            except FileNotFoundError:
                 pass
+        if claim:
+            _claim_path(profile).unlink()
     return cleared
 
 
@@ -246,7 +473,11 @@ def validate_instance(base_profile: str, instance: str) -> str:
 def instance_profile(base: str, instance: str) -> str:
     seat = seat_by_profile(base) or seat_by_alias(base)
     if seat is None:
-        raise SystemExit(f"ERROR: unknown lane family: {base}")
+        parsed = parse_instance_profile(base)
+        if parsed is None:
+            raise SystemExit(f"ERROR: unknown lane family: {base}")
+        validate_instance(str(parsed[0]["profile"]), parsed[1])
+        return validate_instance(base, instance)
     return validate_instance(str(seat["profile"]), instance)
 
 
@@ -530,6 +761,96 @@ def attach_target(profile: str, session: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def _base_seat(key: str) -> Optional[Dict[str, Any]]:
+    seat = seat_by_alias(key) or seat_by_profile(key)
+    if seat is None:
+        parsed = parse_instance_profile(key)
+        seat = parsed[0] if parsed else None
+    return seat
+
+
+def family_sessions(key: str) -> Dict[str, Any]:
+    """List tmux sessions for a seat family (base session + <base>-* lanes)."""
+    seat = _base_seat(key)
+    if seat is None:
+        raise SystemExit(f"ERROR: unknown seat: {key}")
+    base_session = str(seat["session"])
+    rows: List[Dict[str, Any]] = []
+    proc = _tmux(
+        "list-sessions",
+        "-F",
+        "#{session_name}\t#{session_attached}\t#{session_created_string}",
+    )
+    if proc.returncode == 0:
+        for line in proc.stdout.splitlines():
+            parts = line.split("\t")
+            name = parts[0].strip()
+            if name != base_session and not name.startswith(f"{base_session}-"):
+                continue
+            instance = (
+                name[len(base_session) + 1:]
+                if name.startswith(f"{base_session}-")
+                else ""
+            )
+            profile = str(seat["profile"]) + (f"-{instance}" if instance else "")
+            rows.append({
+                "session": name,
+                "profile": profile,
+                "instance": instance,
+                "attached": len(parts) > 1 and parts[1] == "1",
+                "created": parts[2] if len(parts) > 2 else "",
+                "lock_pid": lock_pid(profile),
+            })
+    return {
+        "family": seat["family"],
+        "base_session": base_session,
+        "sessions": rows,
+    }
+
+
+def next_seat(key: str, owner_pid: Optional[int] = None) -> Dict[str, Any]:
+    """Select a sibling; launchers supply a PID to reserve it atomically.
+
+    Without a PID this is a read-only preview (for --dry-run).
+    """
+    seat = _base_seat(key)
+    if seat is None:
+        raise SystemExit(f"ERROR: unknown seat: {key}")
+    base_profile = str(seat["profile"])
+    base_session = str(seat["session"])
+    # Sibling-of-lane: next-seat on an instance profile nests under that lane
+    # (chief-of-staff-work-o1 -> chief-of-staff-work-o1-a1, tmux cosw-o1-a1).
+    key_stripped = key.strip()
+    parsed = parse_instance_profile(key_stripped)
+    if parsed is not None and key_stripped != base_profile:
+        base_profile = key_stripped
+        base_session = f"{base_session}-{parsed[1]}"
+    have_tmux = shutil.which("tmux") is not None
+    for i in range(1, 100):
+        instance = f"a{i}"
+        profile = validate_instance(base_profile, instance)
+        session = f"{base_session}-{instance}"
+        if lock_pid(profile) is not None:
+            continue
+        if have_tmux and _tmux("has-session", "-t", session).returncode == 0:
+            continue
+        token = claim_seat(profile, owner_pid) if owner_pid is not None else ""
+        if owner_pid is not None and token is None:
+            continue
+        root = isolated_root(profile)
+        return {
+            "claim_token": token,
+            "family": seat["family"],
+            "lane": seat["lane"],
+            "instance": instance,
+            "profile": profile,
+            "session": session,
+            "root": str(root),
+            "runtime_home": str(runtime_home(profile, root)),
+        }
+    raise SystemExit("ERROR: no free sibling seat (a1..a99 exhausted)")
+
+
 def homes_conflict(profile: str) -> List[str]:
     """Detect another alias family sharing this isolated home."""
     root = isolated_root(profile)
@@ -590,6 +911,42 @@ def main(argv: List[str]) -> int:
             return 1
         print(target)
         return 0
+    if cmd == "claim":
+        if len(rest) < 2:
+            raise SystemExit("ERROR: claim needs <profile> <pid> [transfer-token]")
+        token = claim_seat(rest[0], int(rest[1]), rest[2] if len(rest) > 2 else "")
+        if token is None:
+            return 1
+        print(token)
+        return 0
+    if cmd == "run-claim":
+        if len(rest) < 5:
+            raise SystemExit("ERROR: run-claim needs <profile> <pid> <token> <home> <command...>")
+        return run_claim(rest[0], int(rest[1]), rest[2], Path(rest[3]), rest[4:])
+    if cmd == "wait-transfer":
+        if len(rest) != 3:
+            raise SystemExit("ERROR: wait-transfer needs <profile> <pid> <token>")
+        if not wait_transfer(rest[0], int(rest[1]), rest[2]):
+            raise SystemExit(f"ERROR: tmux child did not adopt seat {rest[0]}")
+        return 0
+    if cmd == "activate-claim":
+        if len(rest) != 4:
+            raise SystemExit("ERROR: activate-claim needs <profile> <pid> <token> <home>")
+        activate_claim(rest[0], int(rest[1]), rest[2], Path(rest[3]))
+        return 0
+    if cmd == "release-claim":
+        if len(rest) != 3:
+            raise SystemExit("ERROR: release-claim needs <profile> <pid> <token>")
+        release_claim(rest[0], int(rest[1]), rest[2])
+        return 0
+    if cmd == "next-seat":
+        if not rest:
+            raise SystemExit("ERROR: next-seat needs an alias or profile")
+        return emit(next_seat(rest[0], int(rest[1]) if len(rest) > 1 else None))
+    if cmd == "sessions":
+        if not rest:
+            raise SystemExit("ERROR: sessions needs an alias or profile")
+        return emit(family_sessions(rest[0]))
     if cmd == "write-seat":
         if len(rest) < 2:
             raise SystemExit("ERROR: write-seat needs <profile> <alias>")

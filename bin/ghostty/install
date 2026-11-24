@@ -13,7 +13,7 @@ ARCH="$(uname -m)"
 
 install_messages "start" "$app_name"
 
-if command -v ghostty >/dev/null 2>&1; then
+if command -v ghostty >/dev/null 2>&1 || [ -d /Applications/Ghostty.app ]; then
     echo "ghostty already installed. Skipping install."
 else
     case "${MACHINE}" in

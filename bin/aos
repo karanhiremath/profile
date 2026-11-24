@@ -11,16 +11,29 @@ set -euo pipefail
 PROFILE_DIR="${PROFILE_DIR:-$HOME/src/profile}"
 PI_AGENT="${PI_AGENT:-$HOME/.pi/agent}"
 
+# AOS_ROOT: checkout this script lives in (symlink-resolved), so shipped
+# config (e.g. seat.v1.schema.json) resolves even in worktrees/installs.
+SELF="${BASH_SOURCE[0]:-$0}"
+while [ -L "$SELF" ]; do
+	target="$(readlink "$SELF")"
+	case "$target" in
+		/*) SELF="$target" ;;
+		*) SELF="$(dirname "$SELF")/$target" ;;
+	esac
+done
+AOS_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+
 usage() {
 	cat <<'EOF'
 Usage: aos <subcommand> [args]
 
-  status          AOS inventory: harness-sync status + tool presence + bus config
+  status [--json] AOS inventory: harness-sync status + tool presence + bus config
   sync [args]     harness-sync apply (link skills/extensions, merge packages)
   pull [args]     harness-sync pull [--all] [ssh-host]  (personal-safe set)
   doctor          harness-sync status + hermes doctor (if present)
   buf [args]      aos-buf prompt-buffer primitive (catalog/get/apply)
   policy [args]   aos-policy engine (errors with a hint if not installed)
+  seat [args]     seat manifest ops: seat check <manifest.yaml|-> (seat.v1)
   atop [args]     atop fleet TUI (never send-keys; steer via bus/atop vi)
   hosts           tmux-connect host registry list
   bus             job-bus snapshot: config summary + job counts + board check
@@ -33,7 +46,52 @@ EOF
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+cmd_status_json() {
+	local harness="$PROFILE_DIR/bin/atop/harness-sync" harness_present=0 harness_rc=127
+	if [ -x "$harness" ]; then
+		harness_present=1
+		harness_rc=0
+		"$harness" status >&2 || harness_rc=$?
+	else
+		printf 'harness-sync: missing at bin/atop/harness-sync\n' >&2
+	fi
+	PROFILE_DIR="$PROFILE_DIR" PI_AGENT="$PI_AGENT" AOS_HARNESS_SYNC="$harness" \
+		AOS_HARNESS_PRESENT="$harness_present" AOS_HARNESS_RC="$harness_rc" \
+		python3 - <<'PY'
+import json
+import os
+import shutil
+
+profile_dir = os.environ["PROFILE_DIR"]
+pi_agent = os.environ["PI_AGENT"]
+tools = {name: bool(shutil.which(name)) for name in ["aos-buf", "atop", "atop-tui", "aos-data", "node"]}
+payload = {
+    "schema": "aos-status.v1",
+    "profile": profile_dir,
+    "pi": pi_agent,
+    "harness_sync": {
+        "path": os.environ["AOS_HARNESS_SYNC"],
+        "present": os.environ["AOS_HARNESS_PRESENT"] == "1",
+        "status_rc": int(os.environ["AOS_HARNESS_RC"]),
+    },
+    "tools": tools,
+    "job_bus": {
+        "configured": os.path.isfile(os.path.join(pi_agent, "job-bus.json")),
+        "config": os.path.join(pi_agent, "job-bus.json"),
+        "extension_present": os.path.isfile(os.path.join(pi_agent, "extensions", "job-bus.ts")),
+    },
+}
+print(json.dumps(payload, separators=(",", ":")))
+PY
+}
+
 cmd_status() {
+	if [ "${1:-}" = "--json" ]; then
+		shift
+		[ "$#" -eq 0 ] || { printf 'aos status --json: unexpected args\n' >&2; return 2; }
+		cmd_status_json
+		return
+	fi
 	local t
 	printf 'aos: profile=%s pi=%s\n' "$PROFILE_DIR" "$PI_AGENT"
 	if [ -x "$PROFILE_DIR/bin/atop/harness-sync" ]; then
@@ -107,9 +165,295 @@ cmd_install() {
 	have aos && echo "aos on PATH: ok" || echo "aos on PATH: $bin_dir not on PATH" >&2
 }
 
+# instantiate — personal-plane harness pre-flight (called by harness-instantiate).
+# As-needed and idempotent: verifies the profile exists and the plane's
+# skill/toolset wiring is present for the default herm home; never spawns a
+# harness (spawn stays with the caller), never mutates beyond link repair.
+# stdout: one JSON line (harness-instantiate.v1 sibling). No credential material.
+cmd_instantiate() {
+	local profile="" profile_path=""
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--profile) profile="${2:?}"; shift 2 ;;
+			--profile-path) profile_path="${2:?}"; shift 2 ;;
+			*) echo "aos instantiate: unknown arg $1" >&2; return 2 ;;
+		esac
+	done
+	[ -n "$profile" ] || { echo "aos instantiate: --profile required" >&2; return 2; }
+	if [ -z "$profile_path" ]; then
+		for d in "$HOME/src/hermes/profiles" "$HOME/src/karan.hiremath/agentic/hermes/profiles" "$PROFILE_DIR/bin/hermes/profiles"; do
+			[ -f "$d/$profile.yaml" ] && { profile_path="$d/$profile.yaml"; break; }
+		done
+	fi
+	[ -n "$profile_path" ] || { echo "aos instantiate: profile not found: $profile" >&2; return 1; }
+	local skills_root="$HOME/.hermes/skills"
+	local wiring="absent"
+	[ -d "$skills_root" ] && wiring="present"
+	printf '{"schema":"harness-instantiate.v1","plane":"personal","entrypoint":"aos","action":"prep","profile":"%s","reason":"skills-root-%s"}\n' \
+		"$profile" "$wiring"
+	return 0
+}
+
+# seat — seat.v1 manifest operations.
+# `aos seat check <manifest.yaml|->` validates against
+# config/aos/seat.v1.schema.json plus the behavior rule: orchestrate forbids
+# code.write/infra.mutate capabilities and write-capable toolsets
+# (file, code_execution). stdout: exactly one JSON line
+# {"schema":"aos-seat-check.v1","ok":...,"manifest":...,"errors":[...]};
+# exit 0 ok, 1 invalid, 2 usage. Diagnostics on stderr only.
+seat_usage() {
+	cat <<'EOF'
+Usage: aos seat check <manifest.yaml|->
+
+Validate a seat manifest (seat.v1) against the seat schema plus behavior
+rules. "-" reads the manifest (YAML) from stdin.
+
+stdout: one JSON line {"schema":"aos-seat-check.v1","ok":bool,"manifest":str,"errors":[str...]}
+exit:   0 ok, 1 invalid manifest, 2 usage/environment
+Env:    SEAT_SCHEMA overrides the schema path (testing)
+EOF
+}
+
+cmd_seat() {
+	local sub="${1:-}"
+	if [ $# -gt 0 ]; then shift; fi
+	case "$sub" in
+		check)
+			if [ $# -eq 1 ]; then
+				case "$1" in -h|--help) seat_usage; return 0 ;; esac
+			fi
+			if [ $# -ne 1 ]; then
+				echo "aos seat check: expected exactly one arg: <manifest.yaml|->" >&2
+				return 2
+			fi
+			local src="$1"
+			if [ "$src" != "-" ] && [ ! -r "$src" ]; then
+				echo "aos seat check: cannot read manifest: $src" >&2
+				return 2
+			fi
+			PROFILE_DIR="$PROFILE_DIR" SEAT_SOURCE="$src" \
+				SEAT_SCHEMA="${SEAT_SCHEMA:-$AOS_ROOT/config/aos/seat.v1.schema.json}" \
+				python3 -c "$(cat <<'PYCHECK'
+import json
+import os
+import re
+import sys
+
+try:
+    import yaml
+except ImportError as exc:
+    sys.stderr.write("aos seat check: PyYAML is required (%s)\n" % exc)
+    sys.exit(2)
+
+SOURCE = os.environ.get("SEAT_SOURCE") or "-"
+SCHEMA_PATH = os.environ.get("SEAT_SCHEMA") or os.path.join(
+    os.environ.get("PROFILE_DIR") or os.path.expanduser("~/src/profile"),
+    "config", "aos", "seat.v1.schema.json",
+)
+
+FORBIDDEN_ORCH_CAPS = ("code.write", "infra.mutate")
+FORBIDDEN_ORCH_TOOLSETS = ("file", "code_execution")
+
+errors = []
+
+
+def fail(msg):
+    errors.append(msg)
+
+
+class UnsupportedSchema(Exception):
+    """Schema uses a keyword the builtin validator does not implement."""
+
+
+_IGNORED = {
+    "$schema", "$id", "$comment", "$defs", "title", "description",
+    "default", "examples",
+}
+_IMPLEMENTED = {
+    "type", "enum", "const", "required", "properties", "patternProperties",
+    "additionalProperties", "items", "minItems", "maxItems", "uniqueItems",
+    "minLength",
+}
+_TYPES = {"object": dict, "array": list, "string": str, "null": type(None)}
+
+
+def _is(inst, t):
+    if t == "integer":
+        return isinstance(inst, int) and not isinstance(inst, bool)
+    if t == "number":
+        return isinstance(inst, (int, float)) and not isinstance(inst, bool)
+    if t == "boolean":
+        return isinstance(inst, bool)
+    cls = _TYPES.get(t)
+    if cls is None:
+        raise UnsupportedSchema("unsupported type: %s" % t)
+    return isinstance(inst, cls)
+
+
+def _typename(inst):
+    if inst is None:
+        return "null"
+    if isinstance(inst, bool):
+        return "boolean"
+    if isinstance(inst, dict):
+        return "object"
+    if isinstance(inst, list):
+        return "array"
+    if isinstance(inst, str):
+        return "string"
+    if isinstance(inst, int):
+        return "integer"
+    if isinstance(inst, float):
+        return "number"
+    return type(inst).__name__
+
+
+def _canon(item):
+    return json.dumps(item, sort_keys=True)
+
+
+def validate(inst, schema, path="$"):
+    unknown = sorted(
+        kw for kw in schema if kw not in _IMPLEMENTED and kw not in _IGNORED
+    )
+    if unknown:
+        raise UnsupportedSchema("unsupported schema keywords: %s" % ", ".join(unknown))
+    t = schema.get("type")
+    if t is not None and not _is(inst, t):
+        fail("%s: expected %s, got %s" % (path, t, _typename(inst)))
+        return
+    if "const" in schema and inst != schema["const"]:
+        fail("%s: expected const %r" % (path, schema["const"]))
+    if "enum" in schema and not any(inst == v for v in schema["enum"]):
+        fail("%s: expected one of %r, got %r" % (path, schema["enum"], inst))
+    if "minLength" in schema and isinstance(inst, str) and len(inst) < schema["minLength"]:
+        fail("%s: string shorter than %d" % (path, schema["minLength"]))
+    if isinstance(inst, dict):
+        for key in schema.get("required", []):
+            if key not in inst:
+                fail("%s: missing required property '%s'" % (path, key))
+        props = schema.get("properties", {})
+        pats = schema.get("patternProperties", {})
+        for key in inst:
+            matched = key in props
+            if matched:
+                validate(inst[key], props[key], "%s.%s" % (path, key))
+            for pat, psub in pats.items():
+                if re.search(pat, key):
+                    matched = True
+                    validate(inst[key], psub, "%s.%s" % (path, key))
+            if not matched:
+                ap = schema.get("additionalProperties", True)
+                if ap is False:
+                    fail("%s: unexpected property '%s'" % (path, key))
+                elif isinstance(ap, dict):
+                    validate(inst[key], ap, "%s.%s" % (path, key))
+    if isinstance(inst, list):
+        items = schema.get("items")
+        if items is not None:
+            if not isinstance(items, dict):
+                raise UnsupportedSchema("unsupported items form")
+            for i, elem in enumerate(inst):
+                validate(elem, items, "%s[%d]" % (path, i))
+        if "minItems" in schema and len(inst) < schema["minItems"]:
+            fail("%s: array has fewer than %d items" % (path, schema["minItems"]))
+        if "maxItems" in schema and len(inst) > schema["maxItems"]:
+            fail("%s: array has more than %d items" % (path, schema["maxItems"]))
+        if schema.get("uniqueItems"):
+            seen = set()
+            for i, elem in enumerate(inst):
+                canon = _canon(elem)
+                if canon in seen:
+                    fail("%s[%d]: duplicate item" % (path, i))
+                seen.add(canon)
+
+
+def main():
+    try:
+        with open(SCHEMA_PATH, encoding="utf-8") as fh:
+            schema = json.load(fh)
+    except (OSError, ValueError) as exc:
+        sys.stderr.write("aos seat check: cannot load schema %s: %s\n" % (SCHEMA_PATH, exc))
+        return 2
+
+    raw = None
+    try:
+        if SOURCE == "-":
+            raw = sys.stdin.buffer.read().decode("utf-8")
+        else:
+            with open(SOURCE, "rb") as fh:
+                raw = fh.read().decode("utf-8")
+    except OSError as exc:
+        sys.stderr.write("aos seat check: cannot read manifest %s: %s\n" % (SOURCE, exc))
+        return 2
+    except UnicodeDecodeError:
+        fail("$: manifest is not valid utf-8 text")
+
+    doc = None
+    parsed = False
+    if raw is not None:
+        try:
+            doc = yaml.safe_load(raw)
+            parsed = True
+        except yaml.YAMLError as exc:
+            fail("$: yaml parse error: %s" % " ".join(str(exc).split()))
+
+    if parsed:
+        if doc is None and not raw.strip():
+            fail("$: document is empty")
+        try:
+            validate(doc, schema)
+        except UnsupportedSchema as exc:
+            sys.stderr.write("aos seat check: %s\n" % exc)
+            return 2
+        if isinstance(doc, dict) and isinstance(doc.get("behavior"), list) \
+                and "orchestrate" in doc["behavior"]:
+            caps = doc.get("capabilities")
+            if isinstance(caps, list):
+                for cap in caps:
+                    if isinstance(cap, str) and cap in FORBIDDEN_ORCH_CAPS:
+                        fail("behavior orchestrate forbids capability '%s'" % cap)
+            toolsets = doc.get("toolsets")
+            if isinstance(toolsets, list):
+                for toolset in toolsets:
+                    if isinstance(toolset, str) and toolset in FORBIDDEN_ORCH_TOOLSETS:
+                        fail("behavior orchestrate forbids write-capable toolset '%s'" % toolset)
+
+    payload = {
+        "schema": "aos-seat-check.v1",
+        "ok": not errors,
+        "manifest": SOURCE,
+        "errors": errors,
+    }
+    sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    return 0 if not errors else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+PYCHECK
+)"
+			;;
+		-h|--help|help)
+			seat_usage
+			;;
+		"")
+			echo "aos seat: missing subcommand (try: aos seat help)" >&2
+			seat_usage >&2
+			return 2
+			;;
+		*)
+			echo "aos seat: unknown subcommand '$sub' (try: aos seat help)" >&2
+			return 2
+			;;
+	esac
+}
+
 case "${1:-help}" in
 	status) shift; cmd_status "$@" ;;
+	instantiate) shift; cmd_instantiate "$@" ;;
 	sync)   shift; exec "$PROFILE_DIR/bin/atop/harness-sync" apply "$@" ;;
+	seat)   shift; cmd_seat "$@" ;;
 	pull)   shift; exec "$PROFILE_DIR/bin/atop/harness-sync" pull "$@" ;;
 	doctor) shift; cmd_doctor "$@" ;;
 	buf)    shift; exec aos-buf "$@" ;;

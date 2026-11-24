@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# harness-instantiate — plane-routed harness instantiation gate (generic).
+#
+# Dual mode:
+#   harness-instantiate classify <profile>            -> JSON line on stdout
+#   harness-instantiate prep     <profile> [args...]  -> plane pre-flight; never spawns
+#
+# Plane/lane routing is read from typed profile YAML first. Path inference is
+# fallback-only and reports reason "plane-inferred-from-path". stdout is one
+# JSON line; diagnostics are stderr; no credential material.
+set -euo pipefail
+
+json_emit() { # json_emit <plane> <lane> <entrypoint> <action> <profile> <reason>
+  PLANE="$1" LANE="$2" ENTRYPOINT="$3" ACTION="$4" PROFILE_NAME="$5" REASON="$6" \
+    python3 - <<'PY'
+import json
+import os
+
+payload = {
+    "schema": "harness-instantiate.v1",
+    "plane": os.environ["PLANE"],
+    "entrypoint": os.environ["ENTRYPOINT"],
+    "action": os.environ["ACTION"],
+    "profile": os.environ["PROFILE_NAME"],
+    "reason": os.environ["REASON"],
+}
+lane = os.environ.get("LANE") or ""
+if lane:
+    payload["lane"] = lane
+print(json.dumps(payload, separators=(",", ":")))
+PY
+}
+
+resolve_profile() { # -> absolute yaml path or empty
+  local name="$1" cand
+  if [ -n "${HERMES_AGENT_PROFILE_PATH:-}" ]; then
+    local IFS=':'
+    for d in ${HERMES_AGENT_PROFILE_PATH}; do
+      cand="$d/$name.yaml"
+      [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+    done
+  fi
+  for d in \
+    "${HOME}/src/karan.hiremath/agentic/hermes/profiles" \
+    "${HOME}/src/hermes/profiles" \
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/profiles"
+  do
+    cand="$d/$name.yaml"
+    [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+profile_route() { # -> plane|lane|reason on success; error reason and nonzero otherwise
+  local path="$1"
+  PROFILE_PATH="$path" python3 - <<'PY'
+import os
+import sys
+
+def fail(reason):
+    sys.stdout.write(reason + "\n")
+    sys.exit(2)
+
+try:
+    import yaml
+except ImportError:
+    fail("pyyaml-required")
+
+path = os.environ["PROFILE_PATH"]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+except (yaml.YAMLError, ValueError):
+    fail("malformed-yaml")
+except (OSError, UnicodeError):
+    fail("profile-read-failed")
+if not isinstance(doc, dict):
+    fail("invalid-profile-document")
+
+plane = ""
+lane = ""
+if "plane" in doc:
+    p = doc["plane"]
+    if not isinstance(p, str) or p not in {"personal", "work"}:
+        fail("invalid-plane")
+    plane = p
+l = doc.get("lane")
+if isinstance(l, str) and l.strip():
+    lane = l.strip()
+if plane:
+    reason = "plane-from-profile"
+else:
+    if "/src/karan.hiremath/" in path:
+        plane = "work"
+    else:
+        plane = "personal"
+    reason = "plane-inferred-from-path"
+sys.stdout.write("%s|%s|%s\n" % (plane, lane, reason))
+PY
+}
+
+read_profile_route() { # validate before either classification or dispatch
+  local route rc
+  if route="$(profile_route "$2")"; then
+    IFS='|' read -r plane lane reason <<< "$route"
+  else
+    rc=$?
+    json_emit unknown "" none error "$1" "$route"
+    return "$rc"
+  fi
+}
+
+plane_prep() { # plane_prep <plane> <lane> <profile-name> <resolved-path>; rc 0 = handled
+  local plane="$1" lane="$2" name="$3" path="$4"
+  case "$plane" in
+    work)
+      if command -v cai-aos >/dev/null 2>&1; then
+        if cai-aos instantiate --profile "$name" --profile-path "$path" >/dev/null 2>&1; then
+          json_emit work "$lane" cai-aos handled "$name" ""
+          return 0
+        fi
+        json_emit work "$lane" cai-aos fallback "$name" "cai-aos-instantiate-failed"
+        return 1
+      fi
+      json_emit work "$lane" none fallback "$name" "cai-aos-not-installed"
+      return 1
+      ;;
+    personal)
+      if command -v aos >/dev/null 2>&1; then
+        if aos instantiate --profile "$name" --profile-path "$path" >/dev/null 2>&1; then
+          json_emit personal "$lane" aos handled "$name" ""
+          return 0
+        fi
+        json_emit personal "$lane" aos fallback "$name" "aos-instantiate-failed"
+        return 1
+      fi
+      json_emit personal "$lane" none fallback "$name" "aos-not-installed"
+      return 1
+      ;;
+  esac
+  return 1
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { printf 'usage: harness-instantiate classify|prep <profile>\n' >&2; exit 2; }
+shift || true
+case "$cmd" in
+  classify)
+    [ "$#" -ge 1 ] || { printf 'classify needs a profile name\n' >&2; exit 2; }
+    if path="$(resolve_profile "$1")"; then
+      read_profile_route "$1" "$path" || exit $?
+      json_emit "$plane" "$lane" none classified "$1" "$reason"
+    else
+      json_emit unknown "" none unclassified "$1" "profile-not-found"
+      exit 1
+    fi
+    ;;
+  prep)
+    [ "$#" -ge 1 ] || { printf 'prep needs a profile name\n' >&2; exit 2; }
+    name="$1"
+    if ! path="$(resolve_profile "$name")"; then
+      json_emit unknown "" none fallback "$name" "profile-not-found"
+      exit 1
+    fi
+    read_profile_route "$name" "$path" || exit $?
+    plane_prep "$plane" "$lane" "$name" "$path" || exit 1
+    ;;
+  *) printf 'unknown command: %s\n' "$cmd" >&2; exit 2 ;;
+esac

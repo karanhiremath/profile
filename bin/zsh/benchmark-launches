@@ -1,0 +1,39 @@
+#!/usr/bin/env zsh
+# Repeatable launch benchmark without requiring hyperfine. Emits NDJSON only.
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    print -r -- 'Usage: zsh -df bin/zsh/benchmark-launches'
+    print -r -- 'Three warmups, twenty samples each: minimal, interactive, login.'
+    exit 0
+fi
+zmodload zsh/datetime
+zmodload zsh/mathfunc
+for mode in minimal interactive login; do
+    case $mode in
+        minimal) args=(-f -i -c exit) ;;
+        interactive) args=(-i -c exit) ;;
+        login) args=(-l -i -c exit) ;;
+    esac
+    repeat 3; do
+        command zsh $args >/dev/null 2>/dev/null || exit 1
+    done
+    samples=()
+    repeat 20; do
+        started=$EPOCHREALTIME
+        command zsh $args >/dev/null 2>/dev/null || exit 1
+        samples+=($(( (EPOCHREALTIME - started) * 1000 )))
+    done
+    total=0.0
+    low=${samples[1]}
+    high=$low
+    for sample in $samples; do
+        total=$((total + sample))
+        (( sample < low )) && low=$sample
+        (( sample > high )) && high=$sample
+    done
+    mean=$((total / 20.0))
+    variance=0.0
+    for sample in $samples; do
+        variance=$((variance + (sample - mean) ** 2))
+    done
+    print -r -- "{\"mode\":\"$mode\",\"runs\":20,\"mean_ms\":$mean,\"min_ms\":$low,\"max_ms\":$high,\"stddev_ms\":$((sqrt(variance / 19.0)))}"
+done

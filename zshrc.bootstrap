@@ -26,12 +26,18 @@ for _f in "$_profile_dir"/zsh.d/*.zsh(N); do
 done
 
 # Host-local fragments (sorted, all loaded).
-mkdir -p "$HOME/.zshrc.d"
+[[ -d "$HOME/.zshrc.d" ]] || mkdir -p "$HOME/.zshrc.d"
 for _f in "$HOME"/.zshrc.d/*.zsh(N); do
     source "$_f"
 done
 
 # Secrets are sourced last so fragments can reference them.
 [ -r "$HOME/.zshrc.secrets" ] && source "$HOME/.zshrc.secrets"
+
+# Run env integration once, after all PATH mutations. Expensive completion
+# generation is detached; only the cached shell definitions load synchronously.
+if [ -r "$_profile_dir/bin/zsh/interactive.zsh" ]; then
+    source "$_profile_dir/bin/zsh/interactive.zsh"
+fi
 
 unset _profile_dir _f

@@ -1,0 +1,33 @@
+#!/usr/bin/env zsh
+# Measure config and first-prompt hooks separately from process launch.
+# Do not wrap source(): that changes typeset scoping inside sourced scripts.
+# Never trace commands or emit environment values.
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    print -r -- 'Usage: zsh -dfi bin/zsh/benchmark-startup [zshrc | --modules]'
+    exit 0
+fi
+zmodload zsh/datetime
+if [[ "${1:-}" == --modules ]]; then
+    for module in zsh/zle zsh/complete zsh/complist zsh/parameter zsh/system; do
+        started=$EPOCHREALTIME
+        zmodload "$module"
+        print -r -- "{\"module\":\"$module\",\"ms\":$(( (EPOCHREALTIME - started) * 1000 ))}"
+    done
+    exit 0
+fi
+started=$EPOCHREALTIME
+source "${1:-$HOME/.zshrc}" >/dev/null 2>/dev/null
+config_status=$?
+config_ms=$(( (EPOCHREALTIME - started) * 1000 ))
+started=$EPOCHREALTIME
+prompt_status=0
+if (( $+functions[precmd] )); then
+    precmd >/dev/null 2>/dev/null || prompt_status=$?
+fi
+for hook in ${precmd_functions[@]}; do
+    "$hook" >/dev/null 2>/dev/null || prompt_status=$?
+done
+# Expand the prompt too: PROMPT_SUBST can hide synchronous CLI work.
+print -P -- "$PROMPT" >/dev/null 2>/dev/null || prompt_status=$?
+prompt_ms=$(( (EPOCHREALTIME - started) * 1000 ))
+print -r -- "{\"config_ms\":$config_ms,\"prompt_ms\":$prompt_ms,\"ready_ms\":$((config_ms + prompt_ms)),\"config_status\":$config_status,\"prompt_status\":$prompt_status}"

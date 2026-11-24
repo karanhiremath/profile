@@ -3,6 +3,7 @@
 APP_BIN := "$(pwd)/bin"
 HOME := "$(echo $HOME)"
 
+import? 'yt-history.just'
 
 # Install core tools + full coding-dev environment
 all: mise git tmux nvim fzf pc dev

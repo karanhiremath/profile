@@ -27,9 +27,14 @@ Usage:
   cos --lane NAME             isolated sibling seat chief-of-staff-NAME
   cos --lane NAME --print-plan
                               show profile/session/home and exit
+  cos sessions                list running cos-family tmux sessions (JSON)
+  cos attach [session]        explicitly attach to a running cos TUI pane
 
-A second TUI on the same Hermes home closes the gateway pipe. Parallel
-cos sessions need --lane so each pane owns its own home and lock.
+Spawn-always: every cos launch spawns a NEW tmux TUI session. When the
+seat's home is busy, the next free sibling seat (cos-a1, cos-a2, ...; own
+HERMES_HOME + session) is minted automatically. cos never switches or
+attaches the current client to an existing session; use `cos attach` or
+`cos sessions` + explicit choice for that.
 EOF
 }
 
@@ -92,6 +97,20 @@ fi
 if [ "$COS_PRINT_PLAN" = "1" ]; then
   "$PY" "$SEAT_PY" resolve-profile "$COS_PROFILE"
   exit 0
+fi
+
+# Explicit session surfaces; attaching is never implicit at launch.
+# `cos sessions` lists running cos-family tmux sessions (JSON).
+# `cos attach [session]` attaches to a live cos TUI pane on request only.
+if [ "${#COS_ARGS[@]}" -gt 0 ]; then
+  case "${COS_ARGS[0]}" in
+    sessions|attach)
+      if [ "${#COS_ARGS[@]}" -gt 1 ]; then
+        exec "$SCRIPT_DIR/agents" "${COS_ARGS[0]}" "$COS_PROFILE" "${COS_ARGS[@]:1}"
+      fi
+      exec "$SCRIPT_DIR/agents" "${COS_ARGS[0]}" "$COS_PROFILE"
+      ;;
+  esac
 fi
 
 if [ -n "$COS_LANE" ]; then

@@ -56,6 +56,7 @@ import {
 	type SnapshotEntry,
 } from "./lib/compact-snapshot.ts";
 import { createSiblingHandoffSession, spawnHandoffPrintTurn } from "./lib/handoff-sibling.ts";
+import { captureHandoffPrepWriter, replaceHandoffSession } from "./lib/handoff-replacement.ts";
 import { persistSuccessorLineage, spawnSuccessorWorker } from "./lib/handoff-successor.ts";
 import { readHandoffLineage } from "./lib/handoff-lineage.ts";
 import { existsSync, statSync } from "node:fs";
@@ -160,42 +161,22 @@ async function trySilentHandoff(ctx: ExtensionContext, snapshot: CompactSnapshot
 	}
 	const prompt = formatHandoffPrompt(snapshot, snapshot.objective);
 	const steerMode = sessionSteerMode({ hasUI: ctx.hasUI, mode: ctx.mode });
-	let promptDelivered = !shouldInjectHandoffPrompt(currentPrep(ctx));
-	try {
-		const result = await newSession({
-			withSession: async (replacementCtx) => {
-				const live = handoffSwitchPresentation({
-					mode: steerMode,
-					hasUI: ctx.hasUI,
-					replacementHasUI: replacementCtx.hasUI,
-					prepared: false,
-					promptAlreadySent: promptDelivered,
-				});
-				if (live.replacement.notify) {
-					replacementCtx.ui.notify(`Handoff-now. Snapshot: ${snapshot.snapshot_path}`, "info");
-				}
-				if (live.replacement.setEditorText) {
-					replacementCtx.ui.setEditorText(prompt);
-					promptDelivered = true;
-				}
-				if (live.sendUserMessage) {
-					await replacementCtx.sendUserMessage(prompt, { deliverAs: live.sendDeliverAs });
-					promptDelivered = true;
-				}
-			},
-		});
-		if (result.cancelled && !promptDelivered) return false;
-		handoffQueued = true;
-		lastCompactAt = Date.now();
-		if (ctx.hasUI) {
-			ctx.ui.notify(`Prefer handoff-now over compact: ${snapshot.snapshot_path}`, "info");
-		}
-		return true;
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		if (ctx.hasUI) ctx.ui.notify(`Handoff-now failed: ${message}`, "warning");
-		return promptDelivered;
-	}
+	const writeOwnerPrep = captureHandoffPrepWriter(ctx, snapshot.snapshot_path);
+	return replaceHandoffSession(ctx as ExtensionCommandContext, {
+		prompt,
+		snapshotPath: snapshot.snapshot_path,
+		promptAlreadySent: !shouldInjectHandoffPrompt(prep),
+		onSwitched: (delivered) => {
+			handoffQueued = true;
+			lastCompactAt = Date.now();
+			writeOwnerPrep({
+				phase: "switched",
+				switched_at: new Date().toISOString(),
+				mode: steerMode,
+				...(delivered ? { prompt_sent_at: new Date().toISOString() } : {}),
+			});
+		},
+	});
 }
 
 async function preferHandoffOrContinue(
@@ -212,7 +193,7 @@ async function preferHandoffOrContinue(
 		return;
 	}
 	await runHandoffLane(pi, ctx, snapshot, { compactedInsteadOfHandoff: true, willRetry: opts?.willRetry });
-	injectContinue(pi, ctx, snapshot, opts);
+	if (!handoffQueued) injectContinue(pi, ctx, snapshot, opts);
 }
 
 function queueHandoffNow(pi: ExtensionAPI, ctx: ExtensionContext, snapshot: CompactSnapshot): boolean {
@@ -517,64 +498,23 @@ async function switchToPrepared(
 	});
 	let promptDelivered = !shouldInjectHandoffPrompt(prep);
 	if (target === "switch-sibling" && prep?.child_session_file) {
-		try {
-			const result = await cmd.switchSession(prep.child_session_file, {
-				withSession: async (replacementCtx) => {
-					const presentation = handoffSwitchPresentation({
-						mode: steerMode,
-						hasUI: ctx.hasUI,
-						replacementHasUI: replacementCtx.hasUI,
-						prepared: true,
-						promptAlreadySent: promptDelivered,
-					});
-					if (presentation.replacement.notify) {
-						replacementCtx.ui.notify(`Handoff switch. Snapshot: ${snapshot.snapshot_path}`, "info");
-					}
-					if (presentation.replacement.setEditorText) {
-						replacementCtx.ui.setEditorText(prompt);
-						promptDelivered = true;
-					}
-					if (presentation.sendUserMessage) {
-						await replacementCtx.sendUserMessage(prompt, { deliverAs: presentation.sendDeliverAs });
-						promptDelivered = true;
-					}
-				},
-			});
-			if (!result.cancelled) {
-				persistPrep(ctx, snapshot, {
-					phase: "switched",
-					switched_at: new Date().toISOString(),
-					mode: steerMode,
-					prompt_sent_at: new Date().toISOString(),
-				});
+		const writeOwnerPrep = captureHandoffPrepWriter(ctx, snapshot.snapshot_path);
+		if (await replaceHandoffSession(cmd, {
+			childFile: prep.child_session_file,
+			prompt,
+			snapshotPath: snapshot.snapshot_path,
+			promptAlreadySent: promptDelivered,
+			onSwitched: (delivered) => {
 				handoffQueued = true;
 				lastCompactAt = Date.now();
-				const ownerPresentation = handoffSwitchPresentation({
-					mode: steerMode,
-					hasUI: ctx.hasUI,
-					prepared: true,
-					promptAlreadySent: true,
-				});
-				if (ownerPresentation.owner.notify) {
-					ctx.ui.notify(`Pushed handoff session to you. Coordinate steering with ${prep.child_session_id || prep.child_session_file}`, "info");
-				}
-				if (!isHandoffChildSession({ childFile: prep.child_session_file, currentFile: currentSessionFile(ctx) })) {
-					spawnSuccessorIfNeeded(ctx, snapshot, currentPrep(ctx));
-				}
-				return true;
-			}
-			if (promptDelivered) {
-				persistPrep(ctx, snapshot, {
+				writeOwnerPrep({
 					phase: "switched",
 					switched_at: new Date().toISOString(),
 					mode: steerMode,
-					prompt_sent_at: new Date().toISOString(),
+					...(delivered ? { prompt_sent_at: new Date().toISOString() } : {}),
 				});
-			}
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			if (ctx.hasUI) ctx.ui.notify(`Handoff switch failed: ${message}`, "warning");
-		}
+			},
+		})) return true;
 		if (
 			shouldQueueHandoffNowAfterSwitch({ promptDelivered, mode: steerMode, switchSessionAvailable }) &&
 			queueHandoffNow(pi, ctx, snapshot)
@@ -618,12 +558,6 @@ async function switchToPrepared(
 		}) &&
 		(await trySilentHandoff(ctx, snapshot))
 	) {
-		persistPrep(ctx, snapshot, {
-			phase: "switched",
-			switched_at: new Date().toISOString(),
-			mode: steerMode,
-			prompt_sent_at: new Date().toISOString(),
-		});
 		return true;
 	}
 	if (

@@ -139,11 +139,15 @@ EOF
 
 validate_payload() { # $1 payload file -> exit non-zero + message if invalid
   local f="$1" rc=0
-  if command -v zsh >/dev/null 2>&1; then
-    case "$f" in
-      *.zsh|*zshrc|*zshrc.bootstrap) zsh -n "$f" || rc=1 ;;
-    esac
-  fi
+  case "$f" in
+    *.zsh|*zshrc|*zshrc.bootstrap)
+      if command -v zsh >/dev/null 2>&1; then
+        zsh -n "$f" || rc=1
+      else
+        echo "zsh-sync: WARNING: zsh not found; skipped syntax validation for $f" >&2
+      fi
+      ;;
+  esac
   case "$f" in
     *.sh|*install) bash -n "$f" 2>/dev/null || rc=1 ;;
   esac

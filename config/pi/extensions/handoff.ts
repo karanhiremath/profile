@@ -1,13 +1,19 @@
 /**
  * Handoff: transfer to a new session via a pointer snapshot, not a transcript dump.
  *
- *   /handoff [--type implementation|monitoring|planning] [--budget 5] [--llm] <goal>
+ *   /handoff [--type implementation|monitoring|planning] [--budget 5] [--brief|--pointer] [--llm] <goal>
  *   /handoff-bg ...   (sibling prepare; does not replace this session)
  *   /handoff-now ...  (non-interactive switch; used at ~75% or as fallback)
  *
  * Default path writes ~/.pi/agent/snapshots/<sid>.json and puts a pointer
  * ≤5% of the model window in the new session. Pull-up: subagent wait=false.
  * --llm is optional and still capped. History is not sent to grok-4.6:fast.
+ *
+ * --brief (or handoffStyle "brief" in ~/.pi/agent/compact-handoff.json, or
+ * PI_HANDOFF_STYLE=brief) has the current model write a full new-session
+ * prompt for review. It never dead-ends: a stub or provider error falls back
+ * to the pointer prompt. Generation goes through
+ * ctx.modelRegistry.getProvider().stream() so pi-cursor-sdk models dispatch.
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai/compat";
@@ -20,7 +26,6 @@ import {
 	formatHandoffPreparePrompt,
 	formatHandoffPrompt,
 	handoffPrepIsInFlight,
-	handoffSwitchPresentation,
 	handoffSwitchTarget,
 	shouldFallbackHandoffPrompt,
 	shouldInjectHandoffPrompt,
@@ -35,6 +40,8 @@ import {
 	shouldOpenNewHandoffSession,
 	keepLiveHandoffChild,
 	isHandoffChildSession,
+	loadCompactHandoffConfig,
+	resolveHandoffStyle,
 	resolveLiveHandoffPrep,
 	tryClaimHandoffPrep,
 	writeHandoffPrepAliases,
@@ -43,6 +50,14 @@ import {
 	type SnapshotEntry,
 } from "./lib/compact-snapshot.ts";
 import { createSiblingHandoffSession, spawnHandoffPrintTurn } from "./lib/handoff-sibling.ts";
+import { captureHandoffPrepWriter, replaceHandoffSession } from "./lib/handoff-replacement.ts";
+import {
+	BRIEF_SYSTEM_PROMPT,
+	buildBriefRequestText,
+	generateBrief,
+	prepareConversationText,
+	type BriefResult,
+} from "./lib/handoff-brief.ts";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -220,6 +235,95 @@ async function maybeLlmPrompt(
 	}
 }
 
+async function streamBriefPrompt(
+	ctx: ExtensionCommandContext,
+	goal: string,
+	signal?: AbortSignal,
+): Promise<BriefResult> {
+	const model = ctx.model;
+	if (!model) throw new Error("No model selected");
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	if (!auth.ok) throw new Error(auth.error);
+	const provider = ctx.modelRegistry.getProvider(model.provider);
+	if (!provider) throw new Error(`No provider registered for ${model.provider}`);
+
+	const messages = getHandoffMessages(ctx.sessionManager.getBranch());
+	const conversationText = prepareConversationText(serializeConversation(convertToLlm(messages)));
+	return generateBrief(async (rejected) => {
+		const stream = provider.stream(
+			model,
+			{
+				systemPrompt: BRIEF_SYSTEM_PROMPT,
+				messages: [
+					{
+						role: "user",
+						content: [{ type: "text", text: buildBriefRequestText(conversationText, goal, rejected) }],
+						timestamp: Date.now(),
+					} satisfies Message,
+				],
+			},
+			{ apiKey: auth.apiKey ?? "", headers: auth.headers, env: auth.env, signal },
+		);
+		const response = await stream.result();
+		if (response.stopReason === "aborted") return null;
+		const text = response.content
+			.filter((content): content is { type: "text"; text: string } => content.type === "text")
+			.map((content) => content.text)
+			.join("\n")
+			.trim();
+		return {
+			text,
+			stopReason: String(response.stopReason),
+			errorMessage: (response as { errorMessage?: string }).errorMessage,
+		};
+	});
+}
+
+/**
+ * Model-written prompt for the editor. Returns null only when the operator
+ * aborts. Any failure keeps the handoff alive with the pointer prompt.
+ */
+async function briefOrPointer(
+	ctx: ExtensionCommandContext,
+	goal: string,
+	pointerPrompt: string,
+	snapshotPath: string,
+): Promise<string | null> {
+	const settle = (result: BriefResult): string | null => {
+		if (result.status === "aborted") return null;
+		if (result.status === "ok") return result.text;
+		ctx.ui.notify(
+			`Handoff brief failed (${result.reason}); using pointer prompt. Snapshot: ${snapshotPath}`,
+			"warning",
+		);
+		return pointerPrompt;
+	};
+	const recover = (error: unknown): string => {
+		console.error("Handoff brief generation failed:", error);
+		ctx.ui.notify(
+			`Handoff brief failed (${errorMessage(error)}); using pointer prompt. Snapshot: ${snapshotPath}`,
+			"warning",
+		);
+		return pointerPrompt;
+	};
+	if (ctx.mode === "tui") {
+		return ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+			const loader = new BorderedLoader(tui, theme, "Generating handoff prompt...");
+			loader.onAbort = () => done(null);
+			streamBriefPrompt(ctx, goal, loader.signal)
+				.then((result) => done(settle(result)))
+				.catch((error) => done(recover(error)));
+			return loader;
+		});
+	}
+	ctx.ui.notify("Generating handoff prompt...", "info");
+	try {
+		return settle(await streamBriefPrompt(ctx, goal));
+	} catch (error) {
+		return recover(error);
+	}
+}
+
 async function runHandoff(
 	pi: ExtensionAPI,
 	args: string,
@@ -251,7 +355,7 @@ async function runHandoff(
 	const goal = parsed.goal || (autoGoal ? persisted.snapshot.objective : "");
 	if (!goal) {
 		ctx.ui.notify(
-			`Usage: ${command} [--type implementation|monitoring|planning] [--budget 5] [--llm] <goal>`,
+			`Usage: ${command} [--type implementation|monitoring|planning] [--budget 5] [--brief|--pointer] [--llm] <goal>`,
 			"error",
 		);
 		return;
@@ -261,7 +365,15 @@ async function runHandoff(
 		? persisted
 		: persistFromBranch(ctx, goal, parsed.kind, parsed.budgetPercent);
 	let prompt = formatHandoffPrompt(snapshot, goal, limits.promptMaxChars);
-	if (parsed.llm && mode === "editor" && !parsed.silent) {
+	const style = resolveHandoffStyle({ flag: parsed.style, config: loadCompactHandoffConfig().handoffStyle });
+	if (style === "brief" && mode === "editor" && !parsed.silent && !parsed.llm) {
+		const brief = await briefOrPointer(ctx, goal, prompt, path);
+		if (brief === null) {
+			ctx.ui.notify("Handoff cancelled", "info");
+			return;
+		}
+		prompt = brief;
+	} else if (parsed.llm && mode === "editor" && !parsed.silent) {
 		const rewritten = await maybeLlmPrompt(ctx, goal, path, snapshot.kind, prompt, limits);
 		if (rewritten === null) {
 			ctx.ui.notify("Handoff cancelled", "info");
@@ -321,11 +433,11 @@ async function runHandoff(
 	const currentSessionFile = ctx.sessionManager.getSessionFile();
 	const approved = await ctx.ui.confirm(
 		"Switch to new session?",
-		`Snapshot: ${path}\nCreates a linked Pi session and places the pointer prompt in the editor.`,
+		`Snapshot: ${path}\nCreates a linked Pi session and places the handoff prompt in the editor.`,
 	);
 	if (!approved) {
 		ctx.ui.setEditorText(editedPrompt);
-		ctx.ui.notify(`Kept pointer prompt. Snapshot: ${path}`, "info");
+		ctx.ui.notify(`Kept handoff prompt. Snapshot: ${path}`, "info");
 		return;
 	}
 	const newSessionResult = await ctx.newSession({
@@ -538,44 +650,22 @@ async function switchPreparedOrNew(
 		siblingIsCurrent,
 	});
 	let promptDelivered = !shouldInjectHandoffPrompt(prep);
+	const writeOwnerPrep = captureHandoffPrepWriter(ctx, path);
+	const onSwitched = (delivered: boolean) => writeOwnerPrep({
+		phase: "switched",
+		switched_at: new Date().toISOString(),
+		...(delivered ? { prompt_sent_at: new Date().toISOString() } : {}),
+	});
 	if (target === "switch-sibling" && prep?.child_session_file) {
-		try {
-			const result = await ctx.switchSession(prep.child_session_file, {
-				withSession: async (replacementCtx) => {
-					const presentation = handoffSwitchPresentation({
-						mode: steerMode,
-						hasUI: ctx.hasUI,
-						replacementHasUI: replacementCtx.hasUI,
-						prepared: true,
-						promptAlreadySent: promptDelivered,
-					});
-					if (presentation.replacement.notify) {
-						replacementCtx.ui.notify(`Handoff switch. Snapshot: ${path}`, "info");
-					}
-					if (presentation.replacement.setEditorText) {
-						replacementCtx.ui.setEditorText(prompt);
-						promptDelivered = true;
-					}
-					if (presentation.sendUserMessage) {
-						await replacementCtx.sendUserMessage(prompt, { deliverAs: presentation.sendDeliverAs });
-						promptDelivered = true;
-					}
-				},
-			});
-			persistOwnerPrep(ctx, {
-				...prep,
-				schema: "pi.handoff-prep.v1",
-				source_session_id: sourceSessionId(ctx),
-				snapshot_path: path,
-				phase: "switched",
-				switched_at: new Date().toISOString(),
-				prompt_sent_at: promptDelivered ? new Date().toISOString() : prep.prompt_sent_at,
-			});
-			return promptDelivered || !result.cancelled;
-		} catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(`Handoff switch failed: ${errorMessage(error)}`, "warning");
-		}
-		return promptDelivered;
+		await replaceHandoffSession(ctx, {
+			childFile: prep.child_session_file,
+			prompt,
+			snapshotPath: path,
+			promptAlreadySent: promptDelivered,
+			onSwitched,
+		});
+		// A cancelled replacement is handled too; do not inject an owner continuation.
+		return true;
 	}
 	if (target === "defer") {
 		if (shouldPushOwnerEditorOnDefer({ mode: steerMode, hasUI: ctx.hasUI, prep })) {
@@ -595,7 +685,7 @@ async function switchPreparedOrNew(
 	if (
 		!shouldOpenNewHandoffSession({
 			target,
-			siblingFileExists,
+			siblingFileExists: siblingExists,
 			childFile: prep?.child_session_file,
 			childJobId: prep?.child_job_id,
 			preparedAt: prep?.prepared_at,
@@ -616,61 +706,18 @@ async function switchPreparedOrNew(
 		if (ctx.hasUI) ctx.ui.notify("Handoff sibling exists; not creating a second session", "warning");
 		return promptDelivered;
 	}
-	try {
-		const result = await ctx.newSession({
-			withSession: async (replacementCtx) => {
-				const presentation = handoffSwitchPresentation({
-					mode: steerMode,
-					hasUI: ctx.hasUI,
-					replacementHasUI: replacementCtx.hasUI,
-					prepared: false,
-					promptAlreadySent: promptDelivered,
-				});
-				if (presentation.replacement.notify) {
-					replacementCtx.ui.notify(`Handoff-now. Snapshot: ${path}`, "info");
-				}
-				if (presentation.replacement.setEditorText) {
-					replacementCtx.ui.setEditorText(prompt);
-					promptDelivered = true;
-				}
-				if (presentation.sendUserMessage) {
-					await replacementCtx.sendUserMessage(prompt, { deliverAs: presentation.sendDeliverAs });
-					promptDelivered = true;
-				}
-			},
-		});
-		if (promptDelivered) {
-			persistOwnerPrep(ctx, {
-				...prep,
-				schema: "pi.handoff-prep.v1",
-				source_session_id: sourceSessionId(ctx),
-				snapshot_path: path,
-				phase: "switched",
-				switched_at: new Date().toISOString(),
-				prompt_sent_at: new Date().toISOString(),
-			});
-		}
-		return promptDelivered || !result.cancelled;
-	} catch (error) {
-		if (ctx.hasUI) ctx.ui.notify(`Handoff-now session failed: ${errorMessage(error)}`, "warning");
-		if (promptDelivered) {
-			persistOwnerPrep(ctx, {
-				...prep,
-				schema: "pi.handoff-prep.v1",
-				source_session_id: sourceSessionId(ctx),
-				snapshot_path: path,
-				phase: "switched",
-				switched_at: new Date().toISOString(),
-				prompt_sent_at: new Date().toISOString(),
-			});
-		}
-		return promptDelivered;
-	}
+	await replaceHandoffSession(ctx, {
+		prompt,
+		snapshotPath: path,
+		promptAlreadySent: promptDelivered,
+		onSwitched,
+	});
+	return true;
 }
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("handoff", {
-		description: "Pointer-snapshot handoff. Preferred over /compact. --type --budget --llm",
+		description: "Pointer-snapshot handoff. Preferred over /compact. --type --budget --brief --llm",
 		handler: async (args, ctx) => {
 			await runHandoff(pi, args, ctx, "editor");
 		},
