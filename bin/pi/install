@@ -53,6 +53,23 @@ install_or_update_pi() {
     pnpm add -g --ignore-scripts "${package_name}"
 }
 
+# Copy *.ts from src dir to dst dir, skipping entries that are symlinks or
+# already byte-identical (harness-sync owns the symlinked ones).
+sync_ext_files() {
+    local src_dir="$1" dst_dir="$2" f dst
+    for f in "${src_dir}"/*.ts "${src_dir}"/*.mjs; do
+        [ -f "$f" ] || continue
+        dst="${dst_dir}/$(basename "$f")"
+        if [ -L "$dst" ]; then
+            continue
+        fi
+        if [ -f "$dst" ] && cmp -s "$f" "$dst"; then
+            continue
+        fi
+        cp "$f" "$dst"
+    done
+}
+
 configure_pi_agent() {
     local pi_agent_dir theme_dir extensions_dir bin_dir settings_file theme_src theme_dst agents_src settings_src extensions_src trust_file profile_selector default_profile_file
     pi_agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
@@ -116,12 +133,20 @@ configure_pi_agent() {
     if [ -x "${PROFILE_DIR}/bin/atop/harness-sync" ]; then
         "${PROFILE_DIR}/bin/atop/harness-sync" apply || true
     fi
+    # harness-sync may have symlinked extensions into place; `cp` onto a
+    # symlink that resolves to its own source exits 1 ("identical"), so copy
+    # per-file and leave symlinks/identical files alone.
     if [ -d "$extensions_src" ] && compgen -G "${extensions_src}/*.ts" >/dev/null; then
-        cp "${extensions_src}"/*.ts "$extensions_dir"/
+        sync_ext_files "$extensions_src" "$extensions_dir"
     fi
     if [ -d "$extensions_src/lib" ] && compgen -G "${extensions_src}/lib/*.ts" >/dev/null; then
         mkdir -p "$extensions_dir/lib"
-        cp "${extensions_src}/lib/"*.ts "$extensions_dir/lib"/
+        sync_ext_files "$extensions_src/lib" "$extensions_dir/lib"
+    fi
+    # handoff-spawn.ts needs ../subagent/{jobs.ts,pi-invocation.ts,job-runner.mjs}.
+    if [ -d "$extensions_src/subagent" ]; then
+        mkdir -p "$extensions_dir/subagent"
+        sync_ext_files "$extensions_src/subagent" "$extensions_dir/subagent"
     fi
 
     if [ "$profile_selector" = "personal" ]; then
@@ -187,9 +212,17 @@ write_host_pi_grant_wrapper() {
     if [ -f "$dest" ] && ! grep -q 'codex-grant-preload.mjs' "$dest"; then
         cp -a "$dest" "$shim"
     fi
+    # pnpm-global hosts never write ~/.local/bin/pi; point the shim at the
+    # pnpm global bin so the launcher and update wrapper have a real target.
     if [ ! -f "$shim" ]; then
-        echo "WARN: missing ${shim}; leave host pi as pnpm wrote it" >&2
-        return 0
+        local pnpm_pi="${PNPM_HOME:-${HOME}/.local/share/pnpm}/bin/pi"
+        if [ -x "$pnpm_pi" ]; then
+            mkdir -p "$(dirname "$shim")"
+            ln -fns "$pnpm_pi" "$shim"
+        else
+            echo "WARN: missing ${shim} and ${pnpm_pi}; leave host pi as pnpm wrote it" >&2
+            return 0
+        fi
     fi
     cat > "$dest" <<EOF
 #!/bin/sh

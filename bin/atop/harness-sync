@@ -187,17 +187,21 @@ PY
       if [ -d "$PROFILE_DIR/config/pi/extensions/lib" ]; then
         for f in "$PROFILE_DIR/config/pi/extensions/lib"/compact-snapshot*.ts \
           "$PROFILE_DIR/config/pi/extensions/lib"/handoff-*.ts \
-          "$PROFILE_DIR/config/pi/extensions/lib"/job-bus-project.ts; do
+          "$PROFILE_DIR/config/pi/extensions/lib"/job-bus-project.ts \
+          "$PROFILE_DIR/config/pi/extensions/lib"/agent-otel.ts; do
           [ -f "$f" ] || continue
           rm -f "$PI_AGENT/extensions/lib/$(basename "$f")"
           cp -p "$f" "$PI_AGENT/extensions/lib/$(basename "$f")"
         done
       fi
-      if [ -f "$PROFILE_DIR/config/pi/extensions/subagent/pi-invocation.ts" ]; then
-        rm -f "$PI_AGENT/extensions/subagent/pi-invocation.ts"
-        cp -p "$PROFILE_DIR/config/pi/extensions/subagent/pi-invocation.ts" \
-          "$PI_AGENT/extensions/subagent/pi-invocation.ts"
-      fi
+      # handoff-spawn.ts imports ../subagent/jobs.ts and execs job-runner.mjs.
+      for name in pi-invocation.ts jobs.ts job-runner.mjs; do
+        if [ -f "$PROFILE_DIR/config/pi/extensions/subagent/$name" ]; then
+          rm -f "$PI_AGENT/extensions/subagent/$name"
+          cp -p "$PROFILE_DIR/config/pi/extensions/subagent/$name" \
+            "$PI_AGENT/extensions/subagent/$name"
+        fi
+      done
     fi
     if [ -d "$PROFILE_DIR/config/cursor" ]; then
       mkdir -p "$HOME/.cursor/hooks"
