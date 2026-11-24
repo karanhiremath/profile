@@ -5,6 +5,7 @@ pub mod dest;
 pub mod envelope;
 pub mod frame;
 pub mod inventory;
+pub mod lane;
 pub mod profile;
 pub mod s2s;
 pub mod seatbelt;
@@ -32,6 +33,7 @@ pub use profile::{bind_dest, dest_profile, parse_profile_yaml, ProfileVoice};
 pub use s2s::{plan_s2s, AttachPlan, S2sPlan};
 pub use seatbelt::{plan_seatbelt, SeatbeltPlan};
 pub use sid::{enrich_sids, looks_like_tmux_pane, sid_contract, SidMap};
+pub use lane::{lane_targets, parse_lane, LaneAction, LanePlan};
 pub use view::{parse_view, select_view, SurfaceView, ViewSelection};
 pub use voice::{plan_voices, plan_voices_from_json, VoiceView, DEFAULT_COS_VOICE_ID};
 
