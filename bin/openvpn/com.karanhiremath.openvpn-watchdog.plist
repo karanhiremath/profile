@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.karanhiremath.openvpn-watchdog</string>
+
+    <!-- Runs as root (LaunchDaemon default) so it can SIGTERM openvpn and read routes. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/sbin/vpn-watchdog</string>
+        <string>--once</string>
+    </array>
+
+    <!-- Fire at boot, then every 60s. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <!-- Override defaults here if desired; OPENVPN_RECONNECT_CMD is optional. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>VPN_WATCHDOG_TARGET</key>
+        <string>8.8.8.8</string>
+        <key>PATH</key>
+        <string>/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/vpn-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/vpn-watchdog.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

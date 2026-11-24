@@ -1,0 +1,128 @@
+#!/bin/bash
+#
+# install-watchdog — install/remove the OpenVPN hung-tunnel watchdog.
+#
+# macOS: installs vpn-watchdog to /usr/local/sbin and registers a LaunchDaemon
+#        (root, RunAtLoad + every 60s) so internet self-heals from boot, before
+#        and after login, with no user session required.
+# Linux: installs the script and prints a ready-to-use systemd timer unit.
+#
+# Idempotent. Re-running upgrades the installed script and reloads the daemon.
+
+set -euo pipefail
+shopt -s failglob
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OS="$(uname -s)"
+
+LABEL="com.karanhiremath.openvpn-watchdog"
+SRC_SCRIPT="${SCRIPT_DIR}/vpn-watchdog"
+SRC_PLIST="${SCRIPT_DIR}/${LABEL}.plist"
+DST_SCRIPT="/usr/local/sbin/vpn-watchdog"
+DST_PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+LOG_FILE="/var/log/vpn-watchdog.log"
+
+usage() {
+    cat <<EOF
+install-watchdog — manage the OpenVPN hung-tunnel watchdog daemon.
+
+USAGE
+    ./install-watchdog [--install] [--uninstall] [--status] [--help]
+
+OPTIONS
+    --install     Install the script + LaunchDaemon and start it (default).
+    --uninstall   Stop and remove the daemon and installed script.
+    --status      Show whether the daemon is loaded and tail its log.
+    --help        Show this help.
+
+Requires sudo (writes to /usr/local/sbin and /Library/LaunchDaemons).
+EOF
+}
+
+require_macos() {
+    if [[ "$OS" != "Darwin" ]]; then
+        echo "ERROR: --$1 currently supports macOS only." >&2
+        if [[ "$OS" == "Linux" ]]; then
+            cat <<EOF >&2
+
+On Linux, install the script and a systemd timer instead:
+  sudo install -m 0755 "$SRC_SCRIPT" "$DST_SCRIPT"
+
+  # /etc/systemd/system/vpn-watchdog.service
+  [Unit]
+  Description=OpenVPN hung-tunnel watchdog
+  [Service]
+  Type=oneshot
+  ExecStart=$DST_SCRIPT --once
+
+  # /etc/systemd/system/vpn-watchdog.timer
+  [Unit]
+  Description=Run vpn-watchdog every minute
+  [Timer]
+  OnBootSec=30
+  OnUnitActiveSec=60
+  [Install]
+  WantedBy=timers.target
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now vpn-watchdog.timer
+EOF
+        fi
+        exit 1
+    fi
+}
+
+do_install() {
+    require_macos install
+    [[ -f "$SRC_SCRIPT" ]] || { echo "ERROR: missing $SRC_SCRIPT" >&2; exit 1; }
+    [[ -f "$SRC_PLIST" ]]  || { echo "ERROR: missing $SRC_PLIST" >&2; exit 1; }
+
+    echo "Installing watchdog script -> $DST_SCRIPT"
+    sudo install -d -m 0755 "$(dirname "$DST_SCRIPT")"
+    sudo install -m 0755 -o root -g wheel "$SRC_SCRIPT" "$DST_SCRIPT"
+
+    echo "Installing LaunchDaemon -> $DST_PLIST"
+    sudo install -m 0644 -o root -g wheel "$SRC_PLIST" "$DST_PLIST"
+
+    sudo touch "$LOG_FILE"
+    sudo chmod 0644 "$LOG_FILE"
+
+    # Reload cleanly: bootout if already loaded, then bootstrap.
+    if sudo launchctl print "system/${LABEL}" >/dev/null 2>&1; then
+        echo "Reloading existing daemon..."
+        sudo launchctl bootout "system/${LABEL}" 2>/dev/null || true
+    fi
+    sudo launchctl bootstrap system "$DST_PLIST"
+    sudo launchctl enable "system/${LABEL}"
+    sudo launchctl kickstart -k "system/${LABEL}"
+
+    echo
+    echo "Installed and started. Verify with:"
+    echo "  ./install-watchdog --status"
+    echo "  sudo launchctl print system/${LABEL} | grep -E 'state|last exit'"
+}
+
+do_uninstall() {
+    require_macos uninstall
+    echo "Stopping and removing daemon..."
+    sudo launchctl bootout "system/${LABEL}" 2>/dev/null || true
+    sudo rm -f "$DST_PLIST"
+    sudo rm -f "$DST_SCRIPT"
+    echo "Removed. Log retained at $LOG_FILE (delete manually if desired)."
+}
+
+do_status() {
+    require_macos status
+    echo "=== launchctl state ==="
+    sudo launchctl print "system/${LABEL}" 2>/dev/null | grep -E 'state =|last exit code|program =' || echo "not loaded"
+    echo "=== last 20 log lines ($LOG_FILE) ==="
+    sudo tail -n 20 "$LOG_FILE" 2>/dev/null || echo "no log yet"
+}
+
+case "${1:---install}" in
+    --install)   do_install ;;
+    --uninstall) do_uninstall ;;
+    --status)    do_status ;;
+    --help|-h)   usage ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+esac
