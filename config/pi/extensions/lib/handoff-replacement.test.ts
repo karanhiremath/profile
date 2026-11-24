@@ -9,6 +9,7 @@ import { test } from "node:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import * as snapshotLib from "./compact-snapshot.ts";
 import * as replacementLib from "./handoff-replacement.ts";
+import * as briefLib from "./handoff-brief.ts";
 
 // Execute the real extension code without loading runtime packages, credentials, or extensions.
 async function loadExtension(name: string) {
@@ -19,6 +20,7 @@ async function loadExtension(name: string) {
 		let exports: Record<string, unknown>;
 		if (specifier === "./lib/compact-snapshot.ts") exports = { ...snapshotLib };
 		else if (specifier === "./lib/handoff-replacement.ts") exports = { ...replacementLib };
+		else if (specifier === "./lib/handoff-brief.ts") exports = { ...briefLib };
 		else if (specifier === "node:fs" || specifier === "node:path") exports = { ...await import(specifier) };
 		else if (specifier === "@earendil-works/pi-coding-agent") exports = {
 			BorderedLoader: class {}, convertToLlm: () => [], serializeConversation: () => "",

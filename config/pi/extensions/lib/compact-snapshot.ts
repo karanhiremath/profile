@@ -26,6 +26,21 @@ export const CONFIG_PATH = join(homedir(), ".pi", "agent", "compact-handoff.json
 export const HANDOFF_KINDS = ["implementation", "monitoring", "planning"] as const;
 export type HandoffKind = (typeof HANDOFF_KINDS)[number];
 
+/** Interactive /handoff prompt: snapshot pointer, or a model-written brief. */
+export const HANDOFF_STYLES = ["pointer", "brief"] as const;
+export type HandoffStyle = (typeof HANDOFF_STYLES)[number];
+
+export function isHandoffStyle(value: unknown): value is HandoffStyle {
+	return value === "pointer" || value === "brief";
+}
+
+/** Per-invocation flag wins over host config; pointer is the default. */
+export function resolveHandoffStyle(input: { flag?: HandoffStyle; config?: HandoffStyle }): HandoffStyle {
+	if (isHandoffStyle(input.flag)) return input.flag;
+	if (isHandoffStyle(input.config)) return input.config;
+	return "pointer";
+}
+
 export type CompactSnapshot = {
 	schema: typeof SNAPSHOT_SCHEMA;
 	ts: string;
@@ -73,6 +88,8 @@ export type CompactHandoffConfig = {
 	preferHandoff: boolean;
 	/** Ignore a second auto-compact/handoff inside this window. */
 	compactCooldownMs: number;
+	/** Interactive /handoff prompt: snapshot pointer (default) or model-written brief. */
+	handoffStyle: HandoffStyle;
 };
 
 export type CompactLimits = {
@@ -129,6 +146,8 @@ export type ParsedHandoffArgs = {
 	silent: boolean;
 	kind?: HandoffKind;
 	budgetPercent?: number;
+	/** Set only by --brief / --pointer; otherwise host config decides. */
+	style?: HandoffStyle;
 	goal: string;
 };
 
@@ -367,6 +386,7 @@ export function defaultCompactHandoffConfig(): CompactHandoffConfig {
 		autoContinue: true,
 		preferHandoff: true,
 		compactCooldownMs: 180_000,
+		handoffStyle: "pointer",
 	};
 }
 
@@ -392,6 +412,7 @@ export function loadCompactHandoffConfig(): CompactHandoffConfig {
 		if (typeof raw.compactCooldownMs === "number" && raw.compactCooldownMs >= 0) {
 			base.compactCooldownMs = raw.compactCooldownMs;
 		}
+		if (isHandoffStyle(raw.handoffStyle)) base.handoffStyle = raw.handoffStyle;
 	} catch {
 		/* optional */
 	}
@@ -411,6 +432,8 @@ export function loadCompactHandoffConfig(): CompactHandoffConfig {
 	if (Number.isFinite(envAlign) && envAlign > 0) base.handoffAlignPercent = envAlign;
 	const envSwitch = Number(process.env.PI_HANDOFF_SWITCH_PERCENT || "");
 	if (Number.isFinite(envSwitch) && envSwitch > 0) base.handoffSwitchPercent = envSwitch;
+	const envStyle = (process.env.PI_HANDOFF_STYLE || "").trim().toLowerCase();
+	if (isHandoffStyle(envStyle)) base.handoffStyle = envStyle;
 	return base;
 }
 
@@ -459,11 +482,16 @@ export function parseHandoffArgs(args: string): ParsedHandoffArgs {
 	let silent = false;
 	let kind: HandoffKind | undefined;
 	let budgetPercent: number | undefined;
+	let style: HandoffStyle | undefined;
 	const rest: string[] = [];
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i];
 		if (token === "--llm") {
 			llm = true;
+			continue;
+		}
+		if (token === "--brief" || token === "--pointer") {
+			style = token === "--brief" ? "brief" : "pointer";
 			continue;
 		}
 		if (token === "--yes" || token === "--auto" || token === "--silent") {
@@ -492,7 +520,7 @@ export function parseHandoffArgs(args: string): ParsedHandoffArgs {
 		}
 		rest.push(token);
 	}
-	return { llm, silent, kind, budgetPercent, goal: rest.join(" ").trim() };
+	return { llm, silent, kind, budgetPercent, ...(style ? { style } : {}), goal: rest.join(" ").trim() };
 }
 
 function textFromContent(content: unknown): string {

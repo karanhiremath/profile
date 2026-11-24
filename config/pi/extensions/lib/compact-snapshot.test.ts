@@ -66,6 +66,9 @@ import {
 	estimateContextPercent,
 	handoffLaneSettled,
 	HANDOFF_PREP_SCHEMA,
+	resolveHandoffStyle,
+	defaultCompactHandoffConfig,
+	loadCompactHandoffConfig,
 } from "./compact-snapshot.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "compact-snapshot-"));
@@ -114,6 +117,43 @@ test("parseHandoffArgs strips --llm", () => {
 		budgetPercent: undefined,
 		goal: "ship the pointer",
 	});
+});
+
+test("parseHandoffArgs reads --brief / --pointer; style is absent otherwise", () => {
+	assert.deepEqual(parseHandoffArgs("--brief continue validation"), {
+		llm: false,
+		silent: false,
+		kind: undefined,
+		budgetPercent: undefined,
+		style: "brief",
+		goal: "continue validation",
+	});
+	assert.equal(parseHandoffArgs("--type planning --pointer design it").style, "pointer");
+	assert.equal("style" in parseHandoffArgs("continue validation"), false);
+});
+
+test("handoff style: flag over host config over pointer default", () => {
+	assert.equal(resolveHandoffStyle({}), "pointer");
+	assert.equal(resolveHandoffStyle({ config: "brief" }), "brief");
+	assert.equal(resolveHandoffStyle({ flag: "pointer", config: "brief" }), "pointer");
+	assert.equal(resolveHandoffStyle({ flag: "brief", config: "pointer" }), "brief");
+	assert.equal(resolveHandoffStyle({ config: "nope" as never }), "pointer");
+	assert.equal(defaultCompactHandoffConfig().handoffStyle, "pointer");
+});
+
+test("PI_HANDOFF_STYLE selects the brief style and ignores junk", () => {
+	const before = process.env.PI_HANDOFF_STYLE;
+	try {
+		process.env.PI_HANDOFF_STYLE = "brief";
+		assert.equal(loadCompactHandoffConfig().handoffStyle, "brief");
+		process.env.PI_HANDOFF_STYLE = "pointer";
+		assert.equal(loadCompactHandoffConfig().handoffStyle, "pointer");
+		process.env.PI_HANDOFF_STYLE = "essay";
+		assert.ok(["pointer", "brief"].includes(loadCompactHandoffConfig().handoffStyle));
+	} finally {
+		if (before === undefined) delete process.env.PI_HANDOFF_STYLE;
+		else process.env.PI_HANDOFF_STYLE = before;
+	}
 });
 
 test("buildSnapshot keeps last users, files, and ids without the transcript", () => {
