@@ -17,6 +17,9 @@ fi
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/llm-flags.sh"
 
+# Hermes toolchain python (has PyYAML); bare python3 may not on fresh hosts.
+COSW_PY="${HERMES_PYTHON:-${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}/venv/bin/python}"
+[ -x "$COSW_PY" ] || COSW_PY="$(command -v python3)"
 log() { printf 'cosw: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
@@ -355,7 +358,7 @@ apply_declared_profile_model() {
   result="$(COSW_PROFILE_PATH="$profile_path" COSW_REQUEST_SEAT="${COSW_SEAT:-}" \
       COSW_REQUEST_PROVIDER="${COSW_PROVIDER:-}" COSW_REQUEST_MODEL="${COSW_MODEL:-}" \
       COSW_REQUEST_CODEX_MODEL="${COSW_CODEX_MODEL:-}" COSW_REQUEST_XAI_PROVIDER="${COSW_XAI_PROVIDER:-xai}" \
-      python3 - <<'PY'
+      "$COSW_PY" - <<'PY'
 import os
 import sys
 
@@ -534,7 +537,7 @@ xai_auth_available() {
   if [ ! -f "$auth" ]; then
     return 1
   fi
-  python3 -c '
+  "$COSW_PY" -c '
 import json, sys
 from pathlib import Path
 path = Path.home() / ".hermes" / "auth.json"
@@ -709,7 +712,7 @@ print_cosw_plan() {
     COSW_PLAN_PYTHONPATH="$pythonpath" COSW_PLAN_XAI_AUTH="$xai_auth" COSW_PLAN_PERSONA="$persona" \
     COSW_PLAN_PROFILE="$COSW_PROFILE" COSW_PLAN_PROFILE_PATH="${COSW_PROFILE_MODEL_PATH:-}" \
     COSW_PLAN_MODEL_SOURCE="${COSW_PROFILE_MODEL_SOURCE:-none}" COSW_PLAN_RUNG="${COSW_PROFILE_MODEL_RUNG:-}" \
-    COSW_PLAN_CATALOG="$catalog_plan" COSW_PLAN_SEAT_METADATA="$seat_plan" python3 - <<'PY'
+    COSW_PLAN_CATALOG="$catalog_plan" COSW_PLAN_SEAT_METADATA="$seat_plan" "$COSW_PY" - <<'PY'
 import json
 import os
 

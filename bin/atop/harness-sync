@@ -23,6 +23,40 @@ EOF
 log() { printf 'harness-sync: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+# Names under hosts.<class>.forbidden in config/pi/harness-manifest.yaml.
+# Stdlib-only parse: personal hosts may lack PyYAML on the bare python3.
+manifest_forbidden() {
+  local manifest="$PROFILE_DIR/config/pi/harness-manifest.yaml"
+  [ -f "$manifest" ] || return 0
+  python3 - "$manifest" "$1" <<'MANIFEST_PY'
+import sys
+path, cls = sys.argv[1], sys.argv[2]
+in_hosts = host = in_forbidden = False
+for raw in open(path, encoding="utf-8"):
+    line = raw.split("#", 1)[0].rstrip()
+    if not line.strip():
+        continue
+    indent = len(line) - len(line.lstrip())
+    text = line.strip()
+    if indent == 0:
+        in_hosts = text == "hosts:"
+        host = in_forbidden = False
+    elif in_hosts and indent == 2:
+        host = text == f"{cls}:"
+        in_forbidden = False
+    elif host and indent == 4:
+        in_forbidden = text == "forbidden:"
+    elif host and in_forbidden and text.startswith("- "):
+        print(text[2:].strip())
+MANIFEST_PY
+}
+
+is_forbidden() { # is_forbidden <extension name without .ts>
+  local f
+  for f in $FORBIDDEN; do [ "$f" = "$1" ] && return 0; done
+  return 1
+}
+
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
@@ -171,9 +205,19 @@ PY
       if [ "$CLASS" = work ]; then
         ln -fns "$PROFILE_DIR/config/pi/extensions/harness-sync.ts" "$PI_AGENT/extensions/harness-sync.ts"
       else
+        FORBIDDEN="$(manifest_forbidden "$CLASS")"
         for ext in "$PROFILE_DIR/config/pi/extensions"/*.ts; do
           [ -f "$ext" ] || continue
-          ln -fns "$ext" "$PI_AGENT/extensions/$(basename "$ext")"
+          name="$(basename "$ext")"
+          if is_forbidden "${name%.ts}"; then
+            # Prune manifest-forbidden extensions a prior apply linked.
+            if [ -L "$PI_AGENT/extensions/$name" ] || [ -f "$PI_AGENT/extensions/$name" ]; then
+              rm -f "$PI_AGENT/extensions/$name"
+              log "pruned forbidden extension $name (class=$CLASS)"
+            fi
+            continue
+          fi
+          ln -fns "$ext" "$PI_AGENT/extensions/$name"
         done
       fi
       # Pointer-handoff stack: copy, do not symlink. Bun resolves relative
