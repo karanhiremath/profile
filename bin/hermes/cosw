@@ -17,6 +17,9 @@ fi
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/llm-flags.sh"
 
+# Hermes toolchain python (has PyYAML); bare python3 may not on fresh hosts.
+COSW_PY="${HERMES_TOOLCHAIN_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/hermes-toolchain}/venv/bin/python"
+[ -x "$COSW_PY" ] || COSW_PY="$(command -v python3)"
 log() { printf 'cosw: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
@@ -355,7 +358,7 @@ apply_declared_profile_model() {
   result="$(COSW_PROFILE_PATH="$profile_path" COSW_REQUEST_SEAT="${COSW_SEAT:-}" \
       COSW_REQUEST_PROVIDER="${COSW_PROVIDER:-}" COSW_REQUEST_MODEL="${COSW_MODEL:-}" \
       COSW_REQUEST_CODEX_MODEL="${COSW_CODEX_MODEL:-}" COSW_REQUEST_XAI_PROVIDER="${COSW_XAI_PROVIDER:-xai}" \
-      python3 - <<'PY'
+      "$COSW_PY" - <<'PY'
 import os
 import sys
 
@@ -534,7 +537,7 @@ xai_auth_available() {
   if [ ! -f "$auth" ]; then
     return 1
   fi
-  python3 -c '
+  "$COSW_PY" -c '
 import json, sys
 from pathlib import Path
 path = Path.home() / ".hermes" / "auth.json"
@@ -709,7 +712,7 @@ print_cosw_plan() {
     COSW_PLAN_PYTHONPATH="$pythonpath" COSW_PLAN_XAI_AUTH="$xai_auth" COSW_PLAN_PERSONA="$persona" \
     COSW_PLAN_PROFILE="$COSW_PROFILE" COSW_PLAN_PROFILE_PATH="${COSW_PROFILE_MODEL_PATH:-}" \
     COSW_PLAN_MODEL_SOURCE="${COSW_PROFILE_MODEL_SOURCE:-none}" COSW_PLAN_RUNG="${COSW_PROFILE_MODEL_RUNG:-}" \
-    COSW_PLAN_CATALOG="$catalog_plan" COSW_PLAN_SEAT_METADATA="$seat_plan" python3 - <<'PY'
+    COSW_PLAN_CATALOG="$catalog_plan" COSW_PLAN_SEAT_METADATA="$seat_plan" "$COSW_PY" - <<'PY'
 import json
 import os
 
@@ -1034,7 +1037,7 @@ ensure_dispatch_bootstrap() {
       "") ;;
       *)
         log "restarting stale COSW host manager from a different profile checkout"
-        "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
+        "$py" "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
         for _ in 1 2 3 4 5 6 7 8 9 10; do
           [ ! -e "$state/pid" ] && break
           sleep 0.1
@@ -1042,7 +1045,7 @@ ensure_dispatch_bootstrap() {
         ;;
     esac
   fi
-  if ! "$SCRIPT_DIR/cosw-host-control" start \
+  if ! "$py" "$SCRIPT_DIR/cosw-host-control" start \
       --state-dir "$state" --socket-dir "$runtime" --sandbox-id "$COSW_PROFILE" >/dev/null; then
     die "COSW host manager failed to start; inspect $state/broker.log"
   fi
@@ -1051,12 +1054,12 @@ ensure_dispatch_bootstrap() {
   if [ ! -S "$runtime/manager.sock" ] || ! "$bin/cosw-hostctl" bootstrap \
       --socket "$runtime/manager.sock" --timeout 10 >/dev/null 2>&1; then
     log "restarting stale COSW host manager after dispatch protocol upgrade"
-    "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
+    "$py" "$SCRIPT_DIR/cosw-host-control" stop --state-dir "$state" --socket-dir "$runtime" >/dev/null 2>&1 || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do
       [ ! -e "$state/pid" ] && break
       sleep 0.1
     done
-    "$SCRIPT_DIR/cosw-host-control" start \
+    "$py" "$SCRIPT_DIR/cosw-host-control" start \
       --state-dir "$state" --socket-dir "$runtime" --sandbox-id "$COSW_PROFILE" >/dev/null || \
       die "COSW host manager failed to restart; inspect $state/broker.log"
   fi
@@ -1395,4 +1398,4 @@ if [ "${HERMES_CODEX_GRANT_ISOLATE:-0}" != "1" ]; then
   fi
   unset _cred_sync
 fi
-exec "$SCRIPT_DIR/agents" up "$COSW_PROFILE" "${COSW_ARGS[@]}"
+exec "$SCRIPT_DIR/agents" up "$COSW_PROFILE" ${COSW_ARGS[@]+"${COSW_ARGS[@]}"}
