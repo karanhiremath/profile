@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Read-only parity report for the operator interface on this seat.
+# Usage: bin/interface/doctor [--help]
+# stdout: one JSON object (profile.interface.doctor.v1). stderr: nothing on success.
+# Exit 0 = no drift, 1 = drift (see .drift[]).
+set -uo pipefail
+case "${1:-}" in -h|--help) sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+CD="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+drift=()
+
+ver() { command -v "$1" >/dev/null 2>&1 && "$@" 2>/dev/null | head -1 | tr -d '"\\' || echo missing; }
+want_link() { [ "$(readlink "$2" 2>/dev/null)" = "$1" ] || drift+=("link:${2/#"$HOME"/\~}"); }
+
+want_link "$PROFILE_DIR/bin/tmux/tmux.conf" "$HOME/.tmux.conf"
+for p in init.lua lua after; do want_link "$PROFILE_DIR/bin/nvim/$p" "$HOME/.config/nvim/$p"; done
+[ "$(uname -s)" = Darwin ] && [ -d /Applications/Ghostty.app ] && want_link "$PROFILE_DIR/bin/ghostty/config" "$HOME/.config/ghostty/config"
+want_link "$PROFILE_DIR/config/claude/statusline-command.sh" "$CD/statusline-command.sh"
+grep -q "profile-managed bootstrap" "$HOME/.zshrc" 2>/dev/null || drift+=("zshrc:unmanaged")
+if command -v jq >/dev/null && [ -f "$CD/settings.json" ]; then
+  miss="$(jq -r --slurpfile ui "$PROFILE_DIR/config/claude/settings.ui.json" \
+    '. as $s | $ui[0] | del(.statusLine) | to_entries[] | select($s[.key] != .value) | .key' "$CD/settings.json" 2>/dev/null)"
+  for k in $miss; do drift+=("claude:$k"); done
+  jq -e '.statusLine.command | test("statusline-command.sh")' "$CD/settings.json" >/dev/null 2>&1 || drift+=("claude:statusLine")
+else
+  drift+=("claude:settings-missing")
+fi
+
+ref="$(git -C "$PROFILE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+behind="$(git -C "$PROFILE_DIR" rev-list --count HEAD..origin/master 2>/dev/null || echo unknown)"
+dirty="$(git -C "$PROFILE_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+[ "$behind" = 0 ] || drift+=("profile:behind-master:$behind")
+
+jq -n --arg host "$(hostname -s 2>/dev/null || uname -n)" --arg os "$(uname -s)" \
+  --arg class "$(bash "$PROFILE_DIR/bin/agentic-dev/host-env.sh" --class 2>/dev/null || echo unknown)" \
+  --arg ref "$ref" --arg behind "$behind" --arg dirty "$dirty" --arg cdir "${CD/#"$HOME"/\~}" \
+  --arg claude "$(ver claude --version)" --arg pi "$(ver pi --version)" --arg codex "$(ver codex --version)" \
+  --arg tmux "$(ver tmux -V)" --arg nvim "$(ver nvim --version)" --arg mise "$(ver mise --version)" \
+  --arg gh "$(ver gh --version)" --arg just "$(ver just --version)" \
+  --args '{schema:"profile.interface.doctor.v1",host:$host,os:$os,class:$class,
+    profile:{ref:$ref,behind_master:$behind,dirty:($dirty|tonumber)},claude_config_dir:$cdir,
+    tools:{claude:$claude,pi:$pi,codex:$codex,tmux:$tmux,nvim:$nvim,mise:$mise,gh:$gh,just:$just},
+    drift:$ARGS.positional}' "${drift[@]+"${drift[@]}"}"
+[ "${#drift[@]}" -eq 0 ]

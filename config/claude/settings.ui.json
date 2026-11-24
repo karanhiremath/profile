@@ -1,0 +1,13 @@
+{
+  "statusLine": { "type": "command", "command": "bash ~/.claude/statusline-command.sh" },
+  "outputStyle": "Concise",
+  "editorMode": "vim",
+  "tui": "fullscreen",
+  "voice": { "enabled": true, "mode": "hold" },
+  "voiceEnabled": true,
+  "autoUpdatesChannel": "latest",
+  "agentPushNotifEnabled": true,
+  "inputNeededNotifEnabled": true,
+  "preferredNotifChannel": "ghostty",
+  "remoteControlAtStartup": true
+}

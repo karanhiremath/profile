@@ -831,3 +831,19 @@ test-verbose: podman
 validate-apps *APPS:
     # Validate that specific apps are installed correctly
     ./bin/test/validate-apps.sh {{APPS}}
+
+# Converge the primary interface (zsh, tmux, nvim, ghostty, Claude UI, pi) on this seat.
+# Usage: just interface [--class personal|work] [--target host|sandbox] [--dry-run]
+interface *FLAGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    export APP_BIN="${PROFILE_DIR}/bin"
+    ./bin/interface/apply {{FLAGS}}
+
+# Read-only interface parity report (JSON); exit 1 on drift.
+interface-doctor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PROFILE_DIR="$(pwd)"
+    ./bin/interface/doctor

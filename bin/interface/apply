@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Converge the operator's primary interface on this seat (Mac, devlarge host,
+# tc-s / cai-aos sandbox): zsh bootstrap, tmux, nvim, ghostty, Claude Code UI
+# baseline, pi harness. Config only — CLI installs stay in `just dev`.
+#
+# Usage: bin/interface/apply [--class personal|work] [--target host|sandbox]
+#                            [--dry-run] [--help]
+#
+#   --class    default: bin/agentic-dev/host-env.sh detection
+#   --target   default: host. sandbox skips GUI-only parts (ghostty app config).
+#   --dry-run  print actions, change nothing
+#
+# Class gating: the shared layer is identical for personal and work. Work-only
+# overlays (CLAUDE.md, agents, hooks, herm-tui cos) are owned by the work repo /
+# cai-aos manifest and are never written here. Claude hooks and permissions are
+# never touched; only the UI keys in config/claude/settings.ui.json are merged.
+# Idempotent. stdout: one JSON summary line. stderr: diagnostics.
+set -euo pipefail
+
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_DIR="${PROFILE_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+export PROFILE_DIR APP_BIN="$PROFILE_DIR/bin"
+
+CLASS="" TARGET="host" DRY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --class) CLASS="${2:?}"; shift 2 ;;
+    --target) TARGET="${2:?}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    *) echo "interface/apply: unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+case "$TARGET" in host|sandbox) ;; *) echo "interface/apply: bad --target $TARGET" >&2; exit 2 ;; esac
+if [ -z "$CLASS" ]; then
+  CLASS="$(bash "$PROFILE_DIR/bin/agentic-dev/host-env.sh" --class 2>/dev/null || echo personal)"
+fi
+case "$CLASS" in personal|work) ;; *) echo "interface/apply: bad --class $CLASS" >&2; exit 2 ;; esac
+
+log() { printf 'interface: %s\n' "$*" >&2; }
+run() { if [ "$DRY" -eq 1 ]; then log "dry-run: $*"; else "$@"; fi; }
+
+changed=() failed=()
+step() {
+  local name="$1"; shift
+  if "$@" >&2; then changed+=("$name"); else failed+=("$name"); log "step $name failed (continuing)"; fi
+}
+
+link() { # src dst
+  local src="$1" dst="$2"
+  [ "$(readlink "$dst" 2>/dev/null)" = "$src" ] && return 0
+  run mkdir -p "$(dirname "$dst")"
+  if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+    run mv "$dst" "$dst.bak-interface-$(date -u +%Y%m%dT%H%M%SZ)"
+  fi
+  run ln -sfn "$src" "$dst"
+  [ "$DRY" -eq 1 ] || log "linked ${dst/#"$HOME"/\~} -> ${src/#"$HOME"/\~}"
+}
+
+do_zsh() {
+  [ "$DRY" -eq 1 ] && { log "dry-run: bin/zsh/install"; return 0; }
+  bash "$PROFILE_DIR/bin/zsh/install"
+}
+
+do_tmux() {
+  link "$PROFILE_DIR/bin/tmux/tmux.conf" "$HOME/.tmux.conf"
+  link "$PROFILE_DIR/bin/tmux/tmux.conf" "$HOME/.config/tmux/tmux.conf"
+}
+
+do_nvim() {
+  local p
+  for p in init.lua lua after; do
+    [ -e "$PROFILE_DIR/bin/nvim/$p" ] && link "$PROFILE_DIR/bin/nvim/$p" "$HOME/.config/nvim/$p"
+  done
+  return 0
+}
+
+do_ghostty() {
+  [ "$TARGET" = sandbox ] && return 0
+  [ "$(uname -s)" = Darwin ] || return 0
+  link "$PROFILE_DIR/bin/ghostty/config" "$HOME/.config/ghostty/config"
+}
+
+claude_dir() { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; }
+
+do_claude() {
+  local cd settings base tmp cmd
+  cd="$(claude_dir)"; settings="$cd/settings.json"; base="$PROFILE_DIR/config/claude/settings.ui.json"
+  command -v jq >/dev/null || { log "jq missing; skip claude UI merge"; return 1; }
+  link "$PROFILE_DIR/config/claude/statusline-command.sh" "$cd/statusline-command.sh"
+  cmd="bash ${cd/#"$HOME"/\~}/statusline-command.sh"
+  run mkdir -p "$cd"
+  [ -f "$settings" ] || { [ "$DRY" -eq 1 ] || printf '{}\n' > "$settings"; }
+  tmp="$(mktemp)"
+  jq --slurpfile ui "$base" --arg cmd "$cmd" \
+    '. * ($ui[0] | .statusLine.command = $cmd)' "$settings" > "$tmp" 2>/dev/null \
+    || { [ "$DRY" -eq 1 ] && { rm -f "$tmp"; return 0; }; rm -f "$tmp"; log "invalid $settings"; return 1; }
+  if cmp -s "$tmp" "$settings"; then rm -f "$tmp"; return 0; fi
+  if [ "$DRY" -eq 1 ]; then log "dry-run: merge UI keys into ${settings/#"$HOME"/\~}"; rm -f "$tmp"; return 0; fi
+  cp "$settings" "$settings.bak-interface-$(date -u +%Y%m%dT%H%M%SZ)"
+  mv "$tmp" "$settings"; chmod 600 "$settings"
+  log "merged UI baseline into ${settings/#"$HOME"/\~}"
+}
+
+do_pi() {
+  local hs="$PROFILE_DIR/bin/atop/harness-sync"
+  [ -x "$hs" ] || return 0
+  [ -d "$HOME/.pi/agent" ] || { log "no ~/.pi/agent; skip harness-sync"; return 0; }
+  [ "$DRY" -eq 1 ] && { log "dry-run: harness-sync apply"; return 0; }
+  "$hs" apply
+}
+
+step zsh do_zsh
+step tmux do_tmux
+step nvim do_nvim
+step ghostty do_ghostty
+step claude do_claude
+step pi do_pi
+
+json_arr() { local out="" x; for x in "$@"; do out+="\"$x\","; done; printf '[%s]' "${out%,}"; }
+printf '{"schema":"profile.interface.apply.v1","host":"%s","class":"%s","target":"%s","dry_run":%s,"ran":%s,"failed":%s}\n' \
+  "$(hostname -s 2>/dev/null || uname -n)" "$CLASS" "$TARGET" "$([ "$DRY" -eq 1 ] && echo true || echo false)" \
+  "$(json_arr "${changed[@]+"${changed[@]}"}")" "$(json_arr "${failed[@]+"${failed[@]}"}")"
+[ "${#failed[@]}" -eq 0 ]

@@ -23,7 +23,8 @@ Host class (auto, or --class / AGENTIC_HOST_CLASS / PROFILE_ENV):
 Toolkit set (host mode, resilient — one failure does not abort the rest):
   mise, claude, pi, omp, copilot-cli, cursor-cli, cursor-setup,
   hermes, herdr, atop, codex, cmux, gemini-cli, omnigent,
-  pi-skills / harness-sync apply, linear open-issue hook, then provision
+  pi-skills / harness-sync apply, linear open-issue hook, interface apply,
+  then provision
 
 Overrides:
   --mode host|sandbox
@@ -183,6 +184,11 @@ else
     run_step "atop-link" "$APP_BIN/atop/install"
   fi
 fi
+
+# Primary interface layer (zsh/tmux/nvim/ghostty/Claude UI/pi) — same on every seat.
+iface_class=()
+[ -n "${AGENTIC_HOST_CLASS:-}" ] && iface_class=(--class "$AGENTIC_HOST_CLASS")
+run_step "interface" "$APP_BIN/interface/apply" --target "$MODE" "${iface_class[@]+"${iface_class[@]}"}"
 
 if [ "$SKIP_PROVISION" -eq 0 ]; then
   provision_args=(--mode "$MODE")
