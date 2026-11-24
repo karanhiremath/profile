@@ -29,6 +29,22 @@ class JobRunTest(unittest.TestCase):
             self.assertIn("job.heartbeat", kinds)
             self.assertEqual(kinds[-1], "job.failed")
 
+    def test_explicit_case_decisions_are_prepended(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            fake = root / "pi"
+            fake.write_text('#!/bin/sh\nprintf "%s" "$2"\n')
+            fake.chmod(0o700)
+            base = [AOS, "job", "run", "--inbox", root / "inbox", "--target-sid", "coord",
+                    "--summary", root / "result", "--case-dir", root, "--", fake, "-p", "Do task"]
+            self.assertEqual(subprocess.run(base, capture_output=True, timeout=5).returncode, 2)
+            self.assertFalse((root / "inbox").exists())
+            (root / "decisions.md").write_text("D1 already resolved.")
+            result = subprocess.run(base, capture_output=True, timeout=5, check=True)
+            self.assertIn(b"D1 already resolved.\n\nWorker task:\nDo task", result.stdout)
+            status = next((root / "inbox").glob("*.status.json"))
+            self.assertNotIn("D1 already resolved", status.read_text())
+
     def test_target_validation_and_launch_error(self):
         with tempfile.TemporaryDirectory() as folder:
             base = [AOS, "job", "run", "--inbox", folder, "--summary", "/result"]

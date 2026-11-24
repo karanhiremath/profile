@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--inbox", type=Path, help="override the selected coordinator's inbox path")
     parser.add_argument("--summary", type=Path, required=True, help="result artifact path (may not exist yet)")
     parser.add_argument("--label", default="command", help="short, non-secret label")
+    parser.add_argument("--case-dir", type=Path, help="prepend trusted decisions.md to a one-shot Pi prompt (last argument)")
     parser.add_argument("--heartbeat", type=int, default=30, metavar="SECONDS")
     argv = sys.argv[1:]
     if not argv or argv[0] != "run":
@@ -44,6 +45,23 @@ def main():
         parser.error("a valid coordinator --target-sid or PI_SESSION_ID is required")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", args.label):
         parser.error("--label must be a short identifier")
+    if args.case_dir is not None:
+        if Path(command[0]).name != "pi" or "-p" not in command[1:-1] or command[-1].startswith(("-", "@")):
+            parser.error("--case-dir requires pi -p with the task as the last argument")
+        try:
+            ledger = args.case_dir.resolve(strict=True) / "decisions.md"
+            if not ledger.is_file():
+                raise ValueError
+            with ledger.open("rb") as source:
+                raw = source.read(16_385)
+            if not raw.strip() or len(raw) > 16_384:
+                raise ValueError
+            decisions = raw.decode("utf-8")
+            if "\x00" in decisions:
+                raise ValueError
+        except (OSError, ValueError):
+            parser.error("case decisions.md must be a nonempty UTF-8 file of at most 16 KiB")
+        command[-1] = f"Case decisions (operator-maintained):\n{decisions}\n\nWorker task:\n{command[-1]}"
     agent = Path(os.environ.get("PI_AGENT", str(Path.home() / ".pi/agent")))
     inbox = args.inbox or agent / "jobs" / "sessions" / sid
     job = f"{args.label}-{uuid.uuid4().hex}"
