@@ -59,7 +59,11 @@ else
     install_messages "end" "$app_name"
 fi
 
-# Prompt user to authenticate with GitHub
+# Prompt user to authenticate with GitHub, unless already signed in
+if gh auth status >/dev/null 2>&1; then
+    echo "✓ gh already authenticated"
+    exit 0
+fi
 echo ""
 echo "GitHub CLI installed successfully!"
 echo "To authenticate with GitHub, please run: gh auth login"
