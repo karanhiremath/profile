@@ -20,6 +20,7 @@ import { basename, join } from "node:path";
 import { Type } from "typebox";
 import {
 	ackPaths,
+	ackReport,
 	isAcked,
 	loadAck,
 	pendingPaths,
@@ -28,6 +29,7 @@ import {
 } from "./lib/job-bus-ack.ts";
 import {
 	classifyDelivery,
+	isTerminalStatus,
 	configuredSubscriptions,
 	formatPointerBatch,
 	type JobRecord,
@@ -70,6 +72,7 @@ const JobBusParams = Type.Object({
 				"Lane names are this session's project: assembler, cloudbuild, subagent. Foreign: project:NAME/LANE. Host-global opt-in: global:LANE, session:SID, unscoped, legacy",
 		}),
 	),
+	verbose: Type.Optional(Type.Boolean({ description: "For ack, return the full job table instead of the compact receipt." })),
 	jobIds: Type.Optional(
 		Type.Array(Type.String(), {
 			description: "Job ids this consumer has seen. Used with action=ack. Omit to ACK the current snapshot.",
@@ -300,25 +303,22 @@ function reloadAck(): void {
 	if (!ackState.consumerId) ackState.consumerId = boundSid;
 }
 
-function ackCurrentSnapshot(): void {
+function acknowledge(jobIds: string[] = []) {
 	reloadAck();
-	ackState = ackPaths(ackState, allStatusFiles(), (path) => readRecord(path) || {});
-	persistAck();
-}
-
-function ackJobIds(jobIds: string[]): void {
-	reloadAck();
-	const wanted = new Set(jobIds.map((id) => id.trim()).filter(Boolean));
-	const files = allStatusFiles().filter((file) => {
-		const rec = readRecord(file);
-		const jobId = rec?.jobId || file.replace(/\.status\.json$/, "").split("/").pop() || "";
-		return wanted.has(jobId);
-	});
-	ackState = ackPaths(ackState, files.length ? files : [], (path) => readRecord(path) || {});
+	const before = ackState;
+	const wanted = new Set(jobIds);
+	const files = allStatusFiles();
+	const selected = wanted.size ? files.filter((file) => wanted.has(readRecord(file)?.jobId || basename(file, ".status.json"))) : files;
+	ackState = ackPaths(before, selected, readRecord);
 	for (const id of wanted) {
 		if (!ackState.ids.includes(id)) ackState.ids.push(id);
 	}
 	persistAck();
+	return { before, files };
+}
+
+function ackCurrentSnapshot(): void {
+	acknowledge();
 }
 
 function listStatusFiles(dir: string): string[] {
@@ -495,9 +495,9 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (params.action === "ack") {
 				const ids = (params.jobIds || []).map((id) => id.trim()).filter(Boolean);
-				if (ids.length) ackJobIds(ids);
-				else ackCurrentSnapshot();
-				return { content: [{ type: "text", text: listText() }] };
+				const { before, files } = acknowledge(ids);
+				const text = params.verbose ? listText() : JSON.stringify(ackReport(before, ackState, files, readRecord, isTerminalStatus));
+				return { content: [{ type: "text", text }] };
 			}
 			if (params.action === "mute") {
 				saveSessionSteer(false);

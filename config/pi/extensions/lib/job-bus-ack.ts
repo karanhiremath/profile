@@ -167,6 +167,32 @@ export function pendingPaths(
 	return paths.filter((path) => !isAcked(state, path, readRecord(path)));
 }
 
+type ReportRecord = { jobId?: string; status?: string; type?: string; ts?: string };
+
+export function ackReport(
+	before: AckState,
+	after: AckState,
+	paths: string[],
+	readRecord: (path: string) => ReportRecord | undefined,
+	isTerminal: (status?: string) => boolean,
+) {
+	const acked = new Set<string>();
+	const running = new Set<string>();
+	const terminal = new Set<string>();
+	for (const path of paths) {
+		const record = readRecord(path);
+		if (!record?.jobId) continue;
+		if (isAcked(after, path, record)) {
+			if (!isAcked(before, path, record)) acked.add(record.jobId);
+		} else if (record.status === "running") {
+			running.add(record.jobId);
+		} else if (isTerminal(record.status)) {
+			terminal.add(record.jobId);
+		}
+	}
+	return { acked: acked.size, running: [...running].sort(), terminal: [...terminal].sort() };
+}
+
 export function seenMapFromAck(state: AckState): Map<string, string> {
 	const seen = new Map<string, string>();
 	for (const [path, cursor] of Object.entries(state.cursors)) {
