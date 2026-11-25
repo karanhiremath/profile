@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Launch Claude Code as the isolated KROP coordination seat.
+set -euo pipefail
+
+KROP_ROOT="${CLAUDE_KROP_ROOT:-$HOME/src/krop-os}"
+KROP_HOME="${CLAUDE_KROP_HOME:-$HOME/.claude-krop}"
+PERSONAL_HOME="${CLAUDE_PERSONAL_HOME:-$HOME/.claude-personal}"
+PROFILE_DATA="${CLAUDE_KROP_PROFILE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-krop}"
+SETTINGS="$PROFILE_DATA/settings.json"
+INSTRUCTIONS="$PROFILE_DATA/CLAUDE.md"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  claude-krop [claude options] [prompt]  launch in ~/src/krop-os
+  claude-krop --here [args]             launch in the current KROP checkout
+  claude-krop status                    show root, state home, and auth source
+  claude-krop login                     authenticate the dedicated ~/.claude-krop home
+
+Until the dedicated home is authenticated, the launcher reuses the signed-in
+personal Claude account while still loading the KROP-only settings and prompt.
+EOF
+}
+
+is_logged_in() {
+  local home="$1"
+  CLAUDE_CONFIG_DIR="$home" command claude auth status 2>/dev/null \
+    | grep -q '"loggedIn": true'
+}
+
+[ -f "$SETTINGS" ] || {
+  echo "claude-krop: missing $SETTINGS; run the profile installer" >&2
+  exit 1
+}
+[ -f "$INSTRUCTIONS" ] || {
+  echo "claude-krop: missing $INSTRUCTIONS; run the profile installer" >&2
+  exit 1
+}
+
+case "${1:-}" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  login)
+    mkdir -p -m 700 "$KROP_HOME"
+    exec env CLAUDE_CONFIG_DIR="$KROP_HOME" claude auth login --claudeai
+    ;;
+  status)
+    auth_home="$KROP_HOME"
+    auth_mode=dedicated
+    if ! is_logged_in "$KROP_HOME"; then
+      auth_home="$PERSONAL_HOME"
+      auth_mode=personal-fallback
+    fi
+    printf 'root=%s\nstate_home=%s\nauth_home=%s\nauth_mode=%s\n' \
+      "$KROP_ROOT" "$KROP_HOME" "$auth_home" "$auth_mode"
+    exit 0
+    ;;
+esac
+
+here=0
+if [ "${1:-}" = "--here" ]; then
+  here=1
+  shift
+fi
+
+if [ "$here" -eq 0 ]; then
+  [ -d "$KROP_ROOT/.git" ] || {
+    echo "claude-krop: canonical checkout missing: $KROP_ROOT" >&2
+    exit 1
+  }
+  cd "$KROP_ROOT"
+fi
+
+auth_home="$KROP_HOME"
+if ! is_logged_in "$KROP_HOME"; then
+  auth_home="$PERSONAL_HOME"
+fi
+is_logged_in "$auth_home" || {
+  echo "claude-krop: no authenticated Claude home; run: claude-krop login" >&2
+  exit 1
+}
+
+extra_dirs=()
+for dir in "$HOME/src/krop-ai" "$HOME/src/krop-infra" "$HOME/src/krop-tf"; do
+  [ -d "$dir" ] && extra_dirs+=("$dir")
+done
+
+export CLAUDE_CONFIG_DIR="$auth_home"
+export CLAUDE_CODE_KROP=1
+export OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+$OTEL_RESOURCE_ATTRIBUTES,}service.name=claude-krop,service.namespace=krop.ai"
+
+claude_args=(
+  --settings "$SETTINGS"
+  --append-system-prompt "$INSTRUCTIONS"
+)
+if [ "${#extra_dirs[@]}" -gt 0 ]; then
+  claude_args+=(--add-dir "${extra_dirs[@]}" --name claude-krop)
+else
+  claude_args+=(--name claude-krop)
+fi
+claude_args+=(--remote-control-session-name-prefix krop)
+
+exec claude "${claude_args[@]}" "$@"

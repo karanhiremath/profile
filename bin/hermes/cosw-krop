@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+
+if [[ ${0##*/} == cosw-krop-pi ]]; then
+  set -- --pi "$@"
+fi
+
+case "${1:-}" in
+  -h|--help|help)
+    printf '%s\n' 'cosw-krop [agents options]       launch herm-tui' 'cosw-krop --pi [pi options]       launch isolated KROP Pi' 'cosw-krop-pi [pi options]         same as --pi' 'cosw-krop --status | sessions | attach [session]'
+    ;;
+  --status|--print-plan) exec agents resolve cosw-krop ;;
+  sessions|attach) cmd=$1; shift; exec agents "$cmd" cosw-krop "$@" ;;
+  --pi)
+    shift
+    # Never inherit the default Pi config, packages, sessions, or API-key env.
+    home="$HOME/.local/share/krop-ai/pi/cosw-krop"
+    workspace=$(pwd -P)
+    case "$workspace" in
+      "$HOME/src/krop-ai"|"$HOME/src/krop-ai/"*|"$HOME/src/krop-infra"|"$HOME/src/krop-infra/"*|"$HOME/src/krop-tf"|"$HOME/src/krop-tf/"*) ;;
+      *) cd "$HOME/src/krop-ai" ;;
+    esac
+    pi=$(command -v pi) || { printf '%s\n' 'pi is not installed' >&2; exit 127; }
+    umask 077
+    mkdir -p "$home/sessions"
+    exec env -i HOME="$HOME" USER="${USER:-}" PATH="$PATH" TERM="${TERM:-xterm-256color}" \
+      PI_CODING_AGENT_DIR="$home" PI_PROFILE_AGENT=cosw-krop PI_TELEMETRY=0 \
+      "$pi" --offline --no-approve --no-context-files --no-skills --no-extensions --session-dir "$home/sessions" \
+      --extension "$HOME/src/krop-ai/krop-os/krop/agents/cosw-krop/pi-moa.mjs" \
+      --append-system-prompt 'KROP Chief of Staff. Only krop-ai, krop-infra, and krop-tf. Do not use employer/personal files, credentials, or services. Do not deploy or rent infrastructure without approval.' "$@"
+    ;;
+  *) exec agents up cosw-krop "$@" ;;
+esac
