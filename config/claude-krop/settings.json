@@ -1,0 +1,9 @@
+{
+  "enableWorkflows": true,
+  "tui": "fullscreen",
+  "theme": "dark",
+  "remoteControlAtStartup": true,
+  "inputNeededNotifEnabled": true,
+  "agentPushNotifEnabled": true,
+  "autoUpdatesChannel": "latest"
+}

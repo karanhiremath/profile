@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Install the claude-krop launcher and non-secret profile overlay.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SRC="$PROFILE_DIR/config/claude-krop"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/claude-krop"
+BIN="${HOME}/.local/bin"
+
+install -d -m 700 "$HOME/.claude-krop" "$DATA"
+install -d "$BIN"
+install -m 600 "$SRC/settings.json" "$DATA/settings.json"
+install -m 600 "$SRC/CLAUDE.md" "$DATA/CLAUDE.md"
+install -m 755 "$SCRIPT_DIR/claude-krop" "$BIN/claude-krop"
+
+"$BIN/claude-krop" status
